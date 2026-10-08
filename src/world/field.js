@@ -1,14 +1,17 @@
 /**
- * The 3D web: one volumetric nebula of particles per prompt section, linked
- * by a sparse constellation of edges, laid out as a winding chain through
- * space so the camera has somewhere to travel. Pure data (no WebGL), so the
- * director can run in node.
+ * The 3D world: one web per prompt section, coiled together through space so
+ * the camera has somewhere to travel. Each section is a real orb web (or
+ * two) hanging inside a nebula of particles, tied off with anchor lines, and
+ * neighbouring webs are strung together with bridge threads. Words sit on
+ * the capture spiral, read from the outside in, and every silk junction is a
+ * foothold for the spider. Pure data (no WebGL), so the director runs in node.
  *
  * World.wordPos holds [x, y, z] per word; clusters carry cx, cy, cz and r.
  */
 
 import { fork, gauss, range } from '../core/rng.js';
 import { sectionColor } from '../core/theme.js';
+import { orbWeb, sagThread } from './orbweb.js';
 
 /** Cluster radius from its word count. */
 export function clusterRadius(count) {
@@ -17,7 +20,7 @@ export function clusterRadius(count) {
 
 /** Particle count for a cluster. */
 export function particleCount(count) {
-  return Math.min(5200, Math.round(2400 + 130 * Math.sqrt(count)));
+  return Math.min(3600, Math.round(1500 + 90 * Math.sqrt(count)));
 }
 
 function norm(v) {
@@ -173,97 +176,6 @@ function makeEdges(pos, r) {
   return new Uint32Array(edges);
 }
 
-/** Choose well-spread particles for the words, ordered along a sweep so reading travels. */
-function placeWords(cloud, r, count, rand) {
-  const n = cloud.pos.length / 3;
-  const picks = [];
-  const minD = (r * 0.95) / Math.sqrt(Math.max(1, count));
-  const used = new Set();
-  for (let tries = 0; picks.length < count && tries < count * 60; tries++) {
-    const i = Math.floor(rand() * n);
-    if (used.has(i)) continue;
-    const x = cloud.pos[i * 3];
-    const y = cloud.pos[i * 3 + 1];
-    const z = cloud.pos[i * 3 + 2];
-    if (Math.hypot(x, y, z) > r * 0.8) continue;
-    const relax = tries > count * 30 ? 0.4 : 1;
-    if (picks.some((p) => Math.hypot(p[0] - x, p[1] - y, p[2] - z) < minD * relax)) continue;
-    used.add(i);
-    picks.push([x, y, z]);
-  }
-  while (picks.length < count) picks.push([gauss(rand) * r * 0.3, gauss(rand) * r * 0.2, gauss(rand) * r * 0.2]);
-  const sweep = norm([gauss(rand), gauss(rand) * 0.5, gauss(rand)]);
-  picks.sort((a, b) => a[0] * sweep[0] + a[1] * sweep[1] + a[2] * sweep[2] - (b[0] * sweep[0] + b[1] * sweep[1] + b[2] * sweep[2]));
-  return picks;
-}
-
-/**
- * Long silk threads: sagging curves between particles, as line-segment
- * endpoints. Within a cluster they span it; bridges join neighbouring
- * clusters so the space between webs is strung with silk too.
- */
-function sagThread(out, a, b, sub, sag, rand) {
-  const L = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
-  const bow = (rand() - 0.5) * L * 0.08;
-  let prev = a;
-  for (let k = 1; k <= sub; k++) {
-    const u = k / sub;
-    const s = Math.sin(Math.PI * u);
-    const p = [a[0] + (b[0] - a[0]) * u + bow * s, a[1] + (b[1] - a[1]) * u - sag * L * s, a[2] + (b[2] - a[2]) * u - bow * s * 0.5];
-    out.push(...prev, ...p);
-    prev = p;
-  }
-}
-
-function clusterThreads(cloud, r, rand, count) {
-  const out = [];
-  const n = cloud.pos.length / 3;
-  const at = (i) => [cloud.pos[i * 3], cloud.pos[i * 3 + 1], cloud.pos[i * 3 + 2]];
-  for (let t = 0, tries = 0; t < count && tries < count * 20; tries++) {
-    const a = at(Math.floor(rand() * n));
-    const b = at(Math.floor(rand() * n));
-    const L = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
-    if (L < r * 0.5 || L > r * 1.6) continue;
-    sagThread(out, a, b, 10, 0.05, rand);
-    t++;
-  }
-  return new Float32Array(out);
-}
-
-function bridgeThreads(clusters, clouds, rand) {
-  const out = [];
-  const pick = (ci, toward) => {
-    // The particle among a sample that faces the other cluster best.
-    const cloud = clouds[ci];
-    const c = clusters[ci];
-    const n = cloud.pos.length / 3;
-    let best = null;
-    let score = -Infinity;
-    for (let k = 0; k < 40; k++) {
-      const i = Math.floor(rand() * n);
-      const p = [cloud.pos[i * 3], cloud.pos[i * 3 + 1], cloud.pos[i * 3 + 2]];
-      const sc = (p[0] - c.cx) * toward[0] + (p[1] - c.cy) * toward[1] + (p[2] - c.cz) * toward[2] + rand() * c.r * 0.3;
-      if (sc > score) {
-        score = sc;
-        best = p;
-      }
-    }
-    return best;
-  };
-  for (let i = 0; i < clusters.length; i++) {
-    for (let j = i + 1; j < clusters.length; j++) {
-      const A = clusters[i];
-      const B = clusters[j];
-      const d = [B.cx - A.cx, B.cy - A.cy, B.cz - A.cz];
-      const L = Math.hypot(...d);
-      if (L > (A.r + B.r) * 1.35) continue;
-      const u = d.map((x) => x / L);
-      const count = j === i + 1 ? 12 : 6;
-      for (let k = 0; k < count; k++) sagThread(out, pick(i, u), pick(j, u.map((x) => -x)), 16, 0.035, rand);
-    }
-  }
-  return new Float32Array(out);
-}
 
 /**
  * Build the 3D world for an analysis. Deterministic for (analysis, seed).
@@ -278,29 +190,83 @@ export function buildWorld(analysis, seed) {
   const wordPos = new Float32Array(analysis.words.length * 3);
   const clusters = [];
   const clouds = [];
+  const footholds = [];
   sections.forEach((sec, i) => {
     const r = radii[i];
     const [cx, cy, cz] = centers[i];
+    const rand = fork(seed, `web:${i}`);
     const cloud = makeCloud(fork(seed, `cloud:${i}`), r, particleCount(sec.count));
     for (let k = 0; k < cloud.pos.length; k += 3) {
       cloud.pos[k] += cx;
       cloud.pos[k + 1] += cy;
       cloud.pos[k + 2] += cz;
     }
-    const rel = makeCloudRel(cloud, cx, cy, cz);
     cloud.edges = makeEdges(cloud.pos, r);
-    cloud.threads = clusterThreads(cloud, r, fork(seed, `threads:${i}`), Math.round(30 + sec.count * 0.6));
-    const words = placeWords(rel, r, sec.count, fork(seed, `words:${i}`));
+
+    // Orb webs hang roughly vertical: normals near horizontal, each at its own angle.
+    const webs = [];
+    const yaw = rand() * Math.PI * 2;
+    const mainN = [Math.cos(yaw), range(rand, -0.35, 0.35), Math.sin(yaw)];
+    webs.push(orbWeb(rand, [cx + gauss(rand) * r * 0.06, cy + gauss(rand) * r * 0.05, cz + gauss(rand) * r * 0.06], mainN, r * 0.82));
+    if (sec.count > 14) {
+      const y2 = yaw + range(rand, 0.9, 2.2);
+      const off = [Math.cos(y2 + 1.2) * r * 0.5, range(rand, -0.3, 0.3) * r, Math.sin(y2 + 1.2) * r * 0.5];
+      webs.push(orbWeb(rand, [cx + off[0], cy + off[1], cz + off[2]], [Math.cos(y2), range(rand, -0.4, 0.4), Math.sin(y2)], r * range(rand, 0.42, 0.55)));
+    }
+    // Anchor lines from each web's frame out into the surrounding cloud.
+    const anchors = [];
+    const nP = cloud.pos.length / 3;
+    for (const w of webs) {
+      for (let k = 0; k < 9; k++) {
+        const f = w.frame[Math.floor(rand() * w.frame.length)];
+        let best = null;
+        for (let t = 0; t < 30; t++) {
+          const j = Math.floor(rand() * nP);
+          const q = [cloud.pos[j * 3], cloud.pos[j * 3 + 1], cloud.pos[j * 3 + 2]];
+          const d = Math.hypot(q[0] - f[0], q[1] - f[1], q[2] - f[2]);
+          if (d > r * 0.25 && d < r * 0.7 && (!best || rand() < 0.5)) best = q;
+        }
+        if (best) sagThread(anchors, f, best, 8, 0.04, rand);
+      }
+      for (let k = 0; k < w.nodes.length; k++) footholds.push(w.nodes[k]);
+    }
+    cloud.webs = webs;
+    cloud.threads = new Float32Array(anchors);
+
+    // Words along the capture spiral, outside in, evenly spaced.
+    const spiral = webs.flatMap((w) => w.spiral.slice().reverse());
     for (let w = 0; w < sec.count; w++) {
       const id = sec.start + w;
-      wordPos[id * 3] = cx + words[w][0];
-      wordPos[id * 3 + 1] = cy + words[w][1];
-      wordPos[id * 3 + 2] = cz + words[w][2];
+      let p;
+      if (spiral.length >= sec.count) p = spiral[Math.floor(((w + 0.5) / sec.count) * spiral.length)];
+      else p = spiral[w] || [cx + gauss(rand) * r * 0.3, cy + gauss(rand) * r * 0.2, cz + gauss(rand) * r * 0.3];
+      wordPos[id * 3] = p[0];
+      wordPos[id * 3 + 1] = p[1];
+      wordPos[id * 3 + 2] = p[2];
     }
     clouds.push(cloud);
     clusters.push({ index: i, cx, cy, cz, r, color: sec.color || sectionColor(i) });
   });
-  // Bounding sphere of everything, for the overview shot.
+
+  // Bridges: silk strung frame to frame between neighbouring webs.
+  const bridges = [];
+  const brand = fork(seed, 'bridges');
+  for (let i = 0; i < clusters.length; i++) {
+    for (let j = i + 1; j < clusters.length; j++) {
+      const A = clusters[i];
+      const B = clusters[j];
+      const L = Math.hypot(B.cx - A.cx, B.cy - A.cy, B.cz - A.cz);
+      if (L > (A.r + B.r) * 1.35) continue;
+      const fa = clouds[i].webs.flatMap((w) => w.frame);
+      const fb = clouds[j].webs.flatMap((w) => w.frame);
+      const near = (list, c) => list.slice().sort((p, q) => Math.hypot(p[0] - c.cx, p[1] - c.cy, p[2] - c.cz) - Math.hypot(q[0] - c.cx, q[1] - c.cy, q[2] - c.cz));
+      const ea = near(fa, B).slice(0, 8);
+      const eb = near(fb, A).slice(0, 8);
+      const count = j === i + 1 ? 7 : 3;
+      for (let k = 0; k < count; k++) sagThread(bridges, ea[Math.floor(brand() * ea.length)], eb[Math.floor(brand() * eb.length)], 18, 0.05, brand);
+    }
+  }
+
   let bx = 0;
   let by = 0;
   let bz = 0;
@@ -311,17 +277,13 @@ export function buildWorld(analysis, seed) {
   });
   let radius = 200;
   clusters.forEach((c) => (radius = Math.max(radius, Math.hypot(c.cx - bx, c.cy - by, c.cz - bz) + c.r)));
-  const bridges = bridgeThreads(clusters, clouds, fork(seed, 'bridges'));
-  return { clusters, wordPos, bounds: { x: bx, y: by, z: bz, radius }, _clouds: clouds, _bridges: bridges };
+  return {
+    clusters,
+    wordPos,
+    bounds: { x: bx, y: by, z: bz, radius },
+    _clouds: clouds,
+    _bridges: new Float32Array(bridges),
+    _footholds: new Float32Array(footholds),
+  };
 }
 
-/** Positions relative to the cluster centre, for word placement. */
-function makeCloudRel(cloud, cx, cy, cz) {
-  const pos = new Float32Array(cloud.pos.length);
-  for (let k = 0; k < pos.length; k += 3) {
-    pos[k] = cloud.pos[k] - cx;
-    pos[k + 1] = cloud.pos[k + 1] - cy;
-    pos[k + 2] = cloud.pos[k + 2] - cz;
-  }
-  return { pos };
-}

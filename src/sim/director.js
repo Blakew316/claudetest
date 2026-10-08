@@ -13,7 +13,7 @@ import { Spider } from '../world/spider.js';
 
 const BOOT = 0.4;
 const SHIP_SETTLE = 4;
-const READ_SECONDS = 2.8; // target time to read a section
+const READ_SECONDS = 3.2; // target time to read a section
 const LOG_CAP = 40;
 
 /** Program shown in the CRAWLER.PY panel; revealed as the crawl progresses. */
@@ -127,7 +127,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       x: s.x * w + c.cx * (1 - w),
       y: s.y * w + c.cy * (1 - w),
       z: s.z * w + c.cz * (1 - w),
-      dist: fitDistance(c.r, aspect, 50, 0.95) * push,
+      dist: fitDistance(c.r, aspect, 50, 1.15) * push,
       yaw: a.yaw + drift,
       pitch: a.pitch,
     };
@@ -149,7 +149,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     log('walk', `→ ${sec.name}`, i);
     const c = world.clusters[i];
     const w = centroid(sec.start, Math.min(sec.start + 6, sec.start + sec.count));
-    run.spiderGoal = w ? { x: c.cx * 0.6 + w.x * 0.4, y: c.cy * 0.6 + w.y * 0.4, z: c.cz * 0.6 + w.z * 0.4 } : { x: c.cx, y: c.cy, z: c.cz };
+    // Land on the web where its first words hang.
+    run.spiderGoal = w ? { x: w.x, y: w.y, z: w.z } : { x: c.cx, y: c.cy, z: c.cz };
     travelTo(run.spiderGoal, i);
   }
 
@@ -159,8 +160,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const to = [goal.x, goal.y, goal.z];
     const L = Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]) || 1;
     const first = run.silk.length <= 1 && run.counts.read === 0;
-    const crouch = first ? 0 : range(cadence, 0.18, 0.26);
-    const air = Math.max(1.0, Math.min(1.9, 0.75 + L / 560));
+    const crouch = first ? 0 : range(cadence, 0.22, 0.3);
+    const air = Math.max(1.15, Math.min(2.1, 0.85 + L / 520));
     run.travel = {
       id: `${id}:${run.t.toFixed(3)}`,
       from,
@@ -169,7 +170,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       crouch,
       air,
       apex: first ? 24 : Math.max(45, L * range(cadence, 0.24, 0.32)),
-      dur: crouch + air + 0.32,
+      dur: crouch + air + 0.36,
     };
   }
 
@@ -271,8 +272,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     }
     if (cursor >= end) readAcc = 0;
     const c = world.clusters[run.active];
-    const w = centroid(cursor, Math.min(end, cursor + 6));
-    if (w) run.spiderGoal = { x: c.cx * 0.35 + w.x * 0.65, y: c.cy * 0.35 + w.y * 0.65, z: c.cz * 0.35 + w.z * 0.65 };
+    const w = centroid(cursor, Math.min(end, cursor + 4));
+    // Crawl along the web toward the next words on the spiral.
+    if (w) run.spiderGoal = { x: w.x, y: w.y, z: w.z };
     if (cursor >= end && run.tentacles.length === 0) {
       run.status[run.active] = 'done';
       if (run.active + 1 < n) enterWalk(run.active + 1);

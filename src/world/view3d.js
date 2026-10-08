@@ -1,15 +1,19 @@
 /**
  * WebGL renderer (three.js) for the crawl.
  *
- * Scene: volumetric webs that carry their own light (soft particles with
- * depth of field, twinkle and drift; shimmering strands; long sagging silk
- * threads and bridges between webs; the web brightens around the spider), floating
- * dust for parallax, the word nodes, and the spider in detail (fresnel-shaded
- * cephalothorax and breathing abdomen with wire mesh, tumbling core, 16
- * three-segment legs with joints and bristles, eight eyes, fangs, palps,
- * spinnerets), its rippling dotted tentacles and sagging silk. Rendered
- * through a perspective camera from run.camera (plus a slow handheld drift
- * and the viewer's drag) with a bloom pass. Reads run state only.
+ * Environment: per section, real orb webs whose silk carries its own light
+ * (shimmering threads, glittering dew drops), hanging in a nebula of soft
+ * particles with depth of field, twinkle and drift; anchor lines and bridges
+ * of silk between webs; floating dust for parallax. The web brightens around
+ * the spider as it moves through it. No glow sprites: light lives on the silk.
+ *
+ * Spider: shaded 3D anatomy, all real geometry: tapered limb segments with
+ * ball joints and hairs, a cephalothorax and a lagging, breathing abdomen
+ * (fresnel skin, wire mesh, dorsal chevrons, tumbling core), eight eyes,
+ * fangs, palps, spinnerets; plus rippling dotted tentacles and sagging silk.
+ *
+ * Camera from run.camera (plus a slow handheld drift and the viewer's drag),
+ * depth of field focused on the spider, bloom. Reads run state only.
  * project() maps world points to stage pixels for the 2D label overlay.
  */
 
@@ -29,9 +33,13 @@ export const FOV = 50;
 const TENTACLE_DOTS = 200;
 const SILK_SUB = 5;
 const SILK_MAX = 520 * SILK_SUB + 24;
-const BRISTLES = 6;
+const HAIRS = 10;
+const LIMBS = LEG_COUNT * 3 + 2 + 6; // legs, fangs, palps
+const JOINTS = LEG_COUNT * 4;
+const WHITE = new THREE.Color(1, 1, 1);
 
 const add = (a, b, s = 1) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
+const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const norm = (a) => {
   const l = Math.hypot(a[0], a[1], a[2]) || 1;
@@ -59,6 +67,32 @@ function latLong(lat, lon, seg = 32) {
       v.push(Math.sin(p) * Math.cos(a), Math.cos(p), Math.sin(p) * Math.sin(a), Math.sin(q) * Math.cos(a), Math.cos(q), Math.sin(q) * Math.sin(a));
     }
   }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+  return g;
+}
+
+/**
+ * Dorsal pattern on the abdomen (unit-sphere space: x forward, y up, z side):
+ * a midline mark and a row of chevrons down the back.
+ */
+function chevrons() {
+  const v = [];
+  const surf = (x, z) => [x, Math.sqrt(Math.max(0, 1 - x * x - z * z)) * 1.012, z];
+  const seg = (a, b) => v.push(...a, ...b);
+  for (let c = 0; c < 5; c++) {
+    const x0 = 0.55 - c * 0.26;
+    const w = 0.42 - c * 0.06;
+    const steps = 6;
+    for (const sg of [-1, 1]) {
+      for (let k = 0; k < steps; k++) {
+        const t0 = k / steps;
+        const t1 = (k + 1) / steps;
+        seg(surf(x0 - 0.14 * t0, sg * w * t0), surf(x0 - 0.14 * t1, sg * w * t1));
+      }
+    }
+  }
+  for (let k = 0; k < 8; k++) seg(surf(0.75 - k * 0.12, 0), surf(0.75 - (k + 1) * 0.12, 0));
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
   return g;
@@ -94,11 +128,9 @@ function writeSegments(line, arr) {
 }
 
 /**
- * Soft particles with depth of field: in focus they are crisp pinpoints; in
- * front of or behind the focal distance they swell into faint bokeh discs.
- * They twinkle and drift slowly, like dust in air. Needs 'bright' and
- * 'phase' attributes. Shared uniforms (time, fog, focus, scale, dpr) come in
- * by reference.
+ * Soft particles with depth of field: crisp at the focal distance, swelling
+ * into faint discs in front and behind; they twinkle and drift like dust in
+ * air, and brighten near the spider. Needs 'bright' and 'phase' attributes.
  */
 function depthPoints(shared, { size, max, drift, dof }) {
   return new THREE.ShaderMaterial({
@@ -126,16 +158,15 @@ function depthPoints(shared, { size, max, drift, dof }) {
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         float depth = max(1.0, -mv.z);
         float px = uSize * uScale / depth;
-        float blur = uDof * clamp(abs(depth - uFocus) / uFocus - 0.18, 0.0, 1.3);
+        float blur = uDof * clamp(abs(depth - uFocus) / uFocus - 0.12, 0.0, 1.3);
         float grow = 1.0 + blur * 4.0;
         gl_PointSize = clamp(px * grow, 1.0, uMax * uDpr);
-        float tw = 0.76 + 0.24 * sin(uTime * (0.7 + phase * 1.9) + phase * 31.0);
-        // A blurred point spreads the same light over a bigger disc, so it dims.
+        float tw = 0.72 + 0.28 * sin(uTime * (0.7 + phase * 1.9) + phase * 31.0);
         float energy = min(1.0, px) / pow(grow, 1.6);
-        // The web lights up around the spider as it moves through it.
         float dl = distance(p, uLight);
         float lit = uGain + uLightGain * exp(-dl * dl / (uLightR * uLightR));
-        vA = bright * tw * energy * lit * exp(-pow(uFog * depth, 2.0));
+        float fz = uFog * depth;
+        vA = bright * tw * energy * lit * exp(-fz * fz);
         vBlur = clamp(blur, 0.0, 1.0);
         gl_Position = projectionMatrix * mv;
       }`,
@@ -156,8 +187,8 @@ function depthPoints(shared, { size, max, drift, dof }) {
   });
 }
 
-/** Web strands with a slow shimmer travelling through them. */
-function strandMaterial(shared) {
+/** Silk: a slow shimmer travels along it, it fades with depth and brightens near the spider. */
+function silkMaterial(shared) {
   return new THREE.ShaderMaterial({
     uniforms: { ...shared, uColor: { value: new THREE.Color(1, 1, 1) }, uOpacity: { value: 0.2 } },
     vertexShader: `
@@ -168,8 +199,10 @@ function strandMaterial(shared) {
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         float sh = 0.5 + 0.5 * sin(uTime * 1.1 + dot(position, vec3(0.041, 0.029, 0.035)));
         float dl = distance(position, uLight);
-        float lit = 1.0 + uLightGain * 1.4 * exp(-dl * dl / (uLightR * uLightR));
-        vA = (0.45 + 0.55 * sh * sh) * lit * exp(-pow(uFog * -mv.z, 2.0));
+        float lit = 1.0 + uLightGain * 0.7 * exp(-dl * dl / (uLightR * uLightR));
+        // Square, not pow(): a vertex behind the camera has negative depth and pow() of a negative base is NaN.
+        float fz = uFog * -mv.z;
+        vA = (0.5 + 0.5 * sh * sh) * lit * exp(-fz * fz);
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
@@ -183,26 +216,33 @@ function strandMaterial(shared) {
   });
 }
 
-/** Glassy shading: dark core, bright toward the silhouette (fresnel), faint banding. */
-function fresnel(core, rim) {
+/** Glassy shading for the body and limbs: dark core, bright silhouette (fresnel); instancing-aware. */
+function fresnel(core, rim, band = 9) {
   return new THREE.ShaderMaterial({
-    uniforms: { uCore: { value: new THREE.Color(core) }, uRim: { value: new THREE.Color(rim) } },
+    uniforms: { uCore: { value: new THREE.Color(core) }, uRim: { value: new THREE.Color(rim) }, uBand: { value: band } },
     vertexShader: `
       varying vec3 vN; varying vec3 vV; varying vec3 vP;
       void main() {
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        vN = normalize(normalMatrix * normal);
+        vec4 local = vec4(position, 1.0);
+        vec3 nrm = normal;
+        #ifdef USE_INSTANCING
+          local = instanceMatrix * local;
+          nrm = mat3(instanceMatrix) * nrm;
+        #endif
+        vec4 mv = modelViewMatrix * local;
+        vN = normalize(normalMatrix * nrm);
         vV = normalize(-mv.xyz);
         vP = position;
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
-      uniform vec3 uCore; uniform vec3 uRim;
+      uniform vec3 uCore; uniform vec3 uRim; uniform float uBand;
       varying vec3 vN; varying vec3 vV; varying vec3 vP;
       void main() {
-        float f = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 2.2);
-        float band = 0.5 + 0.5 * sin(vP.x * 9.0);
-        vec3 c = mix(uCore * (0.85 + 0.3 * band), uRim, f * 0.9);
+        float g = clamp(1.0 - abs(dot(normalize(vN), normalize(vV))), 0.0, 1.0);
+        float f = g * g;
+        float band = 0.5 + 0.5 * sin(vP.y * uBand);
+        vec3 c = mix(uCore * (0.8 + 0.4 * band), uRim, f * 0.92);
         gl_FragColor = vec4(c, 1.0);
       }`,
   });
@@ -224,8 +264,7 @@ export function createView3D(canvas) {
   const camera = new THREE.PerspectiveCamera(FOV, 1, 2, 60000);
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.5, 0.35, 0.24);
-  composer.addPass(bloom);
+  composer.addPass(new UnrealBloomPass(new THREE.Vector2(512, 512), 0.5, 0.35, 0.3));
   composer.addPass(new OutputPass());
 
   const orbit = { yaw: 0, pitch: 0 };
@@ -239,9 +278,15 @@ export function createView3D(canvas) {
     uScale: { value: 500 },
     uDpr: { value: 1 },
     uLight: { value: new THREE.Vector3() },
-    uLightR: { value: 150 },
-    uLightGain: { value: 1.6 },
+    uLightR: { value: 210 },
+    uLightGain: { value: 0.9 },
   };
+  const mat4 = new THREE.Matrix4();
+  const quat = new THREE.Quaternion();
+  const upY = new THREE.Vector3(0, 1, 0);
+  const vA = new THREE.Vector3();
+  const vB = new THREE.Vector3();
+  const vS = new THREE.Vector3();
   let W = null;
 
   function resize(w, h, dpr) {
@@ -273,16 +318,21 @@ export function createView3D(canvas) {
     }
     const root = new THREE.Group();
     scene.add(root);
-    const additive = { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending };
     let seed = 1234567;
     const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+    const pointsGeo = (pos, brightFn) => {
+      const n = pos.length / 3;
+      const g = new THREE.BufferGeometry();
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setAttribute('bright', new THREE.BufferAttribute(Float32Array.from({ length: n }, (_, i) => brightFn(i)), 1));
+      g.setAttribute('phase', new THREE.BufferAttribute(Float32Array.from({ length: n }, () => rnd()), 1));
+      return g;
+    };
 
     // Floating dust through the whole space: parallax and foreground bokeh.
     const b = world.bounds;
     const DUST = 5000;
     const dpos = new Float32Array(DUST * 3);
-    const dbr = new Float32Array(DUST);
-    const dph = new Float32Array(DUST);
     for (let i = 0; i < DUST; i++) {
       const u = rnd() * 2 - 1;
       const th = rnd() * Math.PI * 2;
@@ -291,59 +341,50 @@ export function createView3D(canvas) {
       dpos[i * 3] = b.x + rr * sq * Math.cos(th);
       dpos[i * 3 + 1] = b.y + rr * u * 0.6;
       dpos[i * 3 + 2] = b.z + rr * sq * Math.sin(th);
-      dbr[i] = 0.05 + 0.15 * rnd();
-      dph[i] = rnd();
     }
-    const dg = new THREE.BufferGeometry();
-    dg.setAttribute('position', new THREE.BufferAttribute(dpos, 3));
-    dg.setAttribute('bright', new THREE.BufferAttribute(dbr, 1));
-    dg.setAttribute('phase', new THREE.BufferAttribute(dph, 1));
     const dm = depthPoints(shared, { size: 1.1, max: 16, drift: 7, dof: 1.3 });
     dm.uniforms.uColor.value.set('#8fa0c8');
-    root.add(new THREE.Points(dg, dm));
+    root.add(new THREE.Points(pointsGeo(dpos, () => 0.05 + 0.15 * rnd()), dm));
 
     const clusters = world.clusters.map((c, i) => {
       const cloud = world._clouds[i];
-      const n = cloud.pos.length / 3;
-      const bright = new Float32Array(n);
-      const phase = new Float32Array(n);
-      const stars = [];
-      const starPh = [];
-      for (let k = 0; k < n; k++) {
-        bright[k] = Math.min(1, cloud.bright[k]);
-        phase[k] = rnd();
-        if (cloud.bright[k] > 1.2) {
-          stars.push(cloud.pos[k * 3], cloud.pos[k * 3 + 1], cloud.pos[k * 3 + 2]);
-          starPh.push(phase[k]);
-        }
-      }
-      const g = new THREE.BufferGeometry();
-      g.setAttribute('position', new THREE.BufferAttribute(cloud.pos, 3));
-      g.setAttribute('bright', new THREE.BufferAttribute(bright, 1));
-      g.setAttribute('phase', new THREE.BufferAttribute(phase, 1));
-      const points = new THREE.Points(g, depthPoints(shared, { size: 1.0, max: 8, drift: 1.6, dof: 0.45 }));
+      // Nebula particles around the webs.
+      const points = new THREE.Points(pointsGeo(cloud.pos, (k) => Math.min(1, cloud.bright[k]) * 0.8), depthPoints(shared, { size: 1.0, max: 8, drift: 1.6, dof: 0.45 }));
       const eg = new THREE.BufferGeometry();
-      eg.setAttribute('position', g.getAttribute('position'));
+      eg.setAttribute('position', points.geometry.getAttribute('position'));
       eg.setIndex(new THREE.BufferAttribute(cloud.edges, 1));
-      const lines = new THREE.LineSegments(eg, strandMaterial(shared));
-      const sg = new THREE.BufferGeometry();
-      sg.setAttribute('position', new THREE.Float32BufferAttribute(stars, 3));
-      sg.setAttribute('bright', new THREE.Float32BufferAttribute(stars.map(() => 1).slice(0, starPh.length), 1));
-      sg.setAttribute('phase', new THREE.Float32BufferAttribute(starPh, 1));
-      const starPts = new THREE.Points(sg, depthPoints(shared, { size: 2.1, max: 14, drift: 1.2, dof: 0.6 }));
+      const lines = new THREE.LineSegments(eg, silkMaterial(shared));
+      // The orb webs themselves, and their anchor lines.
+      const webArr = new Float32Array(cloud.webs.reduce((n, w) => n + w.segs.length, 0));
+      let o = 0;
+      for (const w of cloud.webs) {
+        webArr.set(w.segs, o);
+        o += w.segs.length;
+      }
+      const wg = new THREE.BufferGeometry();
+      wg.setAttribute('position', new THREE.BufferAttribute(webArr, 3));
+      const web = new THREE.LineSegments(wg, silkMaterial(shared));
       const tg = new THREE.BufferGeometry();
       tg.setAttribute('position', new THREE.BufferAttribute(cloud.threads, 3));
-      const threads = new THREE.LineSegments(tg, strandMaterial(shared));
-      root.add(lines, threads, points, starPts);
-      return { points, lines, threads, stars: starPts, mix: 0, gain: 0.45, color: new THREE.Color(c.color), tint: new THREE.Color() };
+      const threads = new THREE.LineSegments(tg, silkMaterial(shared));
+      // Dew caught on the spiral: tiny glittering beads.
+      const dewArr = new Float32Array(cloud.webs.reduce((n, w) => n + w.dew.length, 0));
+      o = 0;
+      for (const w of cloud.webs) {
+        dewArr.set(w.dew, o);
+        o += w.dew.length;
+      }
+      const dew = new THREE.Points(pointsGeo(dewArr, () => 0.7 + 0.3 * rnd()), depthPoints(shared, { size: 1.9, max: 7, drift: 0.25, dof: 0.6 }));
+      root.add(lines, threads, web, points, dew);
+      return { points, lines, web, threads, dew, mix: 0, gain: 0.45, color: new THREE.Color(c.color), tint: new THREE.Color() };
     });
 
     // Bridges: silk strung between neighbouring webs.
     const bg = new THREE.BufferGeometry();
     bg.setAttribute('position', new THREE.BufferAttribute(world._bridges, 3));
-    const bridges = new THREE.LineSegments(bg, strandMaterial(shared));
+    const bridges = new THREE.LineSegments(bg, silkMaterial(shared));
     bridges.material.uniforms.uColor.value.set('#b9c6e6');
-    bridges.material.uniforms.uOpacity.value = 0.16;
+    bridges.material.uniforms.uOpacity.value = 0.2;
     root.add(bridges);
 
     // Word nodes: black (invisible under additive blending) until read.
@@ -352,34 +393,40 @@ export function createView3D(canvas) {
     wg.setAttribute('position', new THREE.BufferAttribute(world.wordPos, 3));
     const wcol = new THREE.BufferAttribute(new Float32Array(nw * 3), 3);
     wg.setAttribute('color', wcol);
-    const words = new THREE.Points(wg, new THREE.PointsMaterial({ size: 5, sizeAttenuation: false, vertexColors: true, ...additive }));
+    const words = new THREE.Points(wg, new THREE.PointsMaterial({ size: 5, sizeAttenuation: false, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
     root.add(words);
 
-    // Spider.
+    // Spider: real geometry throughout.
     const sphere = new THREE.SphereGeometry(1, 40, 24);
-    const skin = fresnel(0x041714, SPIDER);
+    const skin = fresnel(0x020b0a, '#7dffd6');
     const rimMat = new THREE.MeshBasicMaterial({ color: SPIDER, side: THREE.BackSide });
-    const wireMat = new THREE.LineBasicMaterial({ color: SPIDER, transparent: true, opacity: 0.75 });
-    const part = (lat, lon) => {
+    const wireMat = new THREE.LineBasicMaterial({ color: SPIDER, transparent: true, opacity: 0.7 });
+    const part = (lat, lon, pattern) => {
       const grp = new THREE.Group();
       grp.matrixAutoUpdate = false;
-      const fill = new THREE.Mesh(sphere, skin);
       const rim = new THREE.Mesh(sphere, rimMat);
-      rim.scale.setScalar(1.05);
+      rim.scale.setScalar(1.045);
       const wire = new THREE.LineSegments(latLong(lat, lon), wireMat);
       wire.scale.setScalar(1.006);
-      grp.add(fill, rim, wire);
+      grp.add(new THREE.Mesh(sphere, skin), rim, wire);
+      if (pattern) grp.add(new THREE.LineSegments(chevrons(), new THREE.LineBasicMaterial({ color: '#c9fff0', transparent: true, opacity: 0.85 })));
       return grp;
     };
-    const abdomen = part(9, 18);
-    const ceph = part(5, 10);
-    const legsThick = fatSegments(LEG_COUNT * 2 + 1, SPIDER, 2.1);
-    const legsThin = fatSegments(LEG_COUNT + 4, SPIDER, 1.3);
-    const bristles = fatSegments(LEG_COUNT * BRISTLES, SPIDER, 0.9, 0.55);
-    const palps = fatSegments(2 * 10, SPIDER, 1.3);
-    const joints = new THREE.Points(dynamicGeometry(LEG_COUNT * 4 + 3), new THREE.PointsMaterial({ color: SPIDER, size: 3.4, sizeAttenuation: false }));
+    const abdomen = part(9, 18, true);
+    const ceph = part(5, 10, false);
+    // Tapered limb segments (base radius 1, tip radius 0.6, spanning y 0..1) and ball joints.
+    const limbGeo = new THREE.CylinderGeometry(0.6, 1, 1, 10, 1);
+    limbGeo.translate(0, 0.5, 0);
+    const limbs = new THREE.InstancedMesh(limbGeo, fresnel(0x020d0b, '#8affdd', 40), LIMBS);
+    const joints = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 12, 8), fresnel(0x05201b, '#c4fff0', 20), JOINTS);
+    limbs.frustumCulled = false;
+    joints.frustumCulled = false;
+    limbs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    joints.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const hairs = fatSegments(LEG_COUNT * HAIRS, SPIDER, 0.8, 0.55);
     const eyes = new THREE.Points(dynamicGeometry(8), new THREE.PointsMaterial({ color: '#eafff8', size: 3.2, sizeAttenuation: false, fog: false }));
-    const core = new THREE.Mesh(new THREE.BoxGeometry(8, 8, 8), new THREE.MeshBasicMaterial({ color: FLAG, depthTest: false, fog: false }));
+    const spinnerets = new THREE.Points(dynamicGeometry(3), new THREE.PointsMaterial({ color: SPIDER, size: 3, sizeAttenuation: false }));
+    const core = new THREE.Mesh(new THREE.BoxGeometry(7, 7, 7), new THREE.MeshBasicMaterial({ color: FLAG, depthTest: false, fog: false }));
     core.renderOrder = 20;
     const tentacles = new THREE.Points(
       dynamicGeometry(MAX_TENTACLES * TENTACLE_DOTS),
@@ -387,16 +434,10 @@ export function createView3D(canvas) {
     );
     tentacles.renderOrder = 15;
     const silk = new THREE.Line(dynamicGeometry(SILK_MAX, 3, 4), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }));
-    root.add(silk, tentacles, legsThick, legsThin, bristles, palps, joints, abdomen, ceph, eyes, core);
+    root.add(silk, tentacles, limbs, joints, hairs, spinnerets, abdomen, ceph, eyes, core);
 
-    const fat = [legsThick, legsThin, bristles, palps];
-    W = {
-      root, clusters, words, wcol, wordKey: '', world, analysis, abdomen, ceph, legsThick, legsThin, bristles, palps, joints, eyes, core, tentacles, silk, fat,
-      thickBuf: new Float32Array((LEG_COUNT * 2 + 1) * 6),
-      thinBuf: new Float32Array((LEG_COUNT + 4) * 6),
-      bristleBuf: new Float32Array(LEG_COUNT * BRISTLES * 6),
-      palpBuf: new Float32Array(20 * 6),
-    };
+    const fat = [hairs];
+    W = { root, clusters, words, wcol, wordKey: '', world, abdomen, ceph, limbs, joints, hairs, eyes, spinnerets, core, tentacles, silk, fat, hairBuf: new Float32Array(LEG_COUNT * HAIRS * 6) };
     for (const l of fat) l.material.resolution.set(size.w, size.h);
   }
 
@@ -411,7 +452,7 @@ export function createView3D(canvas) {
     return out;
   }
 
-  function placeCamera(run) {
+  function placeCamera(run, focus) {
     const c = run.camera;
     const t = run.t;
     // A slow handheld drift so the view breathes even when the shot is still.
@@ -424,16 +465,32 @@ export function createView3D(canvas) {
     camera.updateMatrixWorld();
     fog.density = 0.45 / c.dist;
     shared.uFog.value = fog.density;
-    shared.uFocus.value = c.dist;
+    // Focus pulls onto the spider, so the web in front and behind it softens.
+    shared.uFocus.value = Math.max(80, camera.position.distanceTo(tmp.set(focus[0], focus[1], focus[2])));
     shared.uTime.value = t;
   }
 
   function setBody(grp, center, F, U, S, rx, ry, rz) {
     const m = grp.matrix;
-    m.makeBasis(new THREE.Vector3(...F), new THREE.Vector3(...U), new THREE.Vector3(...S));
+    m.makeBasis(vA.set(...F), vB.set(...U), vS.set(...S));
     m.scale(tmp.set(rx, rz, ry));
     m.setPosition(center[0], center[1], center[2]);
     grp.matrixWorldNeedsUpdate = true;
+  }
+
+  /** Place one tapered limb segment from a to b with base radius r. */
+  function limb(i, a, b, r) {
+    vA.set(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    const L = vA.length() || 1e-3;
+    quat.setFromUnitVectors(upY, vA.divideScalar(L));
+    mat4.compose(vB.set(a[0], a[1], a[2]), quat, vS.set(r, L, r));
+    W.limbs.setMatrixAt(i, mat4);
+  }
+
+  function joint(i, p, r) {
+    mat4.makeScale(r, r, r);
+    mat4.setPosition(p[0], p[1], p[2]);
+    W.joints.setMatrixAt(i, mat4);
   }
 
   /**
@@ -445,25 +502,29 @@ export function createView3D(canvas) {
    */
   function render(run, analysis, spider, dt) {
     if (!W) return;
-    placeCamera(run);
+    placeCamera(run, spider.b);
+    shared.uLight.value.set(...spider.b);
     const ship = run.phase === 'ship';
     const fade = 1 - Math.exp(-4 * dt);
 
     W.clusters.forEach((cl, i) => {
-      // The web itself carries the light: the active web burns brightest, read webs stay lit.
+      // The web carries the light: the active web burns brightest, read webs stay lit.
       const on = run.status[i] !== 'queued' ? 1 : 0;
-      const gain = ship ? 1.15 : i === run.active ? 1.6 : on ? 0.95 : 0.45;
+      const gain = ship ? 0.8 : i === run.active ? 1.35 : on ? 0.85 : 0.4;
       cl.mix += (on - cl.mix) * fade;
       cl.gain += (gain - cl.gain) * fade;
       cl.tint.copy(grey).lerp(cl.color, cl.mix);
-      for (const m of [cl.points.material, cl.stars.material]) {
+      for (const m of [cl.points.material, cl.dew.material]) {
         m.uniforms.uColor.value.copy(cl.tint);
         m.uniforms.uGain.value = cl.gain;
       }
+      cl.dew.material.uniforms.uColor.value.lerp(WHITE, 0.45);
       cl.lines.material.uniforms.uColor.value.copy(cl.tint);
-      cl.lines.material.uniforms.uOpacity.value = 0.07 * cl.gain + 0.12 * cl.mix * cl.gain;
+      cl.lines.material.uniforms.uOpacity.value = (0.05 + 0.07 * cl.mix) * cl.gain;
+      cl.web.material.uniforms.uColor.value.copy(cl.tint);
+      cl.web.material.uniforms.uOpacity.value = (0.12 + 0.17 * cl.mix) * cl.gain;
       cl.threads.material.uniforms.uColor.value.copy(cl.tint);
-      cl.threads.material.uniforms.uOpacity.value = 0.1 * cl.gain + 0.16 * cl.mix * cl.gain;
+      cl.threads.material.uniforms.uOpacity.value = (0.12 + 0.14 * cl.mix) * cl.gain;
     });
 
     // Word nodes recolour only when reading state changes.
@@ -487,74 +548,66 @@ export function createView3D(canvas) {
       W.wcol.needsUpdate = true;
     }
 
-    // Body: cephalothorax and a slowly breathing abdomen.
+    // Body parts: cephalothorax, and the abdomen hanging off the waist, breathing.
     const { F, U, S } = spider;
     const breath = 1 + 0.03 * Math.sin(spider.time * 2.1);
-    const ac = spider.abdomenCenter();
-    const cc = spider.cephCenter();
-    setBody(W.abdomen, ac, F, U, S, ABDOMEN.RX * breath, ABDOMEN.RY * breath, ABDOMEN.RZ * breath);
-    setBody(W.ceph, cc, F, U, S, CEPH.RX, CEPH.RY, CEPH.RZ);
-    const corePos = add(ac, U, 3);
-    W.core.position.set(...corePos);
+    const ab = spider.abdomenFrame();
+    setBody(W.abdomen, ab.c, ab.F, ab.U, ab.S, ABDOMEN.RX * breath, ABDOMEN.RY * breath, ABDOMEN.RZ * breath);
+    setBody(W.ceph, spider.cephCenter(), F, U, S, CEPH.RX, CEPH.RY, CEPH.RZ);
+    W.core.position.set(...add(ab.c, ab.U, 3));
     W.core.rotation.set(spider.time * 1.1, spider.time * 0.8, spider.time * 0.35);
-    shared.uLight.value.set(...spider.p);
 
-    // Legs: femur and tibia thick, tarsus thin; joints; bristles along femur and tibia.
-    const tb = W.thickBuf;
-    const nb = W.thinBuf;
-    const bb = W.bristleBuf;
-    const jp = W.joints.geometry.attributes.position.array;
-    let bi = 0;
+    // Legs as tapered 3D segments with ball joints; hairs along femur and tibia.
+    const hb = W.hairBuf;
+    let hi = 0;
     spider.legs.forEach((leg, i) => {
-      tb.set(leg.hip, i * 12);
-      tb.set(leg.knee, i * 12 + 3);
-      tb.set(leg.knee, i * 12 + 6);
-      tb.set(leg.ankle, i * 12 + 9);
-      nb.set(leg.ankle, i * 6);
-      nb.set(leg.tip, i * 6 + 3);
-      jp.set(leg.hip, i * 12);
-      jp.set(leg.knee, i * 12 + 3);
-      jp.set(leg.ankle, i * 12 + 6);
-      jp.set(leg.tip, i * 12 + 9);
+      limb(i * 3, leg.hip, leg.knee, 1.9);
+      limb(i * 3 + 1, leg.knee, leg.ankle, 1.35);
+      limb(i * 3 + 2, leg.ankle, leg.tip, 0.85);
+      joint(i * 4, leg.hip, 2.1);
+      joint(i * 4 + 1, leg.knee, 1.75);
+      joint(i * 4 + 2, leg.ankle, 1.25);
+      joint(i * 4 + 3, leg.tip, 0.7);
       const segs = [
-        [leg.hip, leg.knee],
-        [leg.knee, leg.ankle],
+        [leg.hip, leg.knee, 1.8],
+        [leg.knee, leg.ankle, 1.3],
       ];
-      for (let k = 0; k < BRISTLES; k++) {
-        const [a, c] = segs[k < 3 ? 0 : 1];
-        const t = 0.25 + (k % 3) * 0.25;
-        const p = [a[0] + (c[0] - a[0]) * t, a[1] + (c[1] - a[1]) * t, a[2] + (c[2] - a[2]) * t];
-        const dir = norm([c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+      for (let k = 0; k < HAIRS; k++) {
+        const [a, c, rad] = segs[k < HAIRS / 2 ? 0 : 1];
+        const t = 0.12 + ((k % (HAIRS / 2)) / (HAIRS / 2)) * 0.8;
+        const dir = norm(sub(c, a));
+        const p0 = add(a, sub(c, a), t);
+        const around = (k * 2.4) % (Math.PI * 2);
         const side = norm(cross(dir, U));
-        const sg = k % 2 ? 1 : -1;
-        const out = norm(add(add(side, U, 0.8), dir, 0.5 * sg));
-        bb.set(p, bi);
-        bb.set(add(p, out, 3.2), bi + 3);
-        bi += 6;
+        const radial = norm(add(add([0, 0, 0], side, Math.cos(around)), U, Math.abs(Math.sin(around)) + 0.3));
+        const base = add(p0, radial, rad);
+        // Hairs lean back toward the body, like setae.
+        const tipDir = norm(add(radial, dir, -0.7));
+        hb.set(base, hi);
+        hb.set(add(base, tipDir, 3.6), hi + 3);
+        hi += 6;
       }
     });
-    // Waist joining the two body parts.
-    const waistA = add(spider.p, F, CEPH.OFF - CEPH.RX * 0.9);
-    const waistB = add(spider.p, F, ABDOMEN.OFF + ABDOMEN.RX * 0.9);
-    tb.set(waistA, LEG_COUNT * 12);
-    tb.set(waistB, LEG_COUNT * 12 + 3);
-    // Fangs: two short chelicerae under the face.
+    // Fangs (chelicerae) and two jointed palps at the face.
     const face = spider.face();
-    let ni = LEG_COUNT * 6;
+    let li = LEG_COUNT * 3;
     for (const sg of [-1, 1]) {
-      const base = add(add(face, S, sg * 2.4), U, -2);
-      nb.set(base, ni);
-      nb.set(add(add(base, F, 4.5), U, -4.5), ni + 3);
-      ni += 6;
+      const base = add(add(face, S, sg * 2.4), U, -1.5);
+      limb(li++, base, add(add(base, F, 4), U, -5), 1.5);
     }
-    // Spinnerets.
-    const spin = spider.spinneret();
-    for (let k = 0; k < 3; k++) jp.set(add(add(spin, S, (k - 1) * 2.2), U, -1.5), LEG_COUNT * 12 + k * 3);
-    writeSegments(W.legsThick, tb);
-    writeSegments(W.legsThin, nb);
-    writeSegments(W.bristles, bb);
-    W.joints.geometry.attributes.position.needsUpdate = true;
-    W.joints.geometry.computeBoundingSphere();
+    for (const sg of [-1, 1]) {
+      const tap = Math.sin(spider.time * 3.1 + (sg > 0 ? 1.4 : 0)) * 0.35;
+      const p0 = add(add(face, S, sg * 3.8), U, -0.5);
+      const p1 = add(add(add(p0, F, 5), S, sg * 3.5), U, 3 + tap * 3);
+      const p2 = add(add(add(p1, F, 6), S, sg * 1.5), U, -2 + tap * 2);
+      const p3 = add(add(p2, F, 4), U, -4);
+      limb(li++, p0, p1, 1.15);
+      limb(li++, p1, p2, 0.95);
+      limb(li++, p2, p3, 0.75);
+    }
+    W.limbs.instanceMatrix.needsUpdate = true;
+    W.joints.instanceMatrix.needsUpdate = true;
+    writeSegments(W.hairs, hb);
 
     // Eight eyes in two rows on the front of the cephalothorax.
     const ep = W.eyes.geometry.attributes.position.array;
@@ -565,24 +618,11 @@ export function createView3D(canvas) {
     eyes.forEach(([sx, up], k) => ep.set(add(add(add(face, S, sx), U, up - 2.5), F, -1.5), k * 3));
     W.eyes.geometry.attributes.position.needsUpdate = true;
     W.eyes.geometry.computeBoundingSphere();
-
-    // Palps: two jointed feelers that tap slowly.
-    const pb = W.palpBuf;
-    let o = 0;
-    for (const sg of [-1, 1]) {
-      const tap = Math.sin(spider.time * 3.1 + (sg > 0 ? 1.4 : 0)) * 0.3;
-      let prev = add(add(face, S, sg * 3.6), U, -1);
-      for (let k = 1; k <= 10; k++) {
-        const u = k / 10;
-        const ang = u * 2.2 + tap;
-        const pt = add(add(add(add(face, S, sg * (3.6 + Math.sin(ang) * 6)), F, 2 + u * 9), U, -1 + Math.sin(u * Math.PI) * 4 - u * 5), F, 0);
-        pb.set(prev, o);
-        pb.set(pt, o + 3);
-        o += 6;
-        prev = pt;
-      }
-    }
-    writeSegments(W.palps, pb);
+    const spin = spider.spinneret();
+    const sp3 = W.spinnerets.geometry.attributes.position.array;
+    for (let k = 0; k < 3; k++) sp3.set(add(add(spin, ab.S, (k - 1) * 2.2), ab.U, -1.5), k * 3);
+    W.spinnerets.geometry.attributes.position.needsUpdate = true;
+    W.spinnerets.geometry.computeBoundingSphere();
 
     // Tentacles: dotted beziers to the words, rippling like tendrils.
     const tp = W.tentacles.geometry.attributes.position.array;
@@ -623,9 +663,7 @@ export function createView3D(canvas) {
     // Silk: sagging strands between anchors, older ones fading; the live dragline sways.
     const sp = W.silk.geometry.attributes.position.array;
     const sc = W.silk.geometry.attributes.color.array;
-    const pts = run.silk;
-    const tail = spider.spinneret();
-    const anchors = pts.slice(-Math.floor((SILK_MAX - 24) / SILK_SUB));
+    const anchors = run.silk.slice(-Math.floor((SILK_MAX - 24) / SILK_SUB));
     let vi = 0;
     const col = new THREE.Color();
     const pushV = (x, y, z, s, a) => {
@@ -657,7 +695,7 @@ export function createView3D(canvas) {
         strand([a.x, a.y, a.z], [c.x, c.y, c.z], c.s, 0.1 + 0.62 * (i / nA) ** 0.7, SILK_SUB, 0);
       }
       const last = anchors[nA - 1];
-      strand([last.x, last.y, last.z], tail, run.silkSection, 0.85, 20, Math.sin(run.t * 1.3) * 3);
+      strand([last.x, last.y, last.z], spin, run.silkSection, 0.85, 20, Math.sin(run.t * 1.3) * 3);
     }
     W.silk.geometry.setDrawRange(0, vi);
     W.silk.geometry.attributes.position.needsUpdate = true;
