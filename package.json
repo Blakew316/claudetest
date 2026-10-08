@@ -1,0 +1,16 @@
+{
+  "name": "prompt-crawler",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A spider that crawls your prompt, links the words that matter and flags the vague ones.",
+  "type": "module",
+  "scripts": {
+    "dev": "npx --yes serve -l 5173 .",
+    "test": "node --test test/",
+    "build": "node scripts/build.mjs",
+    "shoot": "node scripts/shoot.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.10"
+  }
+}
