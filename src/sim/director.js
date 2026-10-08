@@ -55,7 +55,6 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   let cursor; // next word id to reach in the active section
   let readAcc;
   let recent; // read timestamps for words/second
-  let lastSilk;
   let scoreTick;
 
   const api = {
@@ -76,14 +75,14 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run = createRunState(analysis);
     run.logSeq = 0;
     const c0 = world.clusters[0];
-    spider = new Spider(c0 ? c0.cx : 0, c0 ? c0.cy : 0, seed);
+    spider = new Spider(c0 ? c0.cx : 0, c0 ? c0.cy : 0, seed, world);
     run.spider.x = spider.x;
     run.spider.y = spider.y;
     run.spiderGoal = { x: spider.x, y: spider.y };
     cursor = 0;
     readAcc = 0;
     recent = [];
-    lastSilk = null;
+    run.silk.push({ x: spider.x, y: spider.y, s: 0, t: 0 });
     scoreTick = 0;
     Object.assign(run.camera, cameraTarget());
   }
@@ -110,10 +109,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   }
 
   function enterWalk(i) {
-    const prev = run.active;
     run.active = i;
     run.status[i] = 'reading';
-    run.silkSection = i === 0 ? 0 : prev;
+    run.silkSection = i;
     const sec = analysis.sections[i];
     cursor = sec.start;
     readAcc = 0;
@@ -228,7 +226,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       }
     } else if (run.phase === 'walk') {
       const g = run.spiderGoal;
-      if (Math.hypot(run.spider.x - g.x, run.spider.y - g.y) < 30 || run.phaseT > 2.5) setPhase('read');
+      if (Math.hypot(run.spider.x - g.x, run.spider.y - g.y) < 30 || run.phaseT > 3.5) setPhase('read');
     } else if (run.phase === 'read') {
       stepRead(dt);
     } else if (run.phase === 'ship' && run.phaseT > SHIP_SETTLE) {
@@ -237,13 +235,6 @@ export function createDirector(analysis, world, getStage, seed = 1) {
 
     stepTentacles(dt);
     spider.update(dt, run);
-
-    // Silk trail.
-    if (!lastSilk || Math.hypot(run.spider.x - lastSilk.x, run.spider.y - lastSilk.y) > 6) {
-      lastSilk = { x: run.spider.x, y: run.spider.y };
-      run.silk.push(lastSilk);
-      if (run.silk.length > 260) run.silk.shift();
-    }
 
     while (recent.length && run.t - recent[0] > 1) recent.shift();
     run.wps = recent.length;
