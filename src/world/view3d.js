@@ -8,6 +8,9 @@
  */
 
 import * as THREE from 'three';
+import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
 import { BG, QUEUED, FLAG, SPIDER, TENTACLE, TEXT } from '../core/theme.js';
 import { LEG_COUNT, MAX_TENTACLES } from '../core/contracts.js';
 import { BODY } from './spider.js';
@@ -69,6 +72,88 @@ function dynamicGeometry(count, itemSize = 3, colorSize = 0) {
 }
 
 /**
+ * Soft round particles whose size and brightness follow depth: near dust is
+ * larger and brighter, far dust shrinks to a pixel and fades into the fog.
+ * Needs a per-vertex 'bright' attribute.
+ */
+function depthPoints({ size, max }) {
+  const m = new THREE.ShaderMaterial({
+    uniforms: {
+      uColor: { value: new THREE.Color(1, 1, 1) },
+      uSize: { value: size },
+      uMax: { value: max },
+      uScale: { value: 500 },
+      uFog: { value: 0.0005 },
+      uAlpha: { value: 1 },
+    },
+    vertexShader: `
+      attribute float bright;
+      uniform float uSize; uniform float uMax; uniform float uScale; uniform float uFog;
+      varying float vA;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        float depth = max(1.0, -mv.z);
+        float px = uSize * uScale / depth;
+        gl_PointSize = clamp(px, 1.0, uMax);
+        // Points smaller than a pixel keep their energy as dimness, not size.
+        vA = bright * min(1.0, px) * exp(-pow(uFog * depth, 2.0));
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 uColor; uniform float uAlpha;
+      varying float vA;
+      void main() {
+        float d = length(gl_PointCoord - 0.5);
+        if (d > 0.5) discard;
+        gl_FragColor = vec4(uColor * vA * uAlpha * smoothstep(0.5, 0.12, d), 1.0);
+      }`,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+  });
+  m.userData.max = max; // CSS px; scaled by device pixel ratio in applySizes
+  return m;
+}
+
+/** Glassy shading: dark core, bright teal toward the silhouette (fresnel). */
+function fresnel(core, rim) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uCore: { value: new THREE.Color(core) }, uRim: { value: new THREE.Color(rim) } },
+    vertexShader: `
+      varying vec3 vN; varying vec3 vV;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vN = normalize(normalMatrix * normal);
+        vV = normalize(-mv.xyz);
+        gl_Position = projectionMatrix * mv;
+      }`,
+    fragmentShader: `
+      uniform vec3 uCore; uniform vec3 uRim;
+      varying vec3 vN; varying vec3 vV;
+      void main() {
+        float f = pow(1.0 - abs(dot(normalize(vN), normalize(vV))), 2.4);
+        gl_FragColor = vec4(mix(uCore, uRim, f * 0.9), 1.0);
+      }`,
+  });
+}
+
+/** Thick screen-space line segments with room for `count` segments, updated in place. */
+function fatSegments(count, color, width) {
+  const g = new LineSegmentsGeometry();
+  g.setPositions(new Float32Array(count * 6));
+  const m = new LineMaterial({ color, linewidth: width, transparent: true });
+  const l = new LineSegments2(g, m);
+  l.frustumCulled = false;
+  return l;
+}
+
+function writeSegments(line, arr) {
+  const data = line.geometry.attributes.instanceStart.data;
+  data.array.set(arr);
+  data.needsUpdate = true;
+}
+
+/**
  * @param {HTMLCanvasElement} canvas
  */
 export function createView3D(canvas) {
@@ -93,6 +178,19 @@ export function createView3D(canvas) {
     renderer.setSize(w, h, false);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
+    pointScale = (h * dpr) / 2 / Math.tan((FOV * Math.PI) / 360);
+    dprNow = dpr;
+    if (W) applySizes();
+  }
+
+  let pointScale = 500;
+  let dprNow = 1;
+  function applySizes() {
+    for (const m of W.depthMats) {
+      m.uniforms.uScale.value = pointScale;
+      m.uniforms.uMax.value = m.userData.max * dprNow;
+    }
+    for (const l of [W.legs, W.palps]) l.material.resolution.set(size.w, size.h);
   }
 
   function disposeTree(obj) {
@@ -111,28 +209,62 @@ export function createView3D(canvas) {
     const root = new THREE.Group();
     scene.add(root);
     const additive = { transparent: true, depthWrite: false, blending: THREE.AdditiveBlending };
+    const depthMats = [];
+
+    // Ambient dust filling the space between and around the webs, for parallax.
+    const b = world.bounds;
+    const DUST = 6000;
+    const dpos = new Float32Array(DUST * 3);
+    const dbr = new Float32Array(DUST);
+    let seed = 1234567;
+    const rnd = () => ((seed = (seed * 16807) % 2147483647) / 2147483647);
+    for (let i = 0; i < DUST; i++) {
+      const u = rnd() * 2 - 1;
+      const th = rnd() * Math.PI * 2;
+      const rr = b.radius * 2.4 * Math.cbrt(rnd());
+      const sq = Math.sqrt(1 - u * u);
+      dpos[i * 3] = b.x + rr * sq * Math.cos(th);
+      dpos[i * 3 + 1] = b.y + rr * u * 0.6;
+      dpos[i * 3 + 2] = b.z + rr * sq * Math.sin(th);
+      dbr[i] = 0.12 + 0.3 * rnd();
+    }
+    const dg = new THREE.BufferGeometry();
+    dg.setAttribute('position', new THREE.BufferAttribute(dpos, 3));
+    dg.setAttribute('bright', new THREE.BufferAttribute(dbr, 1));
+    const dm = depthPoints({ size: 1.2, max: 2.5 });
+    dm.uniforms.uColor.value.set('#8fa0c8');
+    depthMats.push(dm);
+    root.add(new THREE.Points(dg, dm));
 
     const clusters = world.clusters.map((c, i) => {
       const cloud = world._clouds[i];
       const n = cloud.pos.length / 3;
-      const col = new Float32Array(n * 3);
+      const bright = new Float32Array(n);
       const stars = [];
+      const starB = [];
       for (let k = 0; k < n; k++) {
-        const b = Math.min(1, cloud.bright[k]);
-        col[k * 3] = col[k * 3 + 1] = col[k * 3 + 2] = b;
-        if (cloud.bright[k] > 1.2) stars.push(cloud.pos[k * 3], cloud.pos[k * 3 + 1], cloud.pos[k * 3 + 2]);
+        bright[k] = Math.min(1, cloud.bright[k]);
+        if (cloud.bright[k] > 1.2) {
+          stars.push(cloud.pos[k * 3], cloud.pos[k * 3 + 1], cloud.pos[k * 3 + 2]);
+          starB.push(1);
+        }
       }
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.BufferAttribute(cloud.pos, 3));
-      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
-      const points = new THREE.Points(g, new THREE.PointsMaterial({ size: 1.7, sizeAttenuation: false, vertexColors: true, ...additive }));
+      g.setAttribute('bright', new THREE.BufferAttribute(bright, 1));
+      const pm = depthPoints({ size: 1.0, max: 3.5 });
+      depthMats.push(pm);
+      const points = new THREE.Points(g, pm);
       const eg = new THREE.BufferGeometry();
       eg.setAttribute('position', g.getAttribute('position'));
       eg.setIndex(new THREE.BufferAttribute(cloud.edges, 1));
       const lines = new THREE.LineSegments(eg, new THREE.LineBasicMaterial({ opacity: 0.2, ...additive }));
       const sg = new THREE.BufferGeometry();
       sg.setAttribute('position', new THREE.Float32BufferAttribute(stars, 3));
-      const starPts = new THREE.Points(sg, new THREE.PointsMaterial({ size: 3.4, sizeAttenuation: false, ...additive }));
+      sg.setAttribute('bright', new THREE.Float32BufferAttribute(starB, 1));
+      const sm = depthPoints({ size: 2.2, max: 6 });
+      depthMats.push(sm);
+      const starPts = new THREE.Points(sg, sm);
       const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, opacity: 0, fog: false, ...additive }));
       glow.position.set(c.cx, c.cy, c.cz);
       glow.scale.setScalar(c.r * 2.6);
@@ -150,14 +282,14 @@ export function createView3D(canvas) {
     root.add(words);
 
     // Spider.
-    const legs = new THREE.LineSegments(dynamicGeometry(LEG_COUNT * 4), new THREE.LineBasicMaterial({ color: SPIDER }));
+    const legs = fatSegments(LEG_COUNT * 2, SPIDER, 1.7);
     const joints = new THREE.Points(dynamicGeometry(LEG_COUNT * 2), new THREE.PointsMaterial({ color: SPIDER, size: 3.6, sizeAttenuation: false }));
     const sphere = new THREE.SphereGeometry(1, 32, 20);
     const body = new THREE.Group();
     body.matrixAutoUpdate = false;
-    const fill = new THREE.Mesh(sphere, new THREE.MeshBasicMaterial({ color: 0x082a23 }));
+    const fill = new THREE.Mesh(sphere, fresnel(0x05181a, SPIDER));
     const rim = new THREE.Mesh(sphere, new THREE.MeshBasicMaterial({ color: SPIDER, side: THREE.BackSide }));
-    rim.scale.setScalar(1.09);
+    rim.scale.setScalar(1.06);
     const wire = new THREE.LineSegments(latLong(), new THREE.LineBasicMaterial({ color: SPIDER, transparent: true, opacity: 0.8 }));
     wire.scale.setScalar(1.005);
     body.add(fill, rim, wire);
@@ -168,7 +300,7 @@ export function createView3D(canvas) {
     headRim.scale.setScalar(6.9);
     head.add(headFill, headRim);
     const eyes = new THREE.Points(dynamicGeometry(2), new THREE.PointsMaterial({ color: TEXT, size: 3, sizeAttenuation: false }));
-    const palps = new THREE.LineSegments(dynamicGeometry(2 * 14 * 2), new THREE.LineBasicMaterial({ color: SPIDER }));
+    const palps = fatSegments(2 * 14, SPIDER, 1.4);
     const core = new THREE.Mesh(new THREE.BoxGeometry(8, 8, 8), new THREE.MeshBasicMaterial({ color: FLAG, depthTest: false, fog: false }));
     core.renderOrder = 20;
     const coreGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: FLAG, opacity: 0.55, fog: false, ...additive, depthTest: false }));
@@ -184,7 +316,8 @@ export function createView3D(canvas) {
     tentacles.renderOrder = 15;
     root.add(halo, silk, tentacles, legs, joints, body, head, eyes, palps, coreGlow, core);
 
-    W = { root, clusters, words, wcol, wordKey: '', world, analysis, legs, joints, body, head, eyes, palps, core, coreGlow, halo, tentacles, silk };
+    W = { root, clusters, words, wcol, wordKey: '', world, analysis, legs, joints, body, head, eyes, palps, core, coreGlow, halo, tentacles, silk, depthMats, segs: new Float32Array(LEG_COUNT * 12), palpSegs: new Float32Array(28 * 6) };
+    applySizes();
   }
 
   /** World point -> stage CSS pixels. `out.vis` is false when behind the camera. */
@@ -206,6 +339,7 @@ export function createView3D(canvas) {
     camera.lookAt(c.x, c.y, c.z);
     camera.updateMatrixWorld();
     fog.density = 0.5 / c.dist;
+    if (W) for (const m of W.depthMats) m.uniforms.uFog.value = fog.density;
   }
 
   /**
@@ -227,8 +361,8 @@ export function createView3D(canvas) {
       cl.mix += (on - cl.mix) * fade;
       cl.glowA += (glow - cl.glowA) * fade;
       cl.tint.copy(grey).lerp(cl.color, cl.mix);
-      cl.points.material.color.copy(cl.tint);
-      cl.stars.material.color.copy(cl.tint);
+      cl.points.material.uniforms.uColor.value.copy(cl.tint);
+      cl.stars.material.uniforms.uColor.value.copy(cl.tint);
       cl.lines.material.color.copy(cl.tint);
       cl.lines.material.opacity = 0.12 + 0.16 * cl.mix;
       cl.glow.material.color.copy(cl.color);
@@ -270,7 +404,7 @@ export function createView3D(canvas) {
     W.coreGlow.position.copy(W.core.position);
     W.halo.position.set(p[0], p[1], p[2]);
 
-    const lp = W.legs.geometry.attributes.position.array;
+    const lp = W.segs;
     const jp = W.joints.geometry.attributes.position.array;
     spider.legs.forEach((leg, i) => {
       lp.set(leg.hip, i * 12);
@@ -280,9 +414,8 @@ export function createView3D(canvas) {
       jp.set(leg.knee, i * 6);
       jp.set(leg.drawFoot, i * 6 + 3);
     });
-    W.legs.geometry.attributes.position.needsUpdate = true;
+    writeSegments(W.legs, lp);
     W.joints.geometry.attributes.position.needsUpdate = true;
-    W.legs.geometry.computeBoundingSphere();
     W.joints.geometry.computeBoundingSphere();
 
     // Eyes and two long curling palps off the head.
@@ -293,7 +426,7 @@ export function createView3D(canvas) {
     }
     W.eyes.geometry.attributes.position.needsUpdate = true;
     W.eyes.geometry.computeBoundingSphere();
-    const pp = W.palps.geometry.attributes.position.array;
+    const pp = W.palpSegs;
     const sway = Math.sin(spider.time * 4.3) * 0.25;
     let o = 0;
     for (const sg of [-1, 1]) {
@@ -314,8 +447,7 @@ export function createView3D(canvas) {
         prev = pt;
       }
     }
-    W.palps.geometry.attributes.position.needsUpdate = true;
-    W.palps.geometry.computeBoundingSphere();
+    writeSegments(W.palps, pp);
 
     // Tentacles: dotted bezier from the body to each word, bowed upward.
     const tp = W.tentacles.geometry.attributes.position.array;

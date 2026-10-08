@@ -214,7 +214,7 @@ export class Spider {
 
     // Body: arrive at the goal; speed surges with each gait beat.
     const walking = run.phase === 'walk' || run.phase === 'ship';
-    const top = walking ? 340 : 85;
+    const top = walking ? 300 : 60;
     const speed0 = len(this.v);
     this.gait += dt * (3 + speed0 / 28);
     const surge = 0.55 + 0.45 * Math.abs(Math.sin(this.gait * Math.PI));

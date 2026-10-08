@@ -15,7 +15,7 @@ const BOOT = 0.8;
 const REACH = 0.18;
 const HOLD = 0.35;
 const RETRACT = 0.2;
-const SHIP_SETTLE = 1.5;
+const SHIP_SETTLE = 3.5;
 const LOG_CAP = 40;
 
 /** Program shown in the CRAWLER.PY panel; revealed as the crawl progresses. */
@@ -51,14 +51,15 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   const n = analysis.sections.length;
   const total = analysis.words.length;
   const program = crawlerProgram(analysis.fileName);
-  // Each section gets its own vantage point, so the camera swings to a new angle as the spider travels.
+  // Each section gets its own vantage point: a gentle sway left and right of
+  // the previous one (alternating), low enough to look into the web.
   const camRand = fork(seed, 'camera');
   const angles = [];
   for (let i = 0; i < n; i++) {
     const prev = angles[i - 1];
     angles.push({
-      yaw: prev ? prev.yaw + (camRand() < 0.5 ? -1 : 1) * range(camRand, 0.7, 1.5) : camRand() * Math.PI * 2,
-      pitch: range(camRand, 0.3, 0.85),
+      yaw: prev ? prev.yaw + (i % 2 ? 1 : -1) * range(camRand, 0.2, 0.45) : camRand() * Math.PI * 2,
+      pitch: range(camRand, 0.22, 0.48),
     });
   }
   let run;
@@ -109,18 +110,18 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     if (run.phase === 'ship' || !world.clusters[run.active]) {
       const b = world.bounds;
       const last = angles[Math.max(0, n - 1)] || { yaw: 0.6, pitch: 0.5 };
-      return { x: b.x, y: b.y, z: b.z, dist: fitDistance(b.radius, aspect, 50, 0.92), yaw: last.yaw + run.phaseT * 0.06, pitch: 0.55 };
+      return { x: b.x, y: b.y, z: b.z, dist: fitDistance(b.radius, aspect, 50, 0.92), yaw: last.yaw + run.phaseT * 0.025, pitch: 0.5 };
     }
     const c = world.clusters[run.active];
     const a = angles[run.active];
     const s = run.spider;
-    // Look at the spider, held toward the cluster; drift slowly around it while reading.
-    const drift = run.phase === 'read' ? run.phaseT * 0.07 : 0;
+    // Look between the spider and its cluster; drift very slowly while reading.
+    const drift = run.phase === 'read' ? run.phaseT * 0.018 : 0;
     return {
-      x: s.x * 0.65 + c.cx * 0.35,
-      y: s.y * 0.65 + c.cy * 0.35,
-      z: s.z * 0.65 + c.cz * 0.35,
-      dist: fitDistance(c.r, aspect, 50, 0.8),
+      x: s.x * 0.5 + c.cx * 0.5,
+      y: s.y * 0.5 + c.cy * 0.5,
+      z: s.z * 0.5 + c.cz * 0.5,
+      dist: fitDistance(c.r, aspect, 50, 0.95),
       yaw: a.yaw + drift,
       pitch: a.pitch,
     };
@@ -273,7 +274,10 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run.codeChars = Math.round(program.length * Math.min(1, 0.12 + 0.88 * progress));
     run.lps = run.phase === 'read' ? 15 : run.phase === 'ship' ? 0 : 7;
 
-    followCamera(run.camera, cameraTarget(), dt, run.phase === 'walk' ? 1.6 : run.phase === 'ship' ? 1.4 : 2.4);
+    // Spring smoothing (seconds): calm while reading, slow sweeping travel between sections.
+    if (run.phase === 'walk') followCamera(run.camera, cameraTarget(), dt, 1.5, 2.6);
+    else if (run.phase === 'ship') followCamera(run.camera, cameraTarget(), dt, 1.4, 1.4);
+    else followCamera(run.camera, cameraTarget(), dt, 1.2, 2.2);
   }
 
   /** Restart and fast-forward to sim time t. */
