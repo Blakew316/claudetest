@@ -14,7 +14,7 @@ Live: https://gentle-toffee-5c0be3.netlify.app
   `## rules — verify · ask · keep · report` sets the section's tagline.
 - **flags to ask** (Spec score panel) lists every vague word with its
   question; **Copy questions** copies them.
-- Drag the scene to orbit the 3D web; it eases back when you let go.
+- Drag the scene to orbit the 3D star clusters; it eases back when you let go.
 - `Space` pauses, `R` replays, tabs jump to a section.
 
 ## How it decides

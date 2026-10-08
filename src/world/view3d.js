@@ -1,11 +1,12 @@
 /**
  * WebGL renderer (three.js) for the crawl.
  *
- * Environment: per section, real orb webs whose silk carries its own light
- * (shimmering threads, glittering dew drops), hanging in a nebula of soft
- * particles with depth of field, twinkle and drift; anchor lines and bridges
- * of silk between webs; floating dust for parallax. The web brightens around
- * the spider as it moves through it. No glow sprites: light lives on the silk.
+ * Environment: per section a small universe, a dense star cluster (tens of
+ * thousands of soft stars with hot white cores, depth of field, twinkle and
+ * drift) laced with a fine constellation web; tidal streams of stardust
+ * between clusters; floating dust and a deep background starfield for
+ * parallax. The stars brighten around the spider as it moves through them.
+ * No glow sprites: the light lives in the stars.
  *
  * Spider: shaded 3D anatomy, all real geometry: tapered limb segments with
  * ball joints and hairs, a cephalothorax and a lagging, breathing abdomen
@@ -36,7 +37,6 @@ const SILK_MAX = 520 * SILK_SUB + 24;
 const HAIRS = 10;
 const LIMBS = LEG_COUNT * 3 + 2 + 6; // legs, fangs, palps
 const JOINTS = LEG_COUNT * 4;
-const WHITE = new THREE.Color(1, 1, 1);
 
 const add = (a, b, s = 1) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -142,14 +142,17 @@ function depthPoints(shared, { size, max, drift, dof }) {
       uDrift: { value: drift },
       uDof: { value: dof },
       uGain: { value: 1 },
+      uFogK: { value: 1 },
     },
     vertexShader: `
       attribute float bright;
       attribute float phase;
-      uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDpr, uDrift, uDof, uGain, uLightR, uLightGain;
+      attribute float hot;
+      uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDpr, uDrift, uDof, uGain, uLightR, uLightGain, uFogK;
       uniform vec3 uLight;
       varying float vA;
       varying float vBlur;
+      varying float vHot;
       void main() {
         vec3 p = position + uDrift * vec3(
           sin(uTime * 0.21 + phase * 6.2831),
@@ -165,21 +168,25 @@ function depthPoints(shared, { size, max, drift, dof }) {
         float energy = min(1.0, px) / pow(grow, 1.6);
         float dl = distance(p, uLight);
         float lit = uGain + uLightGain * exp(-dl * dl / (uLightR * uLightR));
-        float fz = uFog * depth;
+        float fz = uFog * depth * uFogK;
         vA = bright * tw * energy * lit * exp(-fz * fz);
         vBlur = clamp(blur, 0.0, 1.0);
+        vHot = hot;
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
       uniform vec3 uColor;
       varying float vA;
       varying float vBlur;
+      varying float vHot;
       void main() {
         float d = length(gl_PointCoord - 0.5);
         if (d > 0.5) discard;
         float sharp = smoothstep(0.5, 0.06, d);
         float disc = smoothstep(0.5, 0.4, d) * (0.55 + 0.45 * smoothstep(0.15, 0.45, d));
-        gl_FragColor = vec4(uColor * vA * mix(sharp, disc, vBlur), 1.0);
+        // Hot stars burn toward white at the core of the cluster.
+        vec3 c = mix(uColor, vec3(1.0, 0.97, 0.92), vHot * 0.5) * (1.0 - vHot * 0.25);
+        gl_FragColor = vec4(c * vA * mix(sharp, disc, vBlur), 1.0);
       }`,
     transparent: true,
     depthWrite: false,
@@ -320,12 +327,13 @@ export function createView3D(canvas) {
     scene.add(root);
     let seed = 1234567;
     const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
-    const pointsGeo = (pos, brightFn) => {
+    const pointsGeo = (pos, brightFn, hot = null) => {
       const n = pos.length / 3;
       const g = new THREE.BufferGeometry();
       g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
       g.setAttribute('bright', new THREE.BufferAttribute(Float32Array.from({ length: n }, (_, i) => brightFn(i)), 1));
       g.setAttribute('phase', new THREE.BufferAttribute(Float32Array.from({ length: n }, () => rnd()), 1));
+      g.setAttribute('hot', new THREE.BufferAttribute(hot || new Float32Array(n), 1));
       return g;
     };
 
@@ -345,47 +353,55 @@ export function createView3D(canvas) {
     const dm = depthPoints(shared, { size: 1.1, max: 16, drift: 7, dof: 1.3 });
     dm.uniforms.uColor.value.set('#8fa0c8');
     root.add(new THREE.Points(pointsGeo(dpos, () => 0.05 + 0.15 * rnd()), dm));
+    // Deep background starfield, far beyond everything, for a sense of open space.
+    const SKY = 9000;
+    const spos = new Float32Array(SKY * 3);
+    const shot = new Float32Array(SKY);
+    for (let i = 0; i < SKY; i++) {
+      const u = rnd() * 2 - 1;
+      const th = rnd() * Math.PI * 2;
+      const rr = b.radius * (4 + 3 * rnd());
+      const sq = Math.sqrt(1 - u * u);
+      spos[i * 3] = b.x + rr * sq * Math.cos(th);
+      spos[i * 3 + 1] = b.y + rr * u;
+      spos[i * 3 + 2] = b.z + rr * sq * Math.sin(th);
+      shot[i] = rnd() < 0.08 ? 0.8 : 0.3 * rnd();
+    }
+    const sky = depthPoints(shared, { size: 4, max: 3, drift: 0, dof: 0 });
+    sky.uniforms.uColor.value.set('#9fb0d8');
+    sky.uniforms.uFogK.value = 0;
+    root.add(new THREE.Points(pointsGeo(spos, () => (rnd() < 0.05 ? 0.9 : 0.15 + 0.35 * rnd()), shot), sky));
 
     const clusters = world.clusters.map((c, i) => {
-      const cloud = world._clouds[i];
-      // Nebula particles around the webs.
-      const points = new THREE.Points(pointsGeo(cloud.pos, (k) => Math.min(1, cloud.bright[k]) * 0.8), depthPoints(shared, { size: 1.0, max: 8, drift: 1.6, dof: 0.45 }));
+      const g = world._clouds[i];
+      // Stars: ordinary ones, and the bright ones drawn larger.
+      const n = g.pos.length / 3;
+      const big = [];
+      for (let k = 0; k < n; k++) if (g.bright[k] > 1.2) big.push(k);
+      const points = new THREE.Points(pointsGeo(g.pos, (k) => Math.min(1, g.bright[k]), g.hot), depthPoints(shared, { size: 0.95, max: 7, drift: 1.2, dof: 0.5 }));
+      const bpos = new Float32Array(big.length * 3);
+      const bhot = new Float32Array(big.length);
+      big.forEach((k, j) => {
+        bpos.set(g.pos.subarray(k * 3, k * 3 + 3), j * 3);
+        bhot[j] = 0.6;
+      });
+      const stars = new THREE.Points(pointsGeo(bpos, () => 1, bhot), depthPoints(shared, { size: 2.2, max: 12, drift: 0.8, dof: 0.6 }));
+      // Constellation web between neighbouring stars.
       const eg = new THREE.BufferGeometry();
       eg.setAttribute('position', points.geometry.getAttribute('position'));
-      eg.setIndex(new THREE.BufferAttribute(cloud.edges, 1));
+      eg.setIndex(new THREE.BufferAttribute(g.edges, 1));
       const lines = new THREE.LineSegments(eg, silkMaterial(shared));
-      // The orb webs themselves, and their anchor lines.
-      const webArr = new Float32Array(cloud.webs.reduce((n, w) => n + w.segs.length, 0));
-      let o = 0;
-      for (const w of cloud.webs) {
-        webArr.set(w.segs, o);
-        o += w.segs.length;
-      }
-      const wg = new THREE.BufferGeometry();
-      wg.setAttribute('position', new THREE.BufferAttribute(webArr, 3));
-      const web = new THREE.LineSegments(wg, silkMaterial(shared));
-      const tg = new THREE.BufferGeometry();
-      tg.setAttribute('position', new THREE.BufferAttribute(cloud.threads, 3));
-      const threads = new THREE.LineSegments(tg, silkMaterial(shared));
-      // Dew caught on the spiral: tiny glittering beads.
-      const dewArr = new Float32Array(cloud.webs.reduce((n, w) => n + w.dew.length, 0));
-      o = 0;
-      for (const w of cloud.webs) {
-        dewArr.set(w.dew, o);
-        o += w.dew.length;
-      }
-      const dew = new THREE.Points(pointsGeo(dewArr, () => 0.7 + 0.3 * rnd()), depthPoints(shared, { size: 1.9, max: 7, drift: 0.25, dof: 0.6 }));
-      root.add(lines, threads, web, points, dew);
-      return { points, lines, web, threads, dew, mix: 0, gain: 0.45, color: new THREE.Color(c.color), tint: new THREE.Color() };
+      root.add(lines, points, stars);
+      return { points, stars, lines, mix: 0, gain: 0.45, color: new THREE.Color(c.color), tint: new THREE.Color() };
     });
 
-    // Bridges: silk strung between neighbouring webs.
-    const bg = new THREE.BufferGeometry();
-    bg.setAttribute('position', new THREE.BufferAttribute(world._bridges, 3));
-    const bridges = new THREE.LineSegments(bg, silkMaterial(shared));
-    bridges.material.uniforms.uColor.value.set('#b9c6e6');
-    bridges.material.uniforms.uOpacity.value = 0.2;
-    root.add(bridges);
+    // Tidal streams of stardust between clusters, tinted between their colours.
+    const streams = world._streams.map((st) => {
+      const pts = new THREE.Points(pointsGeo(st.pos, (k) => st.bright[k]), depthPoints(shared, { size: 0.9, max: 6, drift: 2.5, dof: 0.7 }));
+      pts.material.uniforms.uColor.value.copy(new THREE.Color(world.clusters[st.from].color).lerp(new THREE.Color(world.clusters[st.to].color), 0.5)).multiplyScalar(0.8);
+      root.add(pts);
+      return pts;
+    });
 
     // Word nodes: black (invisible under additive blending) until read.
     const nw = analysis.words.length;
@@ -437,7 +453,7 @@ export function createView3D(canvas) {
     root.add(silk, tentacles, limbs, joints, hairs, spinnerets, abdomen, ceph, eyes, core);
 
     const fat = [hairs];
-    W = { root, clusters, words, wcol, wordKey: '', world, abdomen, ceph, limbs, joints, hairs, eyes, spinnerets, core, tentacles, silk, fat, hairBuf: new Float32Array(LEG_COUNT * HAIRS * 6) };
+    W = { root, clusters, streams, words, wcol, wordKey: '', world, abdomen, ceph, limbs, joints, hairs, eyes, spinnerets, core, tentacles, silk, fat, hairBuf: new Float32Array(LEG_COUNT * HAIRS * 6) };
     for (const l of fat) l.material.resolution.set(size.w, size.h);
   }
 
@@ -508,23 +524,18 @@ export function createView3D(canvas) {
     const fade = 1 - Math.exp(-4 * dt);
 
     W.clusters.forEach((cl, i) => {
-      // The web carries the light: the active web burns brightest, read webs stay lit.
+      // The stars carry the light: the active cluster burns brightest, read ones stay lit.
       const on = run.status[i] !== 'queued' ? 1 : 0;
-      const gain = ship ? 0.8 : i === run.active ? 1.35 : on ? 0.85 : 0.4;
+      const gain = ship ? 0.95 : i === run.active ? 1.45 : on ? 0.9 : 0.42;
       cl.mix += (on - cl.mix) * fade;
       cl.gain += (gain - cl.gain) * fade;
       cl.tint.copy(grey).lerp(cl.color, cl.mix);
-      for (const m of [cl.points.material, cl.dew.material]) {
+      for (const m of [cl.points.material, cl.stars.material]) {
         m.uniforms.uColor.value.copy(cl.tint);
         m.uniforms.uGain.value = cl.gain;
       }
-      cl.dew.material.uniforms.uColor.value.lerp(WHITE, 0.45);
       cl.lines.material.uniforms.uColor.value.copy(cl.tint);
-      cl.lines.material.uniforms.uOpacity.value = (0.05 + 0.07 * cl.mix) * cl.gain;
-      cl.web.material.uniforms.uColor.value.copy(cl.tint);
-      cl.web.material.uniforms.uOpacity.value = (0.12 + 0.17 * cl.mix) * cl.gain;
-      cl.threads.material.uniforms.uColor.value.copy(cl.tint);
-      cl.threads.material.uniforms.uOpacity.value = (0.12 + 0.14 * cl.mix) * cl.gain;
+      cl.lines.material.uniforms.uOpacity.value = (0.05 + 0.08 * cl.mix) * cl.gain;
     });
 
     // Word nodes recolour only when reading state changes.
