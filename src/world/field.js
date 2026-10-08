@@ -1,7 +1,7 @@
 /**
  * The 3D world: one small universe per prompt section, a richly detailed
- * star cluster (spiral, barred, elliptical, ring, nebula or lenticular; see
- * galaxy.js) with a fine constellation web between neighbouring stars,
+ * clustered ball of stardust (see galaxy.js makeBall) with a fine
+ * constellation web between neighbouring stars,
  * packed together into one compact nebula-ecosystem (neighbours touch and
  * overlap a little), joined by tidal streams of stardust. Words hang on bright
  * stars and are read on a tour around each cluster; every star is a
@@ -12,7 +12,7 @@
 
 import { fork, gauss, range } from '../core/rng.js';
 import { sectionColor } from '../core/theme.js';
-import { makeGalaxy, MORPHS } from './galaxy.js';
+import { makeBall } from './galaxy.js';
 
 /** Cluster radius from its word count. */
 export function clusterRadius(count) {
@@ -183,21 +183,17 @@ export function buildWorld(analysis, seed) {
   const wordPos = new Float32Array(analysis.words.length * 3);
   const clusters = [];
   const clouds = [];
-  const morphOffset = Math.floor(fork(seed, 'morph')() * MORPHS.length);
   sections.forEach((sec, i) => {
     const r = radii[i];
     const [cx, cy, cz] = centers[i];
-    const morph = MORPHS[(i + morphOffset) % MORPHS.length];
-    const g = makeGalaxy(fork(seed, `galaxy:${i}`), morph, r, particleCount(sec.count));
+    const g = makeBall(fork(seed, `ball:${i}`), r, particleCount(sec.count));
     for (let k = 0; k < g.pos.length; k += 3) {
       g.pos[k] += cx;
       g.pos[k + 1] += cy;
       g.pos[k + 2] += cz;
     }
     g.edges = makeEdges(g.pos, r * 0.05, 1);
-    g.morph = morph;
-    const disc = morph !== 'elliptical' && morph !== 'nebula';
-    const words = placeWords(g, cx, cy, cz, r, sec.count, fork(seed, `words:${i}`), disc);
+    const words = placeWords(g, cx, cy, cz, r, sec.count, fork(seed, `words:${i}`), false);
     words.forEach((p, w) => wordPos.set(p, (sec.start + w) * 3));
     clouds.push(g);
     clusters.push({ index: i, cx, cy, cz, r, color: sec.color || sectionColor(i) });

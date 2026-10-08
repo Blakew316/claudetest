@@ -1,8 +1,8 @@
 /**
- * Procedural star clusters, each a small universe of its own: spiral,
- * barred spiral, elliptical, ring, nebula and lenticular morphologies, built
- * from a bright hot core, arms or discs, knots of star-forming clumps and a
- * faint halo, then tipped into a random orientation. Pure data.
+ * Procedural star clusters. The crawl uses makeBall: a volumetric ball of
+ * stardust like the reference footage (lumpy sub-clumps, wispy irregular
+ * edges, filaments and bright knots). makeGalaxy (spiral, barred, ring...)
+ * is kept for other looks. Pure data.
  */
 
 import { gauss, range } from '../core/rng.js';
@@ -165,4 +165,101 @@ export function makeGalaxy(rand, morph, r, count) {
     hot[i] = Math.min(1, h);
   });
   return { pos, bright, hot, frame: f };
+}
+
+/**
+ * A clustered ball of stars: several overlapping lumps filled densely toward
+ * their middles, a noise warp that makes the boundary wispy and uneven,
+ * filaments threading through, bright knots, and a thin outer haze.
+ * @param {() => number} rand
+ * @param {number} r radius
+ * @param {number} count particle count
+ * @returns {{pos: Float32Array, bright: Float32Array, hot: Float32Array, frame: {e1:number[], e2:number[], n:number[]}}}
+ */
+export function makeBall(rand, r, count) {
+  const pts = [];
+  const lumps = [];
+  const L = Math.round(range(rand, 3, 6));
+  let wsum = 0;
+  for (let k = 0; k < L; k++) {
+    const w = range(rand, 0.6, 1.4);
+    wsum += w;
+    lumps.push({ c: k === 0 ? [0, 0, 0] : [gauss(rand) * r * 0.28, gauss(rand) * r * 0.24, gauss(rand) * r * 0.28], rad: r * range(rand, 0.42, 0.66), w, sq: [range(rand, 0.8, 1.15), range(rand, 0.75, 1.05), range(rand, 0.8, 1.15)] });
+  }
+  const f = [range(rand, 1.6, 2.8) / r, range(rand, 1.6, 2.8) / r, range(rand, 1.6, 2.8) / r];
+  const ph = [rand() * 6, rand() * 6, rand() * 6];
+  const warp = (p) => {
+    const [x, y, z] = p;
+    return [
+      x + Math.sin(y * f[0] + ph[0]) * r * 0.11 + Math.sin(z * f[1] * 2.1 + ph[1]) * r * 0.04,
+      y + Math.sin(z * f[1] + x * f[0] * 0.5 + ph[1]) * r * 0.09,
+      z + Math.sin(x * f[2] + ph[2]) * r * 0.1 + Math.sin(y * f[2] * 2.3) * r * 0.035,
+    ];
+  };
+  const body = Math.round(count * 0.84);
+  for (let i = 0; i < body; i++) {
+    let pick = rand() * wsum;
+    let lump = lumps[0];
+    for (const l of lumps) {
+      pick -= l.w;
+      if (pick <= 0) {
+        lump = l;
+        break;
+      }
+    }
+    // Uniform direction, radius biased toward the middle but filling the whole lump.
+    const u = rand() * 2 - 1;
+    const th = rand() * Math.PI * 2;
+    const sq = Math.sqrt(1 - u * u);
+    const rr = lump.rad * rand() ** 0.62;
+    const p = warp([lump.c[0] + sq * Math.cos(th) * rr * lump.sq[0], lump.c[1] + u * rr * lump.sq[1], lump.c[2] + sq * Math.sin(th) * rr * lump.sq[2]]);
+    const d = Math.hypot(...p) / r;
+    if (d > 1.15) continue;
+    pts.push([...p, range(rand, 0.35, 0.8) * (0.7 + 0.3 * Math.exp(-d * d * 2)), 0.18 * Math.exp(-d * d * 5)]);
+  }
+  // Filaments threading through the ball.
+  const strands = Math.round(range(rand, 5, 9));
+  const fil = Math.round(count * 0.08);
+  for (let i = 0; i < fil; i++) {
+    const s = i % strands;
+    const t = rand() * 2 - 1;
+    const p = warp([
+      Math.cos(s * 2.4) * t * r * 0.85 + Math.sin(t * 2 + s) * r * 0.15,
+      Math.sin(t * 2.6 + s * 1.7) * r * 0.35,
+      Math.sin(s * 2.4) * t * r * 0.85 + Math.cos(t * 1.8 + s) * r * 0.15,
+    ]);
+    pts.push([p[0] + gauss(rand) * r * 0.012, p[1] + gauss(rand) * r * 0.012, p[2] + gauss(rand) * r * 0.012, range(rand, 0.45, 0.85), 0.05]);
+  }
+  // Thin outer haze of wisps.
+  const haze = Math.round(count * 0.05);
+  for (let i = 0; i < haze; i++) {
+    const u = rand() * 2 - 1;
+    const th = rand() * Math.PI * 2;
+    const sq = Math.sqrt(1 - u * u);
+    const rr = r * range(rand, 0.8, 1.3);
+    const p = warp([sq * Math.cos(th) * rr, u * rr * 0.9, sq * Math.sin(th) * rr]);
+    pts.push([...p, range(rand, 0.12, 0.3), 0]);
+  }
+  // Bright knots.
+  const base = pts.length;
+  const knots = Math.round(range(rand, 14, 24));
+  for (let k = 0; k < knots; k++) {
+    const c = pts[Math.floor(rand() * base)];
+    const m = Math.round(range(rand, 25, 60));
+    for (let i = 0; i < m; i++) pts.push([c[0] + gauss(rand) * r * 0.02, c[1] + gauss(rand) * r * 0.02, c[2] + gauss(rand) * r * 0.02, range(rand, 0.6, 1), 0.3]);
+  }
+  for (const p of pts) if (rand() < 0.018) p[3] = 1.6;
+
+  const N = pts.length;
+  const pos = new Float32Array(N * 3);
+  const bright = new Float32Array(N);
+  const hot = new Float32Array(N);
+  pts.forEach(([x, y, z, b, h], i) => {
+    pos[i * 3] = x;
+    pos[i * 3 + 1] = y;
+    pos[i * 3 + 2] = z;
+    bright[i] = b;
+    hot[i] = Math.min(1, h);
+  });
+  return { pos, bright, hot, frame: frame(rand) };
 }
