@@ -45,6 +45,12 @@ const MIN_READ = 5;
 const MAX_READ = 12.5;
 const LOG_CAP = 40;
 const TURN_U = 0.12; // the leap's camera turn finishes this far into the reading
+// While the spider crawls through a ball the camera comes in close and keeps
+// revolving round it (rising and dipping once), so the stardust slides past in
+// depth; it eases back out to the keyed wide view before the leap.
+const ORBIT_U = [0.12, 0.88]; // reading-progress window of the close orbit
+const ORBIT_RATE = 0.17; // rad/s round the spider
+const ORBIT_DIST = 0.58; // of the ball's fit distance
 const PI = Math.PI;
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -356,7 +362,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       }
     }
     const E = keys[0];
-    plans[i] = { E, keys, air, T: readT[i], fit, turnKeys: null, walkT: 0 };
+    plans[i] = { E, keys, air, T: readT[i], fit, turnKeys: null, walkT: 0, spin: Math.sign(keys[keys.length - 1].yaw - E.yaw) || turn };
     if (air) {
       // The camera starts turning as the spider crouches (anticipation), is
       // side-on to the arc mid-flight, and arrives on the establishing view
@@ -513,6 +519,19 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         tgt.yaw = a.yaw;
         tgt.pitch = a.pitch;
       }
+      // The close orbit round the crawling spider. The extra turn only ever
+      // grows (same way as the keyed arc), so the pan never reverses; the pull
+      // in eases off at the end of the window.
+      const v = clamp((u - ORBIT_U[0]) / (ORBIT_U[1] - ORBIT_U[0]), 0, 1);
+      const ease = (x) => x * x * (3 - 2 * x);
+      const ow = ease(clamp(v / 0.2, 0, 1)) * (1 - ease(clamp((v - 0.8) / 0.2, 0, 1)));
+      const sp = run.spider;
+      tgt.x = lerp(tgt.x, lerp(c.cx, sp.x, 0.9), ow);
+      tgt.y = lerp(tgt.y, lerp(c.cy, sp.y, 0.9), ow);
+      tgt.z = lerp(tgt.z, lerp(c.cz, sp.z, 0.9), ow);
+      tgt.dist = lerp(tgt.dist, p.fit * ORBIT_DIST, ow);
+      tgt.yaw += p.spin * ORBIT_RATE * p.T * (ORBIT_U[1] - ORBIT_U[0]) * ease(v);
+      tgt.pitch = clamp(tgt.pitch + ow * 0.22 * Math.sin(2 * PI * v), -0.5, 1.25);
       return tgt;
     }
     if (run.active === 0 && intro) return fromKey(sampleKeys(intro, run.t, key), c);
