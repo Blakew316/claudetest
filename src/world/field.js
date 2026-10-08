@@ -2,8 +2,8 @@
  * The 3D world: one small universe per prompt section, a richly detailed
  * star cluster (spiral, barred, elliptical, ring, nebula or lenticular; see
  * galaxy.js) with a fine constellation web between neighbouring stars,
- * coiled together through space as a compact ecosystem with a little open
- * space between, joined by tidal streams of stardust. Words hang on bright
+ * packed together into one compact nebula-ecosystem (neighbours touch and
+ * overlap a little), joined by tidal streams of stardust. Words hang on bright
  * stars and are read on a tour around each cluster; every star is a
  * foothold for the spider. Pure data (no WebGL), so the director runs in node.
  *
@@ -16,12 +16,12 @@ import { makeGalaxy, MORPHS } from './galaxy.js';
 
 /** Cluster radius from its word count. */
 export function clusterRadius(count) {
-  return Math.max(160, Math.min(420, 160 + 14 * Math.sqrt(count)));
+  return Math.max(140, Math.min(340, 140 + 11 * Math.sqrt(count)));
 }
 
 /** Star count for a cluster. */
 export function particleCount(count) {
-  return Math.min(22000, Math.round(12000 + 900 * Math.sqrt(count)));
+  return Math.min(26000, Math.round(14000 + 1100 * Math.sqrt(count)));
 }
 
 function norm(v) {
@@ -52,9 +52,10 @@ function layout(radii, rand) {
       const sy = Math.sin(yaw);
       let d = norm([dir[0] * cy - dir[2] * sy, 0, dir[0] * sy + dir[2] * cy]);
       d = norm([d[0], range(rand, -0.55, 0.55), d[2]]);
-      const gap = (radii[i - 1] + r) * range(rand, 1.08, 1.26);
+      // Packed tight like the reference: neighbours touch and overlap a little.
+      const gap = (radii[i - 1] + r) * range(rand, 0.74, 0.9);
       const c = [prev[0] + d[0] * gap, prev[1] + d[1] * gap, prev[2] + d[2] * gap];
-      const clear = out.every((o, j) => Math.hypot(c[0] - o[0], c[1] - o[1], c[2] - o[2]) > (radii[j] + r) * 0.98);
+      const clear = out.every((o, j) => Math.hypot(c[0] - o[0], c[1] - o[1], c[2] - o[2]) > (radii[j] + r) * 0.68);
       const score = Math.hypot(c[0] - mid[0], c[1] - mid[1], c[2] - mid[2]) + (clear ? 0 : 1e6);
       if (score < bestScore) {
         bestScore = score;
@@ -193,7 +194,7 @@ export function buildWorld(analysis, seed) {
       g.pos[k + 1] += cy;
       g.pos[k + 2] += cz;
     }
-    g.edges = makeEdges(g.pos, r * 0.055);
+    g.edges = makeEdges(g.pos, r * 0.05, 1);
     g.morph = morph;
     const disc = morph !== 'elliptical' && morph !== 'nebula';
     const words = placeWords(g, cx, cy, cz, r, sec.count, fork(seed, `words:${i}`), disc);

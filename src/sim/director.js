@@ -49,15 +49,26 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   const n = analysis.sections.length;
   const total = analysis.words.length;
   const program = crawlerProgram(analysis.fileName);
-  // Each section gets its own vantage point: a gentle sway left and right of
-  // the previous one (alternating), low enough to look into the web.
+  // Each section gets its own shot, like the reference: top-down, side-on,
+  // three-quarter, low angle looking up... The camera swoops into the new
+  // angle while the spider is in the air, then holds while it reads.
+  const SHOTS = [
+    { pitch: 0.55, turn: 0.9 }, // three-quarter
+    { pitch: 1.22, turn: 1.1 }, // top-down
+    { pitch: 0.06, turn: 1.0 }, // side-on
+    { pitch: 0.85, turn: -1.2 }, // high three-quarter
+    { pitch: -0.32, turn: 0.95 }, // low, looking up through the cluster
+    { pitch: 1.1, turn: -1.0 }, // top
+    { pitch: 0.3, turn: 1.25 }, // shallow side
+  ];
   const camRand = fork(seed, 'camera');
   const angles = [];
   for (let i = 0; i < n; i++) {
+    const shot = SHOTS[i % SHOTS.length];
     const prev = angles[i - 1];
     angles.push({
-      yaw: prev ? prev.yaw + (i % 2 ? 1 : -1) * range(camRand, 0.2, 0.45) : camRand() * Math.PI * 2,
-      pitch: range(camRand, 0.22, 0.48),
+      yaw: prev ? prev.yaw + shot.turn * range(camRand, 0.85, 1.15) : camRand() * Math.PI * 2,
+      pitch: shot.pitch + range(camRand, -0.06, 0.06),
     });
   }
   let run;
@@ -120,7 +131,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const a = angles[run.active];
     const s = run.spider;
     // Travelling: ride along with the spider. Reading: look between it and its web, drifting slowly.
-    const drift = run.phase === 'read' ? run.phaseT * 0.03 : 0;
+    const drift = run.phase === 'read' ? run.phaseT * 0.025 : 0;
     const push = run.phase === 'read' ? 1 - 0.14 * Math.min(1, run.phaseT / 5) : 1;
     const w = run.phase === 'walk' ? 0.78 : 0.5;
     return {
@@ -319,7 +330,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run.lps = run.phase === 'read' ? 15 : run.phase === 'ship' ? 0 : 7;
 
     // Spring smoothing (seconds): calm while reading, slow sweeping travel between sections.
-    if (run.phase === 'walk') followCamera(run.camera, cameraTarget(), dt, 1.0, 2.4);
+    if (run.phase === 'walk') followCamera(run.camera, cameraTarget(), dt, 0.9, 1.5);
     else if (run.phase === 'ship') followCamera(run.camera, cameraTarget(), dt, 1.4, 1.4);
     else followCamera(run.camera, cameraTarget(), dt, 1.2, 2.2);
   }
