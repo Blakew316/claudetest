@@ -7,7 +7,8 @@
 
 import { createRunState, MAX_TENTACLES, SIM_DT } from '../core/contracts.js';
 import { computeScore } from '../analyze/score.js';
-import { fitBounds, followCamera } from '../world/camera.js';
+import { fitDistance, followCamera } from '../world/camera.js';
+import { fork, range } from '../core/rng.js';
 import { Spider } from '../world/spider.js';
 
 const BOOT = 0.8;
@@ -50,6 +51,16 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   const n = analysis.sections.length;
   const total = analysis.words.length;
   const program = crawlerProgram(analysis.fileName);
+  // Each section gets its own vantage point, so the camera swings to a new angle as the spider travels.
+  const camRand = fork(seed, 'camera');
+  const angles = [];
+  for (let i = 0; i < n; i++) {
+    const prev = angles[i - 1];
+    angles.push({
+      yaw: prev ? prev.yaw + (camRand() < 0.5 ? -1 : 1) * range(camRand, 0.7, 1.5) : camRand() * Math.PI * 2,
+      pitch: range(camRand, 0.3, 0.85),
+    });
+  }
   let run;
   let spider;
   let cursor; // next word id to reach in the active section
@@ -75,16 +86,15 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run = createRunState(analysis);
     run.logSeq = 0;
     const c0 = world.clusters[0];
-    spider = new Spider(c0 ? c0.cx : 0, c0 ? c0.cy : 0, seed, world);
-    run.spider.x = spider.x;
-    run.spider.y = spider.y;
-    run.spiderGoal = { x: spider.x, y: spider.y };
+    spider = new Spider(c0 ? [c0.cx, c0.cy, c0.cz] : [0, 0, 0], seed, world);
+    [run.spider.x, run.spider.y, run.spider.z] = spider.p;
+    run.spiderGoal = { x: spider.p[0], y: spider.p[1], z: spider.p[2] };
     cursor = 0;
     readAcc = 0;
     recent = [];
-    run.silk.push({ x: spider.x, y: spider.y, s: 0, t: 0 });
+    run.silk.push({ x: spider.p[0], y: spider.p[1], z: spider.p[2], s: 0, t: 0 });
     scoreTick = 0;
-    Object.assign(run.camera, cameraTarget());
+    run.camera = cameraTarget();
   }
 
   function log(verb, text, section) {
@@ -95,12 +105,25 @@ export function createDirector(analysis, world, getStage, seed = 1) {
 
   function cameraTarget() {
     const { width, height } = getStage();
+    const aspect = width / Math.max(1, height);
     if (run.phase === 'ship' || !world.clusters[run.active]) {
-      return fitBounds(world.bounds, width, height, Math.min(width, height) * 0.1);
+      const b = world.bounds;
+      const last = angles[Math.max(0, n - 1)] || { yaw: 0.6, pitch: 0.5 };
+      return { x: b.x, y: b.y, z: b.z, dist: fitDistance(b.radius, aspect, 50, 0.92), yaw: last.yaw + run.phaseT * 0.06, pitch: 0.55 };
     }
     const c = world.clusters[run.active];
-    const zoom = Math.max(0.6, Math.min(1.8, (0.7 * Math.min(width, height)) / (2 * c.r)));
-    return { x: run.spider.x * 0.7 + c.cx * 0.3, y: run.spider.y * 0.7 + c.cy * 0.3, zoom };
+    const a = angles[run.active];
+    const s = run.spider;
+    // Look at the spider, held toward the cluster; drift slowly around it while reading.
+    const drift = run.phase === 'read' ? run.phaseT * 0.07 : 0;
+    return {
+      x: s.x * 0.65 + c.cx * 0.35,
+      y: s.y * 0.65 + c.cy * 0.35,
+      z: s.z * 0.65 + c.cz * 0.35,
+      dist: fitDistance(c.r, aspect, 50, 0.8),
+      yaw: a.yaw + drift,
+      pitch: a.pitch,
+    };
   }
 
   function setPhase(p) {
@@ -119,7 +142,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     log('walk', `→ ${sec.name}`, i);
     const c = world.clusters[i];
     const w = centroid(sec.start, Math.min(sec.start + 6, sec.start + sec.count));
-    run.spiderGoal = w ? { x: c.cx * 0.6 + w.x * 0.4, y: c.cy * 0.6 + w.y * 0.4 } : { x: c.cx, y: c.cy };
+    run.spiderGoal = w ? { x: c.cx * 0.6 + w.x * 0.4, y: c.cy * 0.6 + w.y * 0.4, z: c.cz * 0.6 + w.z * 0.4 } : { x: c.cx, y: c.cy, z: c.cz };
   }
 
   function enterShip() {
@@ -127,24 +150,25 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run.status.fill('done');
     setPhase('ship');
     // Rest on the cluster nearest the middle of the whole web.
-    const mx = (world.bounds.minX + world.bounds.maxX) / 2;
-    const my = (world.bounds.minY + world.bounds.maxY) / 2;
+    const b = world.bounds;
     let best = world.clusters[0];
-    for (const c of world.clusters) {
-      if (Math.hypot(c.cx - mx, c.cy - my) < Math.hypot(best.cx - mx, best.cy - my)) best = c;
-    }
-    if (best) run.spiderGoal = { x: best.cx, y: best.cy };
+    const dist = (c) => Math.hypot(c.cx - b.x, c.cy - b.y, c.cz - b.z);
+    for (const c of world.clusters) if (dist(c) < dist(best)) best = c;
+    if (best) run.spiderGoal = { x: best.cx, y: best.cy, z: best.cz };
   }
 
   function centroid(from, to) {
     if (to <= from) return null;
     let x = 0;
     let y = 0;
+    let z = 0;
     for (let id = from; id < to; id++) {
-      x += world.wordPos[id * 2];
-      y += world.wordPos[id * 2 + 1];
+      x += world.wordPos[id * 3];
+      y += world.wordPos[id * 3 + 1];
+      z += world.wordPos[id * 3 + 2];
     }
-    return { x: x / (to - from), y: y / (to - from) };
+    const k = to - from;
+    return { x: x / k, y: y / k, z: z / k };
   }
 
   function markRead(id) {
@@ -205,7 +229,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     if (cursor >= end) readAcc = 0;
     const c = world.clusters[run.active];
     const w = centroid(cursor, Math.min(end, cursor + 6));
-    if (w) run.spiderGoal = { x: c.cx * 0.35 + w.x * 0.65, y: c.cy * 0.35 + w.y * 0.65 };
+    if (w) run.spiderGoal = { x: c.cx * 0.35 + w.x * 0.65, y: c.cy * 0.35 + w.y * 0.65, z: c.cz * 0.35 + w.z * 0.65 };
     if (cursor >= end && run.tentacles.length === 0) {
       run.status[run.active] = 'done';
       if (run.active + 1 < n) enterWalk(run.active + 1);
@@ -226,7 +250,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       }
     } else if (run.phase === 'walk') {
       const g = run.spiderGoal;
-      if (Math.hypot(run.spider.x - g.x, run.spider.y - g.y) < 30 || run.phaseT > 3.5) setPhase('read');
+      if (Math.hypot(run.spider.x - g.x, run.spider.y - g.y, run.spider.z - g.z) < 30 || run.phaseT > 3.5) setPhase('read');
     } else if (run.phase === 'read') {
       stepRead(dt);
     } else if (run.phase === 'ship' && run.phaseT > SHIP_SETTLE) {
@@ -249,7 +273,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run.codeChars = Math.round(program.length * Math.min(1, 0.12 + 0.88 * progress));
     run.lps = run.phase === 'read' ? 15 : run.phase === 'ship' ? 0 : 7;
 
-    followCamera(run.camera, cameraTarget(), dt, run.phase === 'ship' ? 2 : 2.6);
+    followCamera(run.camera, cameraTarget(), dt, run.phase === 'walk' ? 1.6 : run.phase === 'ship' ? 1.4 : 2.4);
   }
 
   /** Restart and fast-forward to sim time t. */

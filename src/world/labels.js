@@ -3,12 +3,11 @@
  * ("rules" / "24/25 words · reading") and a small boxed monospace label for
  * every word the spider has read ("owners · owner", "full · ⚑ vague").
  *
- * Everything here is drawn in CSS pixels (applyScreenTransform) so it stays
- * the same size at any zoom; positions come from worldToScreen. Labels fade
+ * Everything here is drawn in CSS pixels at a constant size; positions come
+ * from projecting 3D points through the camera (view.project). Labels fade
  * in over 0.25 s from the word's readAt and then stay.
  */
 
-import { applyScreenTransform, worldToScreen } from './camera.js';
 import { BG, FLAG, MONO, QUEUED, TEXT_DIM, withAlpha } from '../core/theme.js';
 
 /** Plain words that are dropped from done sections during the crawl to cut clutter. */
@@ -82,7 +81,7 @@ export function drawLabels(ctx, world, run, view, analysis) {
   const p = { x: 0, y: 0 };
 
   ctx.save();
-  applyScreenTransform(ctx, view);
+  ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
   ctx.globalCompositeOperation = 'source-over';
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
@@ -91,7 +90,8 @@ export function drawLabels(ctx, world, run, view, analysis) {
   for (const sec of analysis.sections) {
     const c = world.clusters[sec.index];
     if (!c) continue;
-    worldToScreen(view, c.labelX, c.labelY, p);
+    view.project(c.cx, c.cy + c.r * 0.72, c.cz, p);
+    if (!p.vis) continue;
     const x = Math.round(p.x);
     const y = Math.round(p.y);
     if (x > width || y < -30 || y > height + 30 || x < -260) continue;
@@ -147,13 +147,16 @@ export function drawLabels(ctx, world, run, view, analysis) {
       const fade = age >= FADE_IN ? 1 : age / FADE_IN;
       const a = secAlpha * fade * fade * (3 - 2 * fade);
       if (a <= 0.01) continue;
-      worldToScreen(view, pos[id * 2], pos[id * 2 + 1], p);
+      view.project(pos[id * 3], pos[id * 3 + 1], pos[id * 3 + 2], p);
+      if (!p.vis) continue;
+      // Farther labels recede, like the web behind them.
+      const depthA = Math.max(0.3, Math.min(1, 1.5 - p.d / (view.camDist * 1.6)));
       const text = labelText(word);
       const w = measure(ctx, text) + PAD_X * 2;
       const bx = Math.round(p.x) + 4;
       const by = Math.round(p.y) - 4 - BOX_H;
       if (bx > width || by > height || bx + w < 0 || by + BOX_H < 0) continue;
-      ctx.globalAlpha = a;
+      ctx.globalAlpha = a * depthA;
       if (word.vague) {
         ctx.fillStyle = FLAG;
         ctx.fillRect(bx, by, w, BOX_H);
@@ -167,6 +170,45 @@ export function drawLabels(ctx, world, run, view, analysis) {
         ctx.fillStyle = color;
         ctx.fillText(text, bx + PAD_X, by + BOX_H / 2 + 0.5);
       }
+    }
+  }
+  ctx.restore();
+}
+
+const ringPos = {};
+
+/**
+ * Screen-space extras around the spider: rings on the words being held and
+ * the "crawler · rules" tag.
+ * @param {CanvasRenderingContext2D} ctx
+ * @param {import('../core/contracts.js').World} world
+ * @param {import('../core/contracts.js').RunState} run
+ * @param {{dpr:number, project:Function}} view
+ * @param {import('../core/contracts.js').Analysis} analysis
+ */
+export function drawSpiderOverlay(ctx, world, run, view, analysis) {
+  ctx.save();
+  ctx.setTransform(view.dpr, 0, 0, view.dpr, 0, 0);
+  ctx.strokeStyle = withAlpha('#f1edc4', 0.75);
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  const pos = world.wordPos;
+  for (const tn of run.tentacles) {
+    if (tn.stage !== 'hold') continue;
+    view.project(pos[tn.wordId * 3], pos[tn.wordId * 3 + 1], pos[tn.wordId * 3 + 2], ringPos);
+    if (!ringPos.vis) continue;
+    ctx.moveTo(ringPos.x + 6, ringPos.y);
+    ctx.arc(ringPos.x, ringPos.y, 6, 0, Math.PI * 2);
+  }
+  ctx.stroke();
+  const sec = analysis.sections[run.active];
+  if (sec && run.phase !== 'ship') {
+    view.project(run.spider.x, run.spider.y, run.spider.z, ringPos);
+    if (ringPos.vis) {
+      ctx.font = LABEL_FONT;
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = withAlpha(sec.color, 0.9);
+      ctx.fillText(`crawler · ${sec.name}`, ringPos.x + 40, ringPos.y + 46);
     }
   }
   ctx.restore();

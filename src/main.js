@@ -1,30 +1,36 @@
 /**
- * Boot and frame loop: parse the prompt, build the world, run the director at
- * a fixed step, render the stage and feed the HUD. Exposes window.crawler
- * for scripted screenshots.
+ * Boot and frame loop: parse the prompt, build the 3D world, run the director
+ * at a fixed step, render the WebGL stage plus the 2D label overlay, and feed
+ * the HUD. Dragging the stage orbits the camera; it eases back when released.
+ * Exposes window.crawler for scripted screenshots.
  */
 
 import { parsePrompt } from './analyze/parse.js';
 import { SAMPLE_PROMPT, SAMPLE_FILE_NAME } from './analyze/sample.js';
 import { SCORE_EXPLAINER } from './analyze/score.js';
-import { buildWorld, drawWorld } from './world/field.js';
-import { drawLabels } from './world/labels.js';
-import { drawSilk, drawTentacles, drawTag } from './world/spider.js';
+import { buildWorld } from './world/field.js';
+import { drawLabels, drawSpiderOverlay } from './world/labels.js';
+import { createView3D } from './world/view3d.js';
 import { createDirector } from './sim/director.js';
 import { createHud } from './hud/hud.js';
 import { hashString } from './core/rng.js';
-import { BG } from './core/theme.js';
 import { SIM_DT } from './core/contracts.js';
 
 const STORE_KEY = 'prompt-crawler:prompt';
 const canvas = document.getElementById('stage');
+const overlay = document.getElementById('overlay');
+const octx = overlay.getContext('2d');
 const wrap = document.getElementById('stage-wrap');
-const ctx = canvas.getContext('2d');
 const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 const stage = { width: 1, height: 1, dpr: 1 };
+let view3d;
+try {
+  view3d = createView3D(canvas);
+} catch {
+  wrap.insertAdjacentHTML('beforeend', '<p style="position:absolute;inset:40% 0 auto;text-align:center;color:var(--dim)">This needs WebGL. Try a current Chrome, Safari, Edge or Firefox.</p>');
+}
 let text;
-let fileName;
 let analysis;
 let world;
 let director;
@@ -33,6 +39,7 @@ let speed = 1;
 let paused = false;
 let acc = 0;
 let lastFrame = performance.now();
+let dragging = null;
 
 function load() {
   try {
@@ -44,7 +51,7 @@ function load() {
   return { text: SAMPLE_PROMPT, fileName: SAMPLE_FILE_NAME };
 }
 
-function save() {
+function save(fileName) {
   try {
     if (text === SAMPLE_PROMPT) localStorage.removeItem(STORE_KEY);
     else localStorage.setItem(STORE_KEY, JSON.stringify({ text, fileName }));
@@ -57,40 +64,39 @@ function resize() {
   stage.width = Math.max(1, wrap.clientWidth);
   stage.height = Math.max(1, wrap.clientHeight);
   stage.dpr = Math.min(2, window.devicePixelRatio || 1);
-  canvas.width = Math.round(stage.width * stage.dpr);
-  canvas.height = Math.round(stage.height * stage.dpr);
+  overlay.width = Math.round(stage.width * stage.dpr);
+  overlay.height = Math.round(stage.height * stage.dpr);
+  view3d?.resize(stage.width, stage.height, stage.dpr);
 }
 
 /** (Re)start the crawl on a prompt. */
 function start(promptText, name) {
   text = promptText;
   analysis = parsePrompt(text, { fileName: name });
-  fileName = analysis.fileName;
   const seed = hashString(text);
   world = buildWorld(analysis, seed);
   director = createDirector(analysis, world, () => stage, seed);
+  view3d?.setWorld(world, analysis);
   acc = 0;
-  if (hud) hud.reset(analysis);
-  save();
+  hud.reset(analysis);
+  save(analysis.fileName);
   if (reducedMotion) {
     director.seekSection(analysis.sections.length);
     document.getElementById('btn-play-crawl').hidden = false;
   }
-  render(true);
+  render(10, true);
 }
 
-function render(force = false) {
+function render(dt, force = false) {
   const run = director.run;
-  const view = { width: stage.width, height: stage.height, dpr: stage.dpr, time: run.t, camera: run.camera, reducedMotion };
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.fillStyle = BG;
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
-  drawWorld(ctx, world, run, view, analysis);
-  drawSilk(ctx, run, view, analysis);
-  drawTentacles(ctx, world, run, view);
-  director.spider.draw(ctx, run, view);
-  drawLabels(ctx, world, run, view, analysis);
-  if (run.phase !== 'ship') drawTag(ctx, run, view, analysis);
+  if (view3d) {
+    view3d.render(run, analysis, director.spider, dt);
+    const view = { width: stage.width, height: stage.height, dpr: stage.dpr, project: view3d.project, camDist: run.camera.dist };
+    octx.setTransform(1, 0, 0, 1, 0, 0);
+    octx.clearRect(0, 0, overlay.width, overlay.height);
+    drawLabels(octx, world, run, view, analysis);
+    drawSpiderOverlay(octx, world, run, view, analysis);
+  }
   hud.update(run, { program: director.program, force });
 }
 
@@ -105,7 +111,13 @@ function frame(now) {
       acc -= SIM_DT;
     }
   }
-  render();
+  // Released drag eases the view back to the director's camera.
+  if (view3d && !dragging) {
+    const k = Math.exp(-1.2 * dt);
+    view3d.orbit.yaw *= k;
+    view3d.orbit.pitch *= k;
+  }
+  render(dt);
   requestAnimationFrame(frame);
 }
 
@@ -124,7 +136,7 @@ hud = createHud(parsePrompt('', {}), {
     document.getElementById('btn-play-crawl').hidden = true;
     director.seekSection(i);
     acc = 0;
-    render(true);
+    render(10, true);
   },
   onSubmitPrompt: (t, name) => start(t, name),
   onLoadSample: () => start(SAMPLE_PROMPT, SAMPLE_FILE_NAME),
@@ -136,20 +148,40 @@ document.getElementById('btn-play-crawl').addEventListener('click', (e) => {
   acc = 0;
 });
 
+// Drag to orbit the scene.
+canvas.addEventListener('pointerdown', (e) => {
+  dragging = { x: e.clientX, y: e.clientY, id: e.pointerId };
+  canvas.setPointerCapture(e.pointerId);
+  canvas.classList.add('dragging');
+});
+canvas.addEventListener('pointermove', (e) => {
+  if (!dragging || !view3d) return;
+  view3d.orbit.yaw -= (e.clientX - dragging.x) * 0.006;
+  view3d.orbit.pitch = Math.max(-1.4, Math.min(1.2, view3d.orbit.pitch + (e.clientY - dragging.y) * 0.005));
+  dragging.x = e.clientX;
+  dragging.y = e.clientY;
+});
+const endDrag = () => {
+  dragging = null;
+  canvas.classList.remove('dragging');
+};
+canvas.addEventListener('pointerup', endDrag);
+canvas.addEventListener('pointercancel', endDrag);
+
 resize();
 window.addEventListener('resize', () => {
   resize();
-  render(true);
+  render(0, true);
 });
 const initial = load();
 start(initial.text, initial.fileName);
-document.fonts?.ready.then(() => render(true));
+document.fonts?.ready.then(() => render(0, true));
 requestAnimationFrame(frame);
 
 window.crawler = {
   seek(t) {
     director.seek(t);
-    render(true);
+    render(10, true);
   },
   play: () => (paused = false),
   pause: () => (paused = true),
@@ -163,4 +195,5 @@ window.crawler = {
   get world() {
     return world;
   },
+  project: (x, y, z) => view3d?.project(x, y, z, {}),
 };

@@ -50,15 +50,14 @@
  * @property {number} index
  * @property {number} cx
  * @property {number} cy
+ * @property {number} cz
  * @property {number} r          rough radius of the particle cloud (world units)
  * @property {string} color
- * @property {number} labelX     world anchor of the section title ("rules" / "24/25 words · reading")
- * @property {number} labelY
  *
  * @typedef {Object} World
  * @property {Cluster[]} clusters
- * @property {Float32Array} wordPos   [x0, y0, x1, y1, ...] world position of each word node
- * @property {{minX:number, minY:number, maxX:number, maxY:number}} bounds
+ * @property {Float32Array} wordPos   [x0, y0, z0, x1, y1, z1, ...] 3D position of each word node
+ * @property {{x:number, y:number, z:number, radius:number}} bounds  bounding sphere
  *
  * @typedef {Object} Tentacle
  * @property {number} wordId
@@ -77,8 +76,8 @@
  * @property {number} height  stage height, CSS px
  * @property {number} dpr
  * @property {number} time    run.t (sim seconds), for idle animation
- * @property {{x:number, y:number, zoom:number}} camera
- * @property {boolean} reducedMotion
+ * @property {(x:number, y:number, z:number, out?:object) => {x:number, y:number, vis:boolean, d:number}} project
+ * @property {number} camDist
  */
 
 export const LINK_KINDS = /** @type {const} */ (['owner', 'approval', 'claim', 'spec', 'file']);
@@ -108,11 +107,11 @@ export const SIM_DT = 1 / 60;
  * @property {number} wps               smoothed words/second, 0 while walking
  * @property {number} score             0..100
  * @property {number[]} scoreHistory    sampled at 10 Hz, capped at 120
- * @property {{x:number, y:number, vx:number, vy:number, heading:number}} spider  written by Spider.update
- * @property {{x:number, y:number}} spiderGoal   where the director wants the spider
+ * @property {{x:number, y:number, z:number, vx:number, vy:number, vz:number, heading:number}} spider  written by Spider.update
+ * @property {{x:number, y:number, z:number}} spiderGoal   where the director wants the spider
  * @property {{x:number, y:number, s:number, t:number}[]} silk  silk anchors (s = section colour), written by Spider.update, newest last
  * @property {number} silkSection       section whose colour new silk is spun in
- * @property {{x:number, y:number, zoom:number}} camera
+ * @property {{x:number, y:number, z:number, dist:number, yaw:number, pitch:number}} camera  orbit rig, see world/camera.js
  * @property {number} codeChars         characters of crawler.py revealed so far
  * @property {number} lps               crawler.py lines/second for the panel header
  * @property {boolean} done             ship phase has settled
@@ -137,11 +136,11 @@ export function createRunState(analysis) {
     wps: 0,
     score: 0,
     scoreHistory: [],
-    spider: { x: 0, y: 0, vx: 0, vy: 0, heading: 0 },
-    spiderGoal: { x: 0, y: 0 },
+    spider: { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, heading: 0 },
+    spiderGoal: { x: 0, y: 0, z: 0 },
     silk: [],
     silkSection: 0,
-    camera: { x: 0, y: 0, zoom: 1 },
+    camera: { x: 0, y: 0, z: 0, dist: 1000, yaw: 0, pitch: 0.5 },
     codeChars: 0,
     lps: 0,
     done: false,
