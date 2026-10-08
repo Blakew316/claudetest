@@ -114,6 +114,8 @@ export const SIM_DT = 1 / 60;
  * @property {{x:number, y:number, z:number, dist:number, yaw:number, pitch:number}} camera  orbit rig, see world/camera.js
  * @property {number} codeChars         characters of crawler.py revealed so far
  * @property {number} lps               crawler.py lines/second for the panel header
+ * @property {{id:string, from:number[], c1:number[], c2:number[], to:number[], t0:number, dur:number}} [travel]
+ *           current drift between sections (cubic bezier), set by the director, followed by Spider
  * @property {boolean} done             ship phase has settled
  */
 

@@ -11,11 +11,9 @@ import { fitDistance, followCamera } from '../world/camera.js';
 import { fork, range } from '../core/rng.js';
 import { Spider } from '../world/spider.js';
 
-const BOOT = 0.8;
-const REACH = 0.18;
-const HOLD = 0.35;
-const RETRACT = 0.2;
-const SHIP_SETTLE = 3.5;
+const BOOT = 0.4;
+const SHIP_SETTLE = 4;
+const READ_SECONDS = 3.2; // target time to read a section
 const LOG_CAP = 40;
 
 /** Program shown in the CRAWLER.PY panel; revealed as the crawl progresses. */
@@ -68,6 +66,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   let readAcc;
   let recent; // read timestamps for words/second
   let scoreTick;
+  let cadence;
+  let nextReach;
 
   const api = {
     get run() {
@@ -87,7 +87,11 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run = createRunState(analysis);
     run.logSeq = 0;
     const c0 = world.clusters[0];
-    spider = new Spider(c0 ? [c0.cx, c0.cy, c0.cz] : [0, 0, 0], seed, world);
+    // Start hanging above the first web; the opening is a descent into it.
+    const start = c0 ? [c0.cx - c0.r * 0.5, c0.cy + c0.r * 1.1, c0.cz + c0.r * 0.3] : [0, 0, 0];
+    spider = new Spider(start, seed, world);
+    cadence = fork(seed, 'cadence');
+    nextReach = 0;
     [run.spider.x, run.spider.y, run.spider.z] = spider.p;
     run.spiderGoal = { x: spider.p[0], y: spider.p[1], z: spider.p[2] };
     cursor = 0;
@@ -115,12 +119,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const c = world.clusters[run.active];
     const a = angles[run.active];
     const s = run.spider;
-    // Look between the spider and its cluster; drift very slowly while reading.
+    // Travelling: ride along with the spider. Reading: look between it and its web, drifting slowly.
     const drift = run.phase === 'read' ? run.phaseT * 0.018 : 0;
+    const w = run.phase === 'walk' ? 0.7 : 0.5;
     return {
-      x: s.x * 0.5 + c.cx * 0.5,
-      y: s.y * 0.5 + c.cy * 0.5,
-      z: s.z * 0.5 + c.cz * 0.5,
+      x: s.x * w + c.cx * (1 - w),
+      y: s.y * w + c.cy * (1 - w),
+      z: s.z * w + c.cz * (1 - w),
       dist: fitDistance(c.r, aspect, 50, 0.95),
       yaw: a.yaw + drift,
       pitch: a.pitch,
@@ -144,6 +149,28 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const c = world.clusters[i];
     const w = centroid(sec.start, Math.min(sec.start + 6, sec.start + sec.count));
     run.spiderGoal = w ? { x: c.cx * 0.6 + w.x * 0.4, y: c.cy * 0.6 + w.y * 0.4, z: c.cz * 0.6 + w.z * 0.4 } : { x: c.cx, y: c.cy, z: c.cz };
+    travelTo(run.spiderGoal, i);
+  }
+
+  /** Let go of the web and drift along a curved arc to a point (the spider follows run.travel). */
+  function travelTo(goal, id) {
+    const from = [run.spider.x, run.spider.y, run.spider.z];
+    const to = [goal.x, goal.y, goal.z];
+    const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+    const L = Math.hypot(...d) || 1;
+    // Sideways direction for a gentle S-curve, plus an upward bow like a swing on a thread.
+    const side = [-d[2] / L, 0, d[0] / L];
+    const bend = range(cadence, 0.08, 0.18) * (cadence() < 0.5 ? -1 : 1) * L;
+    const lift = L * range(cadence, 0.12, 0.22);
+    run.travel = {
+      id: `${id}:${run.t.toFixed(3)}`,
+      from,
+      c1: [from[0] + d[0] * 0.3 + side[0] * bend, from[1] + d[1] * 0.3 + lift, from[2] + d[2] * 0.3 + side[2] * bend],
+      c2: [from[0] + d[0] * 0.72 - side[0] * bend * 0.6, from[1] + d[1] * 0.72 + lift * 0.55, from[2] + d[2] * 0.72 - side[2] * bend * 0.6],
+      to,
+      t0: run.t,
+      dur: Math.max(2.2, Math.min(4.2, 1.5 + L / 280)),
+    };
   }
 
   function enterShip() {
@@ -155,7 +182,10 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     let best = world.clusters[0];
     const dist = (c) => Math.hypot(c.cx - b.x, c.cy - b.y, c.cz - b.z);
     for (const c of world.clusters) if (dist(c) < dist(best)) best = c;
-    if (best) run.spiderGoal = { x: best.cx, y: best.cy, z: best.cz };
+    if (best) {
+      run.spiderGoal = { x: best.cx, y: best.cy, z: best.cz };
+      travelTo(run.spiderGoal, 'ship');
+    }
   }
 
   function centroid(from, to) {
@@ -200,15 +230,17 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       const tn = run.tentacles[i];
       const age = run.t - tn.born;
       if (tn.stage === 'reach') {
-        tn.p = Math.min(1, age / REACH);
-        if (tn.p >= 1) {
+        // Ease out: a quick throw that slows as it lands on the word.
+        const u = Math.min(1, age / tn.reach);
+        tn.p = 1 - (1 - u) * (1 - u);
+        if (u >= 1) {
           tn.stage = 'hold';
           markRead(tn.wordId);
         }
       } else if (tn.stage === 'hold') {
-        if (age > REACH + HOLD) tn.stage = 'retract';
+        if (age > tn.reach + tn.hold) tn.stage = 'retract';
       } else {
-        tn.p -= dt / RETRACT;
+        tn.p -= dt / tn.retract;
         if (tn.p <= 0) run.tentacles.splice(i, 1);
       }
     }
@@ -217,14 +249,24 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   function stepRead(dt) {
     const sec = analysis.sections[run.active];
     const end = sec.start + sec.count;
-    const rate = Math.max(8, Math.min(40, sec.count / 1.9));
+    // Irregular cadence: little flurries of reaches with hesitations between, like attention.
+    const rate = Math.max(6, Math.min(28, sec.count / READ_SECONDS));
     readAcc += dt;
-    while (readAcc >= 1 / rate && cursor < end) {
+    while (readAcc >= nextReach && cursor < end) {
       const reaching = run.tentacles.reduce((k, tn) => k + (tn.stage !== 'retract' ? 1 : 0), 0);
       if (reaching >= MAX_TENTACLES) break;
-      readAcc -= 1 / rate;
+      readAcc -= nextReach;
+      nextReach = (cadence() < 0.3 ? range(cadence, 0.15, 0.5) : range(cadence, 0.8, 1.6)) / rate;
       run.wordState[cursor] = 1;
-      run.tentacles.push({ wordId: cursor, born: run.t, stage: 'reach', p: 0 });
+      run.tentacles.push({
+        wordId: cursor,
+        born: run.t,
+        stage: 'reach',
+        p: 0,
+        reach: range(cadence, 0.22, 0.42),
+        hold: range(cadence, 0.3, 0.75),
+        retract: range(cadence, 0.25, 0.45),
+      });
       cursor++;
     }
     if (cursor >= end) readAcc = 0;
@@ -250,8 +292,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         else enterShip();
       }
     } else if (run.phase === 'walk') {
-      const g = run.spiderGoal;
-      if (Math.hypot(run.spider.x - g.x, run.spider.y - g.y, run.spider.z - g.z) < 30 || run.phaseT > 3.5) setPhase('read');
+      // Read once it has landed and taken a breath.
+      if ((run.spider.arrived && run.phaseT > run.travel.dur + 0.35) || run.phaseT > run.travel.dur + 2) setPhase('read');
     } else if (run.phase === 'read') {
       stepRead(dt);
     } else if (run.phase === 'ship' && run.phaseT > SHIP_SETTLE) {
