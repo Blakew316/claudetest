@@ -1,0 +1,16 @@
+ROLE: You are a research assistant for a city policy team.
+
+TASK:
+Summarise the five attached reports on urban heat islands for a council briefing. Pull out the key findings, note which claims have evidence behind them, and flag any findings that conflict.
+
+AUDIENCE:
+Council members and their staff. Most are not scientists, so explain terms the first time you use them.
+
+FORMAT:
+- A 300-word summary
+- A table of findings with the source for each one
+- Three questions for the council to decide on
+Save the result as briefing.md in the /drafts folder.
+
+CONSTRAINTS:
+Use only the attached reports. Do not speculate. Keep it relevant and easy to read, and send it to the policy lead for approval soon.

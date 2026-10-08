@@ -1,0 +1,8 @@
+# Netlify builds the single-file app into dist/ and serves only that folder.
+# The build also requires dist/index.html, which the build script emits only
+# once the app is complete, so a push of half-finished work fails the build
+# and Netlify keeps serving the previous deploy instead of a broken page.
+[build]
+  command = "npm run build && test -f dist/index.html"
+  publish = "dist"
+  environment = { NODE_VERSION = "22" }
