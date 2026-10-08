@@ -30,7 +30,7 @@ import { BG, QUEUED, FLAG, SPIDER, TENTACLE, SECTION_PALETTE } from '../core/the
 import { makeBall } from './galaxy.js';
 import { mulberry32 } from '../core/rng.js';
 import { LEG_COUNT, MAX_TENTACLES } from '../core/contracts.js';
-import { ABDOMEN, CEPH } from './spider.js';
+import { ABDOMEN, CEPH, SCALE as SS } from './spider.js';
 
 export const FOV = 50;
 const TENTACLE_DOTS = 200;
@@ -296,7 +296,7 @@ export function createView3D(canvas) {
     uLight: { value: new THREE.Vector3() },
     uLightR: { value: 210 },
     uLightGain: { value: 0.55 },
-    uClear: { value: 80 },
+    uClear: { value: 80 * SS },
   };
   const mat4 = new THREE.Matrix4();
   const quat = new THREE.Quaternion();
@@ -468,10 +468,10 @@ export function createView3D(canvas) {
     joints.frustumCulled = false;
     limbs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     joints.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
-    const hairs = fatSegments(LEG_COUNT * HAIRS, SPIDER, 0.8, 0.55);
-    const eyes = new THREE.Points(dynamicGeometry(8), new THREE.PointsMaterial({ color: '#eafff8', size: 3.2, sizeAttenuation: false, fog: false }));
-    const spinnerets = new THREE.Points(dynamicGeometry(3), new THREE.PointsMaterial({ color: SPIDER, size: 3, sizeAttenuation: false }));
-    const core = new THREE.Mesh(new THREE.BoxGeometry(7, 7, 7), new THREE.MeshBasicMaterial({ color: FLAG, depthTest: false, fog: false }));
+    const hairs = fatSegments(LEG_COUNT * HAIRS, SPIDER, 0.6, 0.55);
+    const eyes = new THREE.Points(dynamicGeometry(8), new THREE.PointsMaterial({ color: '#eafff8', size: 2.2, sizeAttenuation: false, fog: false }));
+    const spinnerets = new THREE.Points(dynamicGeometry(3), new THREE.PointsMaterial({ color: SPIDER, size: 2, sizeAttenuation: false }));
+    const core = new THREE.Mesh(new THREE.BoxGeometry(7 * SS, 7 * SS, 7 * SS), new THREE.MeshBasicMaterial({ color: FLAG, depthTest: false, fog: false }));
     core.renderOrder = 20;
     const tentacles = new THREE.Points(
       dynamicGeometry(MAX_TENTACLES * TENTACLE_DOTS),
@@ -594,23 +594,23 @@ export function createView3D(canvas) {
     const ab = spider.abdomenFrame();
     setBody(W.abdomen, ab.c, ab.F, ab.U, ab.S, ABDOMEN.RX * breath, ABDOMEN.RY * breath, ABDOMEN.RZ * breath);
     setBody(W.ceph, spider.cephCenter(), F, U, S, CEPH.RX, CEPH.RY, CEPH.RZ);
-    W.core.position.set(...add(ab.c, ab.U, 3));
+    W.core.position.set(...add(ab.c, ab.U, 3 * SS));
     W.core.rotation.set(spider.time * 1.1, spider.time * 0.8, spider.time * 0.35);
 
     // Legs as tapered 3D segments with ball joints; hairs along femur and tibia.
     const hb = W.hairBuf;
     let hi = 0;
     spider.legs.forEach((leg, i) => {
-      limb(i * 3, leg.hip, leg.knee, 1.9);
-      limb(i * 3 + 1, leg.knee, leg.ankle, 1.35);
-      limb(i * 3 + 2, leg.ankle, leg.tip, 0.85);
-      joint(i * 4, leg.hip, 2.1);
-      joint(i * 4 + 1, leg.knee, 1.75);
-      joint(i * 4 + 2, leg.ankle, 1.25);
-      joint(i * 4 + 3, leg.tip, 0.7);
+      limb(i * 3, leg.hip, leg.knee, 1.9 * SS);
+      limb(i * 3 + 1, leg.knee, leg.ankle, 1.35 * SS);
+      limb(i * 3 + 2, leg.ankle, leg.tip, 0.85 * SS);
+      joint(i * 4, leg.hip, 2.1 * SS);
+      joint(i * 4 + 1, leg.knee, 1.75 * SS);
+      joint(i * 4 + 2, leg.ankle, 1.25 * SS);
+      joint(i * 4 + 3, leg.tip, 0.7 * SS);
       const segs = [
-        [leg.hip, leg.knee, 1.8],
-        [leg.knee, leg.ankle, 1.3],
+        [leg.hip, leg.knee, 1.8 * SS],
+        [leg.knee, leg.ankle, 1.3 * SS],
       ];
       for (let k = 0; k < HAIRS; k++) {
         const [a, c, rad] = segs[k < HAIRS / 2 ? 0 : 1];
@@ -624,7 +624,7 @@ export function createView3D(canvas) {
         // Hairs lean back toward the body, like setae.
         const tipDir = norm(add(radial, dir, -0.7));
         hb.set(base, hi);
-        hb.set(add(base, tipDir, 3.6), hi + 3);
+        hb.set(add(base, tipDir, 3.6 * SS), hi + 3);
         hi += 6;
       }
     });
@@ -632,18 +632,18 @@ export function createView3D(canvas) {
     const face = spider.face();
     let li = LEG_COUNT * 3;
     for (const sg of [-1, 1]) {
-      const base = add(add(face, S, sg * 2.4), U, -1.5);
-      limb(li++, base, add(add(base, F, 4), U, -5), 1.5);
+      const base = add(add(face, S, sg * 2.4 * SS), U, -1.5 * SS);
+      limb(li++, base, add(add(base, F, 4 * SS), U, -5 * SS), 1.5 * SS);
     }
     for (const sg of [-1, 1]) {
       const tap = Math.sin(spider.time * 3.1 + (sg > 0 ? 1.4 : 0)) * 0.35;
-      const p0 = add(add(face, S, sg * 3.8), U, -0.5);
-      const p1 = add(add(add(p0, F, 5), S, sg * 3.5), U, 3 + tap * 3);
-      const p2 = add(add(add(p1, F, 6), S, sg * 1.5), U, -2 + tap * 2);
-      const p3 = add(add(p2, F, 4), U, -4);
-      limb(li++, p0, p1, 1.15);
-      limb(li++, p1, p2, 0.95);
-      limb(li++, p2, p3, 0.75);
+      const p0 = add(add(face, S, sg * 3.8 * SS), U, -0.5 * SS);
+      const p1 = add(add(add(p0, F, 5 * SS), S, sg * 3.5 * SS), U, (3 + tap * 3) * SS);
+      const p2 = add(add(add(p1, F, 6 * SS), S, sg * 1.5 * SS), U, (-2 + tap * 2) * SS);
+      const p3 = add(add(p2, F, 4 * SS), U, -4 * SS);
+      limb(li++, p0, p1, 1.15 * SS);
+      limb(li++, p1, p2, 0.95 * SS);
+      limb(li++, p2, p3, 0.75 * SS);
     }
     W.limbs.instanceMatrix.needsUpdate = true;
     W.joints.instanceMatrix.needsUpdate = true;
@@ -655,12 +655,12 @@ export function createView3D(canvas) {
       [-1.6, 4.2], [1.6, 4.2], [-3.6, 3.4], [3.6, 3.4],
       [-2.4, 5.6], [2.4, 5.6], [-4.6, 4.8], [4.6, 4.8],
     ];
-    eyes.forEach(([sx, up], k) => ep.set(add(add(add(face, S, sx), U, up - 2.5), F, -1.5), k * 3));
+    eyes.forEach(([sx, up], k) => ep.set(add(add(add(face, S, sx * SS), U, (up - 2.5) * SS), F, -1.5 * SS), k * 3));
     W.eyes.geometry.attributes.position.needsUpdate = true;
     W.eyes.geometry.computeBoundingSphere();
     const spin = spider.spinneret();
     const sp3 = W.spinnerets.geometry.attributes.position.array;
-    for (let k = 0; k < 3; k++) sp3.set(add(add(spin, ab.S, (k - 1) * 2.2), ab.U, -1.5), k * 3);
+    for (let k = 0; k < 3; k++) sp3.set(add(add(spin, ab.S, (k - 1) * 2.2 * SS), ab.U, -1.5 * SS), k * 3);
     W.spinnerets.geometry.attributes.position.needsUpdate = true;
     W.spinnerets.geometry.computeBoundingSphere();
 
@@ -679,7 +679,7 @@ export function createView3D(canvas) {
       const L = Math.hypot(dx, dy, dz) || 1;
       const dir = [dx / L, dy / L, dz / L];
       const side = norm(cross(dir, U));
-      const o0 = add(p, dir, 12);
+      const o0 = add(p, dir, 12 * SS);
       const bow = (tn.wordId % 2 ? 0.2 : 0.12) * L;
       const ctl = add([(o0[0] + tx) / 2, (o0[1] + ty) / 2, (o0[2] + tz) / 2], U, bow);
       const n = Math.min(TENTACLE_DOTS - 1, Math.max(2, Math.floor(L / 6)));

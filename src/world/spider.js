@@ -20,13 +20,15 @@
 import { LEG_COUNT } from '../core/contracts.js';
 import { fork, range } from '../core/rng.js';
 
-export const ABDOMEN = { RX: 20, RY: 15.5, RZ: 12.5 };
-export const CEPH = { RX: 11, RY: 9.5, RZ: 7, OFF: 9 };
+/** Overall size of the spider relative to the world (1 = the original, larger build). */
+export const SCALE = 0.5;
+export const ABDOMEN = { RX: 20 * SCALE, RY: 15.5 * SCALE, RZ: 12.5 * SCALE };
+export const CEPH = { RX: 11 * SCALE, RY: 9.5 * SCALE, RZ: 7 * SCALE, OFF: 9 * SCALE };
 const SILK_CAP = 500;
-const SILK_EVERY = 34;
+const SILK_EVERY = 34 * SCALE;
 const CELL = 30;
-const STRIDE = 15; // world units of travel per gait cycle
-const CRUISE = 36; // walking speed, world units/s
+const STRIDE = 15 * SCALE; // world units of travel per gait cycle
+const CRUISE = 25; // walking speed, world units/s (smaller spider, shorter strides, quicker legs)
 const MAX_TURN = 2;
 const MAX_TILT = 1.05;
 const MAX_TILT_AIR = 0.95;
@@ -75,6 +77,7 @@ function nodeGrid(world) {
 /** Nearest foothold to p within radius r, or null. */
 function nearestNode(world, p, r) {
   if (!world) return null;
+  r = Math.max(8, r * SCALE); // search radii below are in full-size units
   const grid = nodeGrid(world);
   let best = null;
   let bd = r * r;
@@ -129,7 +132,7 @@ export class Spider {
     for (const side of [-1, 1]) {
       for (let k = 0; k < perSide; k++) {
         const u = k / (perSide - 1); // 0 front .. 1 rear
-        const reach = 50 * LEG_SCALE[k % LEG_SCALE.length] * range(rand, 0.96, 1.04);
+        const reach = 50 * SCALE * LEG_SCALE[k % LEG_SCALE.length] * range(rand, 0.96, 1.04);
         this.legs.push({
           side,
           k,
@@ -148,7 +151,7 @@ export class Spider {
           to: [0, 0, 0],
           step: 1,
           stepDur: 0.2,
-          lift: 9,
+          lift: 9 * SCALE,
           free: false,
           hip: [0, 0, 0],
           knee: [0, 0, 0],
@@ -271,8 +274,8 @@ export class Spider {
 
     // Body bob and sway with the stride; the abdomen trails and wags.
     const gaitAmp = this.mode === 'crawl' ? Math.min(1, this.speed / CRUISE) : 0;
-    const bob = Math.sin(this.gait * Math.PI * 4) * 1.1 * gaitAmp + Math.sin(this.time * 1.9) * 0.35;
-    const sway = Math.sin(this.gait * Math.PI * 2) * 1.2 * gaitAmp;
+    const bob = (Math.sin(this.gait * Math.PI * 4) * 1.1 * gaitAmp + Math.sin(this.time * 1.9) * 0.35) * SCALE;
+    const sway = Math.sin(this.gait * Math.PI * 2) * 1.2 * gaitAmp * SCALE;
     this.b = add(add(this.p, this.U, bob), this.S, sway);
     const wag = rotate(this.F, this.U, Math.sin(this.time * 1.3) * 0.07 + Math.sin(this.gait * Math.PI * 2) * 0.1 * gaitAmp);
     this.aF = norm(lerp3(this.aF, wag, 1 - Math.exp(-(this.mode === 'jump' ? 3 : 5) * dt)));
@@ -312,7 +315,7 @@ export class Spider {
     const flat = norm([tr.to[0] - tr.from[0], 0, tr.to[2] - tr.from[2]]);
     if (T < tr.crouch) {
       const k = ease(T / tr.crouch);
-      this.p = add(tr.from, this.U, -8 * k);
+      this.p = add(tr.from, this.U, -8 * SCALE * k);
       this.orient(flat, dt, 7);
       return;
     }
@@ -323,7 +326,7 @@ export class Spider {
       for (const leg of this.legs) {
         leg.free = true;
         leg.step = 1;
-        leg.fv = flat.map((c) => -c * 90);
+        leg.fv = flat.map((c) => -c * 90 * SCALE);
       }
     }
     const u = Math.min(1, (T - tr.crouch) / tr.air);
@@ -351,7 +354,7 @@ export class Spider {
   land(dt, run, tr) {
     this.landT += dt;
     const k = Math.min(1, this.landT / LAND_TIME);
-    this.p = add(tr.to, this.U, -7 * Math.sin(Math.PI * k) * (1 - k * 0.3));
+    this.p = add(tr.to, this.U, -7 * SCALE * Math.sin(Math.PI * k) * (1 - k * 0.3));
     this.orient([this.F[0], 0, this.F[2]], dt, 4);
     if (k >= 1) {
       this.mode = 'crawl';
@@ -373,18 +376,18 @@ export class Spider {
     const dist = len(to);
     this.intentT -= dt;
     if (this.intentT <= 0) {
-      this.walking = !this.walking && dist > 10;
+      this.walking = !this.walking && dist > 10 * SCALE;
       this.intentT = this.walking ? range(this.rand, 0.7, 1.5) : range(this.rand, 0.25, 0.8);
       if (!this.walking && this.rand() < 0.45) this.tap();
     }
-    if (dist < 10) this.walking = false;
+    if (dist < 10 * SCALE) this.walking = false;
     const n = norm(to);
     const facing = Math.max(0.15, dot(this.F, n));
     const target = this.walking ? Math.min(CRUISE, dist * 1.5) * facing : 0;
     this.speedV += ((target - this.speed) * 36 - this.speedV * 11) * dt;
     this.speed = Math.max(0, this.speed + this.speedV * dt);
     const wander = Math.sin(this.time * 0.9 + this.meander) * 0.32 + Math.sin(this.time * 2.1 + this.meander * 2) * 0.12;
-    const want = dist > 10 ? rotate(n, this.U, wander) : this.F;
+    const want = dist > 10 * SCALE ? rotate(n, this.U, wander) : this.F;
     this.orient(want, dt, this.walking ? 2.6 : 1.2);
     // Mostly along the body, a little straight to the goal so it never orbits it.
     const dir = norm(add(add([0, 0, 0], this.F, 0.75), n, 0.25));
@@ -396,12 +399,12 @@ export class Spider {
     const legs = this.legs.filter((l) => l.k < 2 && l.step >= 1 && !l.free);
     if (!legs.length) return;
     const leg = legs[Math.floor(this.rand() * legs.length)];
-    const probe = add(add(leg.foot, this.F, range(this.rand, 3, 8)), this.S, range(this.rand, -4, 4));
+    const probe = add(add(leg.foot, this.F, range(this.rand, 3, 8) * SCALE), this.S, range(this.rand, -4, 4) * SCALE);
     leg.from = [...leg.foot];
     leg.to = nearestNode(this.world, probe, 10) || leg.foot;
     leg.step = 0;
     leg.stepDur = 0.32;
-    leg.lift = 14;
+    leg.lift = 14 * SCALE;
   }
 
   legsUpdate(dt, run, moved) {
@@ -453,7 +456,7 @@ export class Spider {
         leg.to = nearestNode(this.world, target, 12) || target;
         leg.step = 0;
         leg.stepDur = walking ? Math.max(0.11, Math.min(0.26, cycle * 0.38)) : 0.24;
-        leg.lift = walking ? 8 : 6;
+        leg.lift = (walking ? 8 : 6) * SCALE;
         stepping++;
       }
     }

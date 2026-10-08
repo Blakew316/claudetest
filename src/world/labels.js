@@ -220,7 +220,7 @@ export function drawSpiderOverlay(ctx, world, run, view, analysis) {
       ctx.font = LABEL_FONT;
       ctx.textBaseline = 'middle';
       ctx.fillStyle = withAlpha(sec.color, 0.9);
-      ctx.fillText(`crawler · ${sec.name}`, ringPos.x + 40, ringPos.y + 46);
+      ctx.fillText(`crawler · ${sec.name}`, ringPos.x + 24, ringPos.y + 28);
     }
   }
   ctx.restore();
