@@ -32,17 +32,17 @@ import { fork, range } from '../core/rng.js';
 import { Spider } from '../world/spider.js';
 
 const BOOT = 0.4;
-const INTRO_AIR = 6.2; // the opening abseil down onto the first cluster
+const INTRO_AIR = 7.5; // the opening fly-in, while the spider wakes and walks on the first ball
 const INTRO_HOLD = 1.0; // breath on the first ball before reading starts
 const BREATH = 0.8; // after a landing, before the first reach
 const LAND = 0.36; // the spider's landing absorb (spider.js LAND_TIME)
-const SHIP_SETTLE = 17; // the finale: orbit the nebula, then drift onto the spider
+const SHIP_SETTLE = 22; // the finale: orbit the nebula, then drift onto the spider
 const TAIL = 1.5; // last reach + hold + retract after the final word
 const GAP = 1.04; // mean gap between reaches, in units of 1/rate (see nextGap)
 const RATE_CAP = 11; // reaches per second at most; denser sections read a phrase per reach
-const RUN_BUDGET = 228; // seconds: even a 1500-word, 12-section prompt finishes under ~4 min
-const MIN_READ = 5;
-const MAX_READ = 12.5;
+const RUN_BUDGET = 300; // seconds: even a 1500-word, 12-section prompt finishes under ~5 min
+const MIN_READ = 7;
+const MAX_READ = 18;
 const LOG_CAP = 40;
 const TURN_U = 0.12; // the leap's camera turn finishes this far into the reading
 // While the spider crawls through a ball the camera comes in close and keeps
@@ -58,7 +58,7 @@ const lerp = (a, b, t) => a + (b - a) * t;
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 /** Planned read time for a section (s): longer sections linger, within limits. */
-const readSeconds = (count) => (count ? clamp(4 + 1.1 * Math.sqrt(count), MIN_READ, MAX_READ) : 2.5);
+const readSeconds = (count) => (count ? clamp(5.5 + 1.5 * Math.sqrt(count), MIN_READ, MAX_READ) : 2.5);
 /** Floaty, unhurried leaps; long gaps take longer and arc higher. */
 const airTime = (L) => clamp(1.7 + L / 380, 2.0, 3.6);
 
@@ -423,9 +423,12 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     ship = null;
     lastRecipe = Math.floor(planRand() * 3);
     const c0 = clusters[0];
-    // Start hanging high above the first ball; the opening is an abseil down into it.
-    const start = c0 ? [c0.cx - c0.r * 0.35, c0.cy + c0.r * 1.75, c0.cz + c0.r * 0.2] : [0, 0, 0];
+    // Start inside the first ball, a short walk from its first words; it wakes
+    // and walks over to them while the camera flies in.
+    const w0 = n && c0 ? landing(0) : null;
+    const start = w0 ? [lerp(w0.x, c0.cx, 0.2), lerp(w0.y, c0.cy, 0.2), lerp(w0.z, c0.cz, 0.2)] : [0, 0, 0];
     spider = new Spider(start, seed, world);
+    run.spider.arrived = true;
     nextReach = 0;
     rate = 4;
     baseRate = 4;
@@ -597,8 +600,11 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // Land on the ball where its first words hang.
     const goal = landing(i);
     run.spiderGoal = { x: goal.x, y: goal.y, z: goal.z };
-    travelTo(run.spiderGoal, i);
-    if (i > 0) planSection(i, from, goal);
+    // The first ball: it is already there, so it walks over instead of leaping.
+    if (i > 0) {
+      travelTo(run.spiderGoal, i);
+      planSection(i, from, goal);
+    }
   }
 
   /** Jump to a point: crouch, a floaty ballistic arc, landing (the spider follows run.travel). */
@@ -764,7 +770,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     } else if (run.phase === 'walk') {
       // Read once it has landed and taken a breath.
       const breath = run.active === 0 ? INTRO_HOLD : BREATH;
-      if ((run.spider.arrived && run.phaseT > run.travel.dur + breath) || run.phaseT > run.travel.dur + breath + 2) enterRead();
+      const dur = run.active === 0 ? INTRO_AIR + LAND : run.travel.dur;
+      if ((run.spider.arrived && run.phaseT > dur + breath) || run.phaseT > dur + breath + 2) enterRead();
     } else if (run.phase === 'read') {
       stepRead(dt);
     } else if (run.phase === 'ship' && run.phaseT > SHIP_SETTLE) {
