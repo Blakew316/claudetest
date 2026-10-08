@@ -55,6 +55,7 @@ const PI = Math.PI;
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (x) => x * x * (3 - 2 * x);
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 /** Planned read time for a section (s): longer sections linger, within limits. */
@@ -362,7 +363,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       }
     }
     const E = keys[0];
-    plans[i] = { E, keys, air, T: readT[i], fit, turnKeys: null, walkT: 0, spin: Math.sign(keys[keys.length - 1].yaw - E.yaw) || turn };
+    plans[i] = { E, keys, air, T: readT[i], fit, turnKeys: null, walkT: 0, ...chooseOrbit(i, keys, fit, readT[i], turn) };
     if (air) {
       // The camera starts turning as the spider crouches (anticipation), is
       // side-on to the arc mid-flight, and arrives on the establishing view
@@ -522,20 +523,10 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         tgt.yaw = a.yaw;
         tgt.pitch = a.pitch;
       }
-      // The close orbit round the crawling spider. The extra turn only ever
-      // grows (same way as the keyed arc), so the pan never reverses; the pull
-      // in eases off at the end of the window.
-      const v = clamp((u - ORBIT_U[0]) / (ORBIT_U[1] - ORBIT_U[0]), 0, 1);
-      const ease = (x) => x * x * (3 - 2 * x);
-      const ow = ease(clamp(v / 0.2, 0, 1)) * (1 - ease(clamp((v - 0.8) / 0.2, 0, 1)));
-      const sp = run.spider;
-      tgt.x = lerp(tgt.x, lerp(c.cx, sp.x, 0.9), ow);
-      tgt.y = lerp(tgt.y, lerp(c.cy, sp.y, 0.9), ow);
-      tgt.z = lerp(tgt.z, lerp(c.cz, sp.z, 0.9), ow);
-      tgt.dist = lerp(tgt.dist, p.fit * ORBIT_DIST, ow);
-      tgt.yaw += p.spin * ORBIT_RATE * p.T * (ORBIT_U[1] - ORBIT_U[0]) * ease(v);
-      tgt.pitch = clamp(tgt.pitch + ow * 0.22 * Math.sin(2 * PI * v), -0.5, 1.25);
-      return tgt;
+      // The close orbit round the crawling spider (pre-checked in chooseOrbit).
+      // The extra turn only ever grows, so the pan never reverses; the pull in
+      // eases off at the end of the window.
+      return applyOrbit(tgt, run.active, u, p.spin, p.orbitRate, p.T, run.spider, p.fit, p.orbitNear);
     }
     if (run.active === 0 && intro) return fromKey(sampleKeys(intro, run.t, key), c);
     const tr = run.travel;
@@ -557,6 +548,72 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return tgt;
   }
 
+  /** Weight of the close orbit at orbit progress v (0..1): eases in and out. */
+  function orbitWeight(v) {
+    return smooth(clamp(v / 0.2, 0, 1)) * (1 - smooth(clamp((v - 0.8) / 0.2, 0, 1)));
+  }
+
+  /** Close-orbit target for section i at reading progress u, written over a keyed target t. */
+  function applyOrbit(t, i, u, spin, rate, T, sp, fit, near = ORBIT_DIST) {
+    const c = clusters[i];
+    const v = clamp((u - ORBIT_U[0]) / (ORBIT_U[1] - ORBIT_U[0]), 0, 1);
+    const ow = orbitWeight(v);
+    t.x = lerp(t.x, lerp(c.cx, sp.x, 0.9), ow);
+    t.y = lerp(t.y, lerp(c.cy, sp.y, 0.9), ow);
+    t.z = lerp(t.z, lerp(c.cz, sp.z, 0.9), ow);
+    t.dist = lerp(t.dist, fit * near, ow);
+    t.yaw += spin * rate * T * (ORBIT_U[1] - ORBIT_U[0]) * smooth(v);
+    t.pitch = clamp(t.pitch + ow * 0.22 * Math.sin(2 * PI * v), -0.5, 1.25);
+    return t;
+  }
+
+  /**
+   * Pre-visualise the close orbit on section i: which way round and how far
+   * it can turn without the camera passing through another ball (or deep
+   * into this one). Prefers the full orbit the same way as the keyed arc.
+   */
+  function chooseOrbit(i, keys, fit, T, turn) {
+    const c = clusters[i];
+    const base = Math.sign(keys[keys.length - 1].yaw - keys[0].yaw) || turn;
+    let best = { spin: base, orbitRate: 0, orbitNear: ORBIT_DIST };
+    let bestCost = Infinity;
+    const probe = { x: 0, y: 0, z: 0, dist: 0, yaw: 0, pitch: 0 };
+    const pos = [0, 0, 0];
+    for (const near of [ORBIT_DIST, ORBIT_DIST * 1.25, ORBIT_DIST * 0.8])
+    for (const spin of [base, -base]) {
+      for (const rate of [ORBIT_RATE, ORBIT_RATE * 0.6, ORBIT_RATE * 0.3]) {
+        let cost = (spin === base ? 0 : 0.3) + (ORBIT_RATE - rate) * 3 + Math.abs(near - ORBIT_DIST);
+        for (let k = 0; k <= 16; k++) {
+          const u = lerp(ORBIT_U[0], ORBIT_U[1], k / 16);
+          const ky = sampleKeys(keys, u, key);
+          const sp = spiderAt(i, u);
+          probe.x = lerp(c.cx, sp.x, ky.w);
+          probe.y = lerp(c.cy, sp.y, ky.w);
+          probe.z = lerp(c.cz, sp.z, ky.w);
+          probe.dist = Math.exp(ky.ld);
+          probe.yaw = ky.yaw;
+          probe.pitch = ky.pitch;
+          applyOrbit(probe, i, u, spin, rate, T, sp, fit, near);
+          orbitDir(probe.yaw, probe.pitch, pos);
+          const x = probe.x + pos[0] * probe.dist;
+          const y = probe.y + pos[1] * probe.dist;
+          const z = probe.z + pos[2] * probe.dist;
+          for (const o of clusters) {
+            const d = Math.hypot(x - o.cx, y - o.cy, z - o.cz);
+            if (o !== c && d < o.r * 0.95) cost += 1;
+            else if (o === c && d < o.r * 0.6) cost += 0.5;
+          }
+        }
+        if (cost < bestCost) {
+          bestCost = cost;
+          best = { spin, orbitRate: rate, orbitNear: near };
+        }
+      }
+    }
+    if (bestCost >= 2) best.orbitRate = 0; // boxed in: keep to the keyed moves
+    return best;
+  }
+
   /** Keep the target camera position out of every ball's dense core. */
   function keepClear(t) {
     orbitDir(t.yaw, t.pitch, dir);
@@ -566,18 +623,24 @@ export function createDirector(analysis, world, getStage, seed = 1) {
 
   function stepCamera(dt) {
     const t = keepClear(cameraTarget());
+    // The springs lag the target's angles (always, in an orbit), so clear the
+    // target distance along the camera's actual direction too; otherwise the
+    // spring steers it into a core and the backstop shoves it out, every frame.
+    const cam0 = run.camera;
+    orbitDir(cam0.yaw, cam0.pitch, dir);
+    t.dist = clearDistance(cam0.x, cam0.y, cam0.z, dir, t.dist, clusters, 0.9, Math.max(90, t.dist * 0.45), cam0.dist);
     // Spring smoothing (seconds): the keyframes carry the shape, the springs
     // round off every change so nothing lurches.
     if (run.phase === 'ship') followCamera(run.camera, t, dt, 1.3, 1.5);
     else if (run.active === 0 && run.phase !== 'read') followCamera(run.camera, t, dt, 0.7, 0.8);
     else if (run.phase === 'walk') followCamera(run.camera, t, dt, 0.85, 1.0);
     else followCamera(run.camera, t, dt, 0.8, 1.4);
-    // Backstop: the springs may cut a corner through a ball between two clear
-    // targets; ease the camera back out of any core it drifts into.
+    // Backstop for corners the springs cut through a ball: only ever outward,
+    // and gently, so it can't fight the springs.
     const cam = run.camera;
     orbitDir(cam.yaw, cam.pitch, dir);
-    const safe = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, 0.88, 90);
-    if (safe !== cam.dist) cam.dist += (safe - cam.dist) * (1 - Math.exp(-10 * dt));
+    const safe = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, 0.85, cam.dist);
+    if (safe > cam.dist) cam.dist += (safe - cam.dist) * (1 - Math.exp(-3 * dt));
   }
 
   /* ---------------------------------------------------------- timeline */

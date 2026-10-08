@@ -118,6 +118,36 @@ function makeEdges(pos, cut, stride = 2) {
   return new Uint32Array(edges);
 }
 
+/**
+ * Extra balls with no words, packed onto the outside of the section balls
+ * (touching a neighbour, clear of the rest, as close to the middle as they
+ * fit), so the whole ecosystem is bigger and fuller.
+ */
+function placeExtras(centers, radii, extra, rand) {
+  const out = [];
+  const all = centers.map((c, i) => ({ c, r: radii[i] }));
+  for (const r of extra) {
+    const mid = all.reduce((m, o) => [m[0] + o.c[0] / all.length, m[1] + o.c[1] / all.length, m[2] + o.c[2] / all.length], [0, 0, 0]);
+    let best = null;
+    let bestScore = Infinity;
+    for (let attempt = 0; attempt < 80; attempt++) {
+      const a = all[Math.floor(rand() * all.length)];
+      const d = norm([gauss(rand), gauss(rand) * 0.6, gauss(rand)]);
+      const gap = (a.r + r) * range(rand, 0.88, 1.0);
+      const c = [a.c[0] + d[0] * gap, a.c[1] + d[1] * gap, a.c[2] + d[2] * gap];
+      const clear = all.every((o) => Math.hypot(c[0] - o.c[0], c[1] - o.c[1], c[2] - o.c[2]) > (o.r + r) * 0.84);
+      const score = Math.hypot(c[0] - mid[0], c[1] - mid[1], c[2] - mid[2]) + (clear ? 0 : 1e6);
+      if (score < bestScore) {
+        bestScore = score;
+        best = c;
+      }
+    }
+    out.push(best);
+    all.push({ c: best, r });
+  }
+  return out;
+}
+
 /** Pick well-spread bright stars for the words and order them as a tour around the cluster. */
 function placeWords(g, cx, cy, cz, r, count, rand, disc) {
   const n = g.pos.length / 3;
@@ -199,16 +229,35 @@ export function buildWorld(analysis, seed) {
     clusters.push({ index: i, cx, cy, cz, r, color: sec.color || sectionColor(i) });
   });
 
+  // A few more balls with no words, to make the whole ecosystem bigger.
+  const xrand = fork(seed, 'extras');
+  const xr = Array.from({ length: Math.max(3, Math.round(sections.length * 0.6)) }, () => clusterRadius(range(xrand, 14, 40)));
+  placeExtras(centers, radii, xr, xrand).forEach(([cx, cy, cz], k) => {
+    const r = xr[k];
+    const g = makeBall(fork(seed, `extra:${k}`), r, Math.round(particleCount(range(xrand, 14, 40)) * 0.6));
+    for (let q = 0; q < g.pos.length; q += 3) {
+      g.pos[q] += cx;
+      g.pos[q + 1] += cy;
+      g.pos[q + 2] += cz;
+    }
+    g.edges = makeEdges(g.pos, r * 0.05, 1);
+    clouds.push(g);
+    clusters.push({ index: sections.length + k, cx, cy, cz, r, color: sectionColor(sections.length + k), extra: true });
+  });
+
   // Tidal streams between neighbouring clusters: the ecosystem's connective tissue.
+  // Consecutive sections are always joined (the spider's route); others when close.
   const streams = [];
   const srand = fork(seed, 'streams');
+  const nSec = sections.length;
   for (let i = 0; i < clusters.length; i++) {
     for (let j = i + 1; j < clusters.length; j++) {
       const A = clusters[i];
       const B = clusters[j];
       const L = Math.hypot(B.cx - A.cx, B.cy - A.cy, B.cz - A.cz);
-      if (j !== i + 1 && L > (A.r + B.r) * 1.5) continue;
-      streams.push(stream(A, B, srand, j === i + 1 ? 2400 : 1100));
+      const route = j === i + 1 && j < nSec;
+      if (!route && L > (A.r + B.r) * 1.5) continue;
+      streams.push(stream(A, B, srand, route ? 2400 : 1100));
     }
   }
 
