@@ -135,7 +135,7 @@ export const VAGUE_WORDS = {
   stuff: 'What stuff exactly? Name the items.',
   things: 'Which things? Name them.',
   taste: 'Whose taste decides? Name the person or the reference.',
-  vibe: 'Describe the vibe with examples or words you can check.',
+  vibe: 'What vibe, exactly? Describe it with examples or words you can check.',
   polished: 'Polished means which checks pass? List them.',
   smallest: 'Smallest by what measure? Give the limit, e.g. one file or 200 words.',
   small: 'How small? Give a size or a count.',
@@ -168,6 +168,7 @@ export const VAGUE_FORMS = {
 export const VAGUE_PHRASES = {
   'as needed': 'Needed by whom, and how often? Name the trigger or a limit.',
   'if possible': 'What happens if it is not possible? Say the fallback.',
+  'where possible': 'Where is it not possible, and what then? Say the fallback.',
   'and so on': 'What else is on the list? Finish it.',
   'when necessary': 'When is it necessary? Name the condition.',
   'as appropriate': 'Appropriate by what rule? State it.',
@@ -205,13 +206,29 @@ export const NOT_VAGUE_AFTER_HOW = ['many', 'much', 'long', 'short', 'soon', 'fa
 /** "what kind of", "this sort of": a category, not a hedge. */
 export const KIND_OF_DETERMINERS = ['what', 'which', 'this', 'that', 'these', 'those', 'the', 'a', 'an', 'any', 'each', 'every', 'same', 'one', 'other'];
 
-/** "lead" is an owner only in frames like "the lead", "team lead", "tech lead". */
-export const LEAD_OWNER_BEFORE = [
-  'the', 'a', 'an', 'our', 'your', 'their', 'his', 'her', 'team', 'tech', 'project', 'product',
-  'design', 'engineering', 'creative', 'content', 'editorial', 'art', 'research', 'sales',
-  'marketing', 'qa', 'billing', 'support', 'account', 'program', 'studio',
+/**
+ * "lead" is a noun (an owner: "team lead", "the policy lead") unless the
+ * frame makes it a verb: sentence start ("Lead with the result"), after one
+ * of these words ("will lead", "to lead", "this leads"), or before one of
+ * the particles below ("lead with", "lead into").
+ */
+export const LEAD_VERB_AFTER = [
+  'to', 'will', 'would', 'should', 'must', 'can', 'could', 'may', 'might', 'shall', 'and', 'or',
+  'not', 'never', 'always', 'i', 'we', 'you', 'they', 'it', 'this', 'that', 'which', 'who',
+  'please', 'then', 'also', 'often', 'usually', 'does', 'do', 'did',
 ];
-const LEAD_NOT_BEFORE = ['to', 'with', 'into', 'in', 'by', 'up'];
+export const LEAD_VERB_BEFORE = ['with', 'into', 'up', 'off', 'by', 'through', 'them', 'it', 'us'];
+
+/**
+ * An owner word used as a modifier is not a person: "user survey",
+ * "customer data", "user interface". Owner words directly before these are plain.
+ */
+export const OWNER_MODIFIES = [
+  'survey', 'surveys', 'data', 'input', 'inputs', 'interface', 'interfaces', 'experience',
+  'research', 'story', 'stories', 'guide', 'guides', 'manual', 'name', 'names', 'id', 'ids',
+  'account', 'accounts', 'base', 'segment', 'segments', 'persona', 'personas', 'feedback',
+  'message', 'messages', 'query', 'queries', 'prompt', 'prompts', 'turn', 'turns', 'agent', 'role',
+];
 
 /** Inflections that look like a link but almost never are ("auto-categorised spending"). */
 export const NEVER_GUESS = ['spending'];
@@ -241,8 +258,9 @@ const MEASURE = new Set(MEASURE_WORDS);
 const NUMBERS = new Set(NUMBER_WORDS);
 const HOW_OK = new Set(NOT_VAGUE_AFTER_HOW);
 const KIND_DET = new Set(KIND_OF_DETERMINERS);
-const LEAD_BEFORE = new Set(LEAD_OWNER_BEFORE);
-const LEAD_NOT = new Set(LEAD_NOT_BEFORE);
+const LEAD_VERB_PREV = new Set(LEAD_VERB_AFTER);
+const LEAD_VERB_NEXT = new Set(LEAD_VERB_BEFORE);
+const OWNER_MOD = new Set(OWNER_MODIFIES);
 const PHRASES = Object.entries(VAGUE_PHRASES)
   .map(([phrase, question]) => ({ parts: phrase.split(' '), phrase, question }))
   // Longest first, so "as soon as possible" wins over shorter overlaps.
@@ -362,10 +380,12 @@ export function classifyTokens(tokens) {
     // 2. Exact table hits, with the few context rules.
     if (UNITS.has(w)) { if (numberNear(i)) res.kind = 'spec'; continue; }
     if (w === 'lead' || w === 'leads') {
-      if (LEAD_BEFORE.has(prev) && !LEAD_NOT.has(next)) { res.kind = 'owner'; res.guessed = w !== 'lead'; }
+      const verb = i === 0 || LEAD_VERB_PREV.has(prev) || LEAD_VERB_NEXT.has(next);
+      if (!verb && !OWNER_MOD.has(next)) { res.kind = 'owner'; res.guessed = w !== 'lead'; }
       continue;
     }
     const exact = KIND_OF.get(w);
+    if (exact === 'owner' && OWNER_MOD.has(next)) continue; // "user survey", "customer data"
     if (exact) { res.kind = exact; continue; }
 
     // 3. Vague words (phrases are applied after this loop and win over single words).
@@ -378,7 +398,7 @@ export function classifyTokens(tokens) {
 
     // 4. Suffix fallback: a guessed link.
     const guess = guessKind(w);
-    if (guess) { res.kind = guess; res.guessed = true; }
+    if (guess && !(guess === 'owner' && OWNER_MOD.has(next))) { res.kind = guess; res.guessed = true; }
   }
 
   // Phrases: match on lower-case token windows; flag the last word.

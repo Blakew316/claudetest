@@ -72,21 +72,26 @@ function parse(input, givenName) {
   const { text: body, title } = takeTitle(unfenced);
   const fileName = givenName || fileNameFromTitle(title) || DEFAULT_FILE_NAME;
 
+  // First rule with 2+ non-empty sections wins. If none does, paragraphs
+  // still win with 2+; otherwise a single named section (from a heading, tag
+  // or label) beats a single anonymous "part 1".
   let detectedBy = /** @type {'markdown'|'xml'|'labels'|'paragraphs'} */ ('paragraphs');
   let raw = null;
+  let single = null;
   for (const [name, detect] of /** @type {const} */ ([
     ['markdown', detectMarkdown],
     ['xml', detectXml],
     ['labels', detectLabels],
   ])) {
     const found = detect(body);
-    if (found && found.filter((s) => quickCount(s.body) > 0).length >= 2) {
-      detectedBy = name;
-      raw = found;
-      break;
-    }
+    const nonEmpty = found ? found.filter((sec) => quickCount(sec.body) > 0) : [];
+    if (nonEmpty.length >= 2) { detectedBy = name; raw = found; break; }
+    if (nonEmpty.length === 1 && !nonEmpty[0].preamble && !single) single = { name, found: nonEmpty };
   }
-  if (!raw) raw = detectParagraphs(body);
+  if (!raw) {
+    raw = detectParagraphs(body);
+    if (raw.length < 2 && single) { detectedBy = single.name; raw = single.found; }
+  }
 
   return build(raw, { fileName, detectedBy, skipped });
 }
@@ -187,6 +192,13 @@ function detectMarkdown(text) {
     if (m && m[2].trim()) heads.push({ i, level: m[1].length, text: m[2].trim() });
   }
   if (!heads.length) return null;
+  // Headings that all live inside 2+ top-level <tag> blocks belong to the XML structure.
+  const blocks = text.includes('<') ? topLevelTags(text) : [];
+  if (blocks.length >= 2) {
+    const offsets = [];
+    for (let i = 0, at = 0; i < lines.length; at += lines[i].length + 1, i++) offsets.push(at);
+    if (heads.every((h) => blocks.some((b) => offsets[h.i] > b.start && offsets[h.i] < b.end))) return null;
+  }
   const level = Math.min(...heads.map((h) => h.level));
   const tops = heads.filter((h) => h.level === level);
   const out = [];
@@ -333,18 +345,19 @@ function sentenceGroups(para) {
       if (n) sents.push({ s, n });
     }
   }
+  // Greedy: close a group once it has 25+ words, or before a sentence that
+  // would push a 15+ word group past 40. A tail under 15 words joins the previous group.
   const groups = [];
   let cur = null;
-  for (let k = 0; k < sents.length; k++) {
+  for (const { s, n } of sents) {
+    if (cur && (cur.n >= 25 || (cur.n >= 15 && cur.n + n > 40))) { groups.push(cur); cur = null; }
     if (!cur) cur = { name: null, subtitle: null, body: '', n: 0 };
-    cur.body += (cur.body ? ' ' : '') + sents[k].s;
-    cur.n += sents[k].n;
-    const next = sents[k + 1];
-    if (cur.n >= 40 || (cur.n >= 25 && next && cur.n + next.n > 40)) { groups.push(cur); cur = null; }
+    cur.body += (cur.body ? ' ' : '') + s;
+    cur.n += n;
   }
   if (cur) {
     const prev = groups[groups.length - 1];
-    if (prev && cur.n < 12) { prev.body += ` ${cur.body}`; prev.n += cur.n; } else groups.push(cur);
+    if (prev && cur.n < 15) { prev.body += ` ${cur.body}`; prev.n += cur.n; } else groups.push(cur);
   }
   if (groups.length && para.name) groups[0].name = para.name;
   return groups.length > MAX_SECTIONS ? balance(groups, MAX_SECTIONS) : groups;
@@ -352,7 +365,8 @@ function sentenceGroups(para) {
 
 /** Merge consecutive groups into at most `max` groups of roughly equal word counts. */
 function balance(groups, max) {
-  const total = groups.reduce((a, g) => a + g.n, 0);
+  // Balance over the words that will actually be read (the cap drops the rest).
+  const total = Math.min(MAX_WORDS, groups.reduce((a, g) => a + g.n, 0));
   const out = [];
   let acc = 0;
   for (const g of groups) {
@@ -411,6 +425,12 @@ const ENTITIES = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'", nbsp: ' ', 
 /** Strip inline markdown/HTML from one line, keeping the readable text. */
 function cleanInline(line) {
   return line
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[\^[^\]]*\]/g, '')
+    .replace(/\[([^\]]+)\]\((?:[^()\s]|\([^)]*\))*(?:\s+"[^"]*")?\)/g, '$1')
+    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, '$1')
+    .replace(/<((?:https?:\/\/|www\.)[^>\s]+)>/g, '$1')
+    .replace(/<\/?[A-Za-z][\w.:-]*(?:\s[^<>]*)?\/?>/g, ' ')
     .replace(/&(#\d+|#x[0-9a-f]+|[a-z]+);/gi, (m, e) => {
       if (e[0] === '#') {
         const code = e[1] === 'x' || e[1] === 'X' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
@@ -418,12 +438,6 @@ function cleanInline(line) {
       }
       return ENTITIES[e.toLowerCase()] ?? m;
     })
-    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
-    .replace(/\[\^[^\]]*\]/g, '')
-    .replace(/\[([^\]]+)\]\((?:[^()\s]|\([^)]*\))*(?:\s+"[^"]*")?\)/g, '$1')
-    .replace(/\[([^\]]+)\]\[[^\]]*\]/g, '$1')
-    .replace(/<((?:https?:\/\/|www\.)[^>\s]+)>/g, '$1')
-    .replace(/<\/?[A-Za-z][\w.:-]*(?:\s[^<>]*)?\/?>/g, ' ')
     .replace(/`+/g, '')
     .replace(/\*+|~~/g, '')
     .replace(/(^|[^\p{L}\p{N}])_+(?=[\p{L}\p{N}])/gu, '$1')

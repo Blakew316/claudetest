@@ -30,7 +30,7 @@ const QUEUED_ALPHA = 0.62;
 /** Brightness of the coloured bitmap for done clusters during the crawl. */
 const DONE_ALPHA = 0.5;
 /** Brightness of every cluster in the ship overview. */
-const SHIP_ALPHA = 0.9;
+const SHIP_ALPHA = 1;
 /** Crossfade time constant (s); ~95% of a status change lands in 0.6 s. */
 const FADE_TAU = 0.2;
 /** Highest-detail bitmap: px per world unit per dpr (good to zoom ~1.6). */
@@ -42,9 +42,12 @@ const MAX_SIDE = 1600;
 /** World size of a read word-node square. */
 const NODE_SIZE = 4.2;
 /** Faint pre-rendered dust points per web particle. */
-const DUST_PER_PARTICLE = 2.6;
+const DUST_PER_PARTICLE = 3.5;
+/** Share of web particles / dust that sit on filaments (the rest is blob, outskirts, arms). */
+const WEB_FILAMENT_SHARE = 0.28;
+const DUST_FILAMENT_SHARE = 0.42;
 /** Peak alpha of the pre-rendered filament haze. */
-const HAZE_ALPHA = 0.075;
+const HAZE_ALPHA = 0.045;
 
 // --------------------------------------------------------------- helpers --
 
@@ -226,7 +229,7 @@ function makeCloud(rand, r, count) {
   const f = 1.7 / r;
   const ox = rand() * 50;
   const oy = rand() * 50;
-  const warpAmp = 0.3 * r;
+  const warpAmp = 0.2 * r;
 
   /** Shape transform: elongate, rotate, then domain-warp with two octaves of value noise. */
   const shape = (x, y, out) => {
@@ -243,7 +246,7 @@ function makeCloud(rand, r, count) {
   /** Density mask: lumpy edges, low-frequency holes. */
   const keep = (x, y) => {
     const m = noiseC(x * f * 1.3 + 3, y * f * 1.3 + 9);
-    return rand() < 0.62 + 0.38 * m;
+    return rand() < 0.74 + 0.3 * m;
   };
 
   const tmp = [0, 0];
@@ -252,8 +255,8 @@ function makeCloud(rand, r, count) {
   const M = clamp(Math.round(26 + 0.5 * count), 26, 80);
   const nodes = [];
   while (nodes.length < M) {
-    const x = gauss(rand) * 0.42 * r;
-    const y = gauss(rand) * 0.42 * r;
+    const x = gauss(rand) * 0.36 * r;
+    const y = gauss(rand) * 0.36 * r;
     if (x * x + y * y > 1.25 * r * 1.25 * r) continue;
     shape(x, y, tmp);
     nodes.push({ x: tmp[0], y: tmp[1], w: range(rand, 0.6, 1.2) });
@@ -288,7 +291,7 @@ function makeCloud(rand, r, count) {
   const arms = [];
   const armCount = 2 + Math.floor(rand() * 3);
   for (let i = 0; i < armCount; i++) {
-    arms.push({ a0: rand() * Math.PI * 2, curl: range(rand, -1.1, 1.1), reach: range(rand, 1.05, 1.45) });
+    arms.push({ a0: rand() * Math.PI * 2, curl: range(rand, -1.1, 1.1), reach: range(rand, 0.75, 1.1) });
   }
 
   /**
@@ -322,19 +325,19 @@ function makeCloud(rand, r, count) {
     } else {
       const v = (u - wFil) / (1 - wFil);
       if (v < 0.64) {
-        shape(gauss(rand) * 0.4 * r, gauss(rand) * 0.4 * r, out);
+        shape(gauss(rand) * 0.34 * r, gauss(rand) * 0.34 * r, out);
         x = out[0];
         y = out[1];
         if (!keep(x, y)) return false;
       } else if (v < 0.84) {
-        shape(gauss(rand) * 0.72 * r, gauss(rand) * 0.72 * r, out);
+        shape(gauss(rand) * 0.6 * r, gauss(rand) * 0.6 * r, out);
         x = out[0];
         y = out[1];
         if (!keep(x, y)) return false;
       } else {
         const arm = arms[Math.floor(rand() * arms.length)];
         const t = Math.pow(rand(), 0.8);
-        const rad = r * (0.35 + t * arm.reach);
+        const rad = r * (0.3 + t * arm.reach);
         const ang = arm.a0 + arm.curl * t;
         const spreadA = r * (0.02 + 0.07 * t);
         x = Math.cos(ang) * rad + gauss(rand) * spreadA;
@@ -354,7 +357,7 @@ function makeCloud(rand, r, count) {
   let p = 0;
   let guard = 0;
   while (p < n && guard++ < n * 20) {
-    if (!samplePoint(0.5, tmp)) continue;
+    if (!samplePoint(WEB_FILAMENT_SHARE, tmp)) continue;
     const x = tmp[0];
     const y = tmp[1];
     const dist = Math.sqrt(x * x + y * y);
@@ -362,7 +365,7 @@ function makeCloud(rand, r, count) {
     px[p * 2 + 1] = y;
     const fall = 1 - 0.5 * smoothstep(0.55 * r, 1.35 * r, dist);
     alpha[p] = (0.4 + 0.6 * Math.pow(rand(), 0.7)) * fall;
-    size[p] = rand() < 0.2 ? range(rand, 1.3, 1.6) : range(rand, 0.95, 1.25);
+    size[p] = rand() < 0.22 ? range(rand, 1.45, 1.9) : range(rand, 1.05, 1.4);
     if (rand() < 0.03) {
       isStar[p] = 1;
       size[p] = range(rand, 2, 3);
@@ -378,20 +381,20 @@ function makeCloud(rand, r, count) {
   let q = 0;
   guard = 0;
   while (q < nd && guard++ < nd * 20) {
-    if (!samplePoint(0.62, tmp)) continue;
+    if (!samplePoint(DUST_FILAMENT_SHARE, tmp)) continue;
     const x = tmp[0];
     const y = tmp[1];
     const dist = Math.sqrt(x * x + y * y);
     const fall = 1 - 0.6 * smoothstep(0.5 * r, 1.4 * r, dist);
     dust[q * 3] = x;
     dust[q * 3 + 1] = y;
-    dust[q * 3 + 2] = (0.14 + 0.4 * rand() * rand()) * fall;
+    dust[q * 3 + 2] = (0.22 + 0.6 * rand() * rand()) * fall;
     q++;
   }
 
   // Fine constellation web: 1–3 nearest neighbours within a cutoff, found
   // through a flat grid hash (counting sort into cells, no allocation per query).
-  const cutoff = Math.max(16, 0.13 * r);
+  const cutoff = Math.max(18, 0.16 * r);
   const cut2 = cutoff * cutoff;
   let gMinX = Infinity;
   let gMinY = Infinity;
@@ -672,6 +675,8 @@ export function buildWorld(analysis, seed) {
     bounds: { minX, minY, maxX, maxY },
     _clouds: clouds,
     _vis: null,
+    /** Bitmap build counters (debug / harness only). */
+    _stats: { bitmaps: 0, bitmapMs: 0 },
   };
 }
 
@@ -705,7 +710,7 @@ function renderCloud(cloud, color, scale, grey) {
 
   // Soft haze along the filaments so the cloud reads as a nebula, not dots.
   for (const nd of cloud.nodes) {
-    const R = cloud.r * 0.24 * nd.w;
+    const R = cloud.r * 0.34 * nd.w;
     const grad = g.createRadialGradient(nd.x, nd.y, 0, nd.x, nd.y, R);
     grad.addColorStop(0, withAlpha(color, grey ? HAZE_ALPHA * 0.5 : HAZE_ALPHA));
     grad.addColorStop(1, withAlpha(color, 0));
@@ -718,7 +723,7 @@ function renderCloud(cloud, color, scale, grey) {
   const strokeBuckets = (list, buckets, baseAlpha, width) => {
     g.lineWidth = Math.max(width, 0.6 * unit);
     // Hairlines thinner than a device pixel keep their visual weight via alpha.
-    const thin = Math.min(1, (width * scale) / 0.6);
+    const thin = Math.sqrt(Math.min(1, (width * scale) / 0.6));
     const paths = buckets.map(() => []);
     for (let e = 0; e < list.length; e += 2) {
       const i = list[e];
@@ -742,7 +747,7 @@ function renderCloud(cloud, color, scale, grey) {
     });
   };
   strokeBuckets(cloud.longEdges, [40, 70, Infinity], grey ? 0.16 : 0.22, 0.5);
-  strokeBuckets(cloud.edges, [9, 18, Infinity], grey ? 0.26 : 0.34, 0.5);
+  strokeBuckets(cloud.edges, [12, 24, Infinity], grey ? 0.22 : 0.3, 0.5);
 
   // Dots (dust + web particles) bucketed by final alpha. Dots smaller than a
   // device pixel are drawn as one pixel with area-scaled alpha so brightness
@@ -753,7 +758,8 @@ function renderCloud(cloud, color, scale, grey) {
     const spx = size * scale;
     let s = size;
     if (spx < 1) {
-      a *= spx * spx;
+      // Partly area-scaled: zoomed-out clouds stay crisp and bright like the reference overview.
+      a *= spx;
       s = unit;
     }
     if (a < 0.004) return;
@@ -761,7 +767,7 @@ function renderCloud(cloud, color, scale, grey) {
     bx[b].push(x - s / 2, y - s / 2, s);
   };
   const dust = cloud.dust;
-  const dustSize = 0.85;
+  const dustSize = 1.0;
   const dustGain = grey ? 0.85 : 1;
   for (let i = 0; i < dust.length; i += 3) push(dust[i], dust[i + 1], dustSize, dust[i + 2] * dustGain);
   const pGain = grey ? 0.8 : 1;
@@ -779,12 +785,13 @@ function renderCloud(cloud, color, scale, grey) {
 }
 
 /** Ensure a cluster's bitmaps for one level of detail exist at the right scale. */
-function ensureLevel(cloud, color, lod, dpr) {
+function ensureLevel(cloud, color, lod, dpr, stats) {
   const { minX, minY, maxX, maxY } = cloud.extent;
   const side = Math.max(maxX - minX, maxY - minY);
   const want = Math.min((lod === 'hi' ? HI_SCALE : LO_SCALE) * dpr, MAX_SIDE / side);
   const cur = cloud.bitmaps[lod];
   if (cur && Math.abs(cur.scale - want) < 1e-6) return cur;
+  const t0 = typeof performance !== 'undefined' ? performance.now() : 0;
   const level = {
     scale: want,
     color: renderCloud(cloud, color, want, false),
@@ -792,6 +799,10 @@ function ensureLevel(cloud, color, lod, dpr) {
     grey: renderCloud(cloud, QUEUED, lod === 'hi' ? want * 0.65 : want, true),
   };
   cloud.bitmaps[lod] = level;
+  if (stats) {
+    stats.bitmaps++;
+    stats.bitmapMs += (typeof performance !== 'undefined' ? performance.now() : 0) - t0;
+  }
   return level;
 }
 
@@ -836,8 +847,13 @@ function updateLevels(world, run) {
   return vis;
 }
 
-/** Draw one bitmap level (grey + colour) of a cluster. */
-function blitLevel(ctx, c, level, greyA, colorA) {
+/**
+ * Draw one bitmap level (grey + colour) of a cluster. Mipmapped filtering
+ * ('medium') only when the bitmap is noticeably downscaled, where plain
+ * bilinear would shimmer; otherwise the cheaper 'low'.
+ */
+function blitLevel(ctx, c, level, greyA, colorA, need) {
+  if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = level.scale > need * 1.25 ? 'medium' : 'low';
   if (greyA > 0.003) {
     const b = level.grey;
     ctx.globalAlpha = greyA;
@@ -876,7 +892,6 @@ export function drawWorld(ctx, world, run, view, analysis) {
   applyWorldTransform(ctx, view);
   ctx.globalCompositeOperation = 'lighter';
   ctx.imageSmoothingEnabled = true;
-  if ('imageSmoothingQuality' in ctx) ctx.imageSmoothingQuality = 'medium';
 
   // LOD crossfade: lo below ~1.4x its scale, hi above ~2.2x.
   const loScale = LO_SCALE * dpr;
@@ -890,7 +905,7 @@ export function drawWorld(ctx, world, run, view, analysis) {
     if (c.cx + e.maxX < vx0 || c.cx + e.minX > vx1 || c.cy + e.maxY < vy0 || c.cy + e.minY > vy1) {
       // Off-screen: warm a bitmap in the background, one per frame.
       if (budget > 0 && !cloud.bitmaps.hi) {
-        ensureLevel(cloud, c.color, 'hi', dpr);
+        ensureLevel(cloud, c.color, 'hi', dpr, world._stats);
         budget--;
       }
       continue;
@@ -913,8 +928,8 @@ export function drawWorld(ctx, world, run, view, analysis) {
       ctx.fillRect(c.cx - R, c.cy - R, R * 2, R * 2);
     }
 
-    if (hiMix < 1) blitLevel(ctx, c, ensureLevel(cloud, c.color, 'lo', dpr), greyA * (1 - hiMix), colorA * (1 - hiMix));
-    if (hiMix > 0) blitLevel(ctx, c, ensureLevel(cloud, c.color, 'hi', dpr), greyA * hiMix, colorA * hiMix);
+    if (hiMix < 1) blitLevel(ctx, c, ensureLevel(cloud, c.color, 'lo', dpr, world._stats), greyA * (1 - hiMix), colorA * (1 - hiMix), need);
+    if (hiMix > 0) blitLevel(ctx, c, ensureLevel(cloud, c.color, 'hi', dpr, world._stats), greyA * hiMix, colorA * hiMix, need);
 
     // Twinkling stars.
     const total = vis.grey[i] * QUEUED_ALPHA + colorA;
