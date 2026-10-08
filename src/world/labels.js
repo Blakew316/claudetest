@@ -10,8 +10,16 @@
 
 import { BG, FLAG, MONO, QUEUED, TEXT_DIM, withAlpha } from '../core/theme.js';
 
-/** Plain words that are dropped from done sections during the crawl to cut clutter. */
-const STOPWORDS = new Set(['the', 'and', 'a', 'of', 'to', 'in', 'is', 'it', 'for']);
+/** Filler words that never get a label. */
+const STOPWORDS = new Set(['the', 'and', 'a', 'an', 'of', 'to', 'in', 'is', 'it', 'for', 'on', 'at', 'by', 'or', 'as', 'be', 'with', 'that', 'this', 'then', 'one']);
+/**
+ * How long (s) a label stays up after its word is read, before fading. Plain
+ * words flash and go, linked words linger, flags stay for the whole section.
+ * The ship overview shows only the flags.
+ */
+const HOLD_PLAIN = 1.4;
+const HOLD_LINK = 3.2;
+const FADE_OUT = 0.7;
 
 const LABEL_FONT = `11px ${MONO}`;
 const TITLE_FONT = `500 20px ${MONO}`;
@@ -141,11 +149,15 @@ export function drawLabels(ctx, world, run, view, analysis) {
     for (let id = sec.start, end = sec.start + sec.count; id < end; id++) {
       if (run.wordState[id] !== 2) continue;
       const word = words[id];
-      if (dropStop && !word.kind && !word.vague && STOPWORDS.has(word.text.toLowerCase())) continue;
+      if (!word.vague && (ship || dropStop)) continue;
+      if (!word.kind && !word.vague && STOPWORDS.has(word.text.toLowerCase())) continue;
       const age = t - run.readAt[id];
       if (age < 0) continue;
       const fade = age >= FADE_IN ? 1 : age / FADE_IN;
-      const a = secAlpha * fade * fade * (3 - 2 * fade);
+      // Ordinary and linked labels fade out after a moment; flags stay.
+      const hold = word.vague ? Infinity : word.kind ? HOLD_LINK : HOLD_PLAIN;
+      const out = age <= hold ? 1 : Math.max(0, 1 - (age - hold) / FADE_OUT);
+      const a = secAlpha * fade * fade * (3 - 2 * fade) * out;
       if (a <= 0.01) continue;
       view.project(pos[id * 3], pos[id * 3 + 1], pos[id * 3 + 2], p);
       if (!p.vis) continue;
