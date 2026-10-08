@@ -1,40 +1,14 @@
 /**
- * The DOM around the stage: stats line, tabs, section header, controls, the
- * six dashboard panels, the prompt editor and the flag list. Reads run state
- * only; user actions go out through `handlers`. Updates are throttled to
- * ~20 Hz and only touch the DOM when a value changed.
+ * The DOM around the full-screen stage: stats line, tabs, section header,
+ * controls, the prompt editor and the flag list. Reads run state only; user
+ * actions go out through `handlers`. Updates are throttled to ~20 Hz and only
+ * touch the DOM when a value changed.
  */
 
-import { AMBER, FLAG, SPIDER, TEXT_FAINT, MONO, PANEL_BORDER, withAlpha } from '../core/theme.js';
-
 const $ = (id) => document.getElementById(id);
-const HEAT_CELLS = 12;
-const LOG_ROWS = 15;
-
-/** Short radar axis label for a section name. */
-function axisLabel(name) {
-  const known = { role: 'ROLE', objective: 'OBJ', context: 'CTX', roles: 'TEAM', rules: 'RULES', review: 'REV', start: 'START' };
-  return known[name] || name.slice(0, 5).toUpperCase();
-}
 
 function escapeHtml(s) {
   return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
-}
-
-/** Size a canvas to its CSS box at device resolution; returns a ctx in CSS px or null if hidden. */
-function fitCanvas(cv) {
-  const w = cv.clientWidth;
-  const h = cv.clientHeight;
-  if (!w || !h) return null;
-  const dpr = Math.min(2, window.devicePixelRatio || 1);
-  if (cv.width !== Math.round(w * dpr) || cv.height !== Math.round(h * dpr)) {
-    cv.width = Math.round(w * dpr);
-    cv.height = Math.round(h * dpr);
-  }
-  const ctx = cv.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.clearRect(0, 0, w, h);
-  return { ctx, w, h };
 }
 
 /**
@@ -52,12 +26,7 @@ export function createHud(analysis, handlers) {
   let paused = false;
 
   // ---- static controls ----
-  $('explainer').textContent = handlers.scoreExplainer;
-  $('btn-info').addEventListener('click', () => {
-    const ex = $('explainer');
-    ex.hidden = !ex.hidden;
-    $('btn-info').setAttribute('aria-expanded', String(!ex.hidden));
-  });
+  $('score-stat').title = handlers.scoreExplainer;
   $('btn-pause').addEventListener('click', () => setPaused(!paused));
   $('btn-replay').addEventListener('click', () => {
     setPaused(false);
@@ -181,19 +150,8 @@ export function createHud(analysis, handlers) {
   function build() {
     for (const k of Object.keys(prev)) delete prev[k];
     $('s-file').textContent = A.fileName;
-    $('m-sections').textContent = String(A.sections.length);
-    $('m-total').textContent = String(A.words.length);
     $('tabs').innerHTML = [...A.sections.map((s) => s.name), 'ship'].map((n, i) => `<button type="button" data-i="${i}">${escapeHtml(n)}</button>`).join('');
     $('tabs').querySelectorAll('button').forEach((b) => b.addEventListener('click', () => handlers.onSeekSection(Number(b.dataset.i))));
-    $('secs').innerHTML = A.sections
-      .map((s) => `<li><span class="nm">${escapeHtml(s.name)}</span><span class="ct">0/${s.count}</span><span class="bar"><i style="background:${s.color}"></i></span></li>`)
-      .join('');
-    const kinds = [['claims', 'claim'], ['owners', 'owner'], ['approvals', 'approval']];
-    $('kinds').innerHTML = kinds.map(([label]) => `<li><span>${label}</span><span class="bar"><i></i></span><b>0</b></li>`).join('');
-    $('heat').innerHTML = A.sections
-      .map((s) => `<div class="row"><span>${escapeHtml(s.abbr)}</span>${'<i></i>'.repeat(HEAT_CELLS)}</div>`)
-      .join('');
-    $('log').innerHTML = '<li>&nbsp;</li>'.repeat(LOG_ROWS);
   }
   build();
 
@@ -203,115 +161,11 @@ export function createHud(analysis, handlers) {
     $(id).textContent = value;
   }
 
-  // ---- canvases ----
-  function drawRadar(run) {
-    const c = fitCanvas($('radar'));
-    if (!c) return;
-    const { ctx, w, h } = c;
-    const n = A.sections.length;
-    if (n < 3) return;
-    const cx = w / 2;
-    const cy = h / 2 + 2;
-    const R = Math.min(w * 0.36, h / 2 - 12);
-    const pt = (i, r) => [cx + Math.sin((i / n) * Math.PI * 2) * r, cy - Math.cos((i / n) * Math.PI * 2) * r];
-    ctx.strokeStyle = PANEL_BORDER;
-    ctx.lineWidth = 1;
-    for (let ring = 1; ring <= 3; ring++) {
-      ctx.beginPath();
-      for (let i = 0; i <= n; i++) ctx[i ? 'lineTo' : 'moveTo'](...pt(i % n, (R * ring) / 3));
-      ctx.stroke();
-    }
-    ctx.font = `9px ${MONO}`;
-    ctx.fillStyle = TEXT_FAINT;
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    for (let i = 0; i < n; i++) {
-      const [x, y] = pt(i, R + 10);
-      ctx.fillText(axisLabel(A.sections[i].name), x, y);
-    }
-    ctx.beginPath();
-    for (let i = 0; i < n; i++) {
-      const s = A.sections[i];
-      const f = s.count ? run.readCount[i] / s.count : 0;
-      ctx[i ? 'lineTo' : 'moveTo'](...pt(i, Math.max(1.5, f * R)));
-    }
-    ctx.closePath();
-    ctx.fillStyle = withAlpha(SPIDER, 0.42);
-    ctx.fill();
-    ctx.strokeStyle = SPIDER;
-    ctx.lineWidth = 1.2;
-    ctx.stroke();
-  }
-
-  function drawSpark(run) {
-    const c = fitCanvas($('spark'));
-    if (!c) return;
-    const { ctx, w, h } = c;
-    const hist = run.scoreHistory;
-    // A live trace: score history plus a gentle carrier so the line breathes like the reference.
-    const N = 60;
-    ctx.beginPath();
-    for (let i = 0; i < N; i++) {
-      const s = hist.length ? hist[Math.max(0, hist.length - N + i)] ?? hist[0] : 0;
-      const wave = Math.sin(i * 0.22 + run.t * 2.2) * 0.22 + Math.sin(i * 0.09 - run.t) * 0.12;
-      const x = (i / (N - 1)) * w;
-      const y = h / 2 - wave * h * 0.9 - (s / 100 - 0.5) * h * 0.25;
-      ctx[i ? 'lineTo' : 'moveTo'](x, y);
-    }
-    ctx.strokeStyle = AMBER;
-    ctx.lineWidth = 1.4;
-    ctx.stroke();
-  }
-
-  function drawGauge(run) {
-    const c = fitCanvas($('gauge'));
-    if (!c) return;
-    const { ctx, w, h } = c;
-    const cx = w / 2;
-    const cy = h / 2 + 4;
-    const R = Math.min(w, h) / 2 - 8;
-    const a0 = Math.PI * 0.75;
-    const sweep = Math.PI * 1.5;
-    const col = run.score >= 80 ? SPIDER : run.score >= 30 ? AMBER : FLAG;
-    ctx.lineCap = 'butt';
-    ctx.lineWidth = Math.max(5, R * 0.16);
-    ctx.strokeStyle = '#161921';
-    ctx.beginPath();
-    ctx.arc(cx, cy, R, a0, a0 + sweep);
-    ctx.stroke();
-    ctx.strokeStyle = col;
-    ctx.beginPath();
-    ctx.arc(cx, cy, R, a0, a0 + sweep * Math.max(0.01, run.score / 100));
-    ctx.stroke();
-    ctx.fillStyle = '#e6e8ee';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.font = `700 ${Math.round(R * 0.62)}px ${MONO}`;
-    ctx.fillText(String(run.score), cx, cy - R * 0.05);
-    ctx.font = `9px ${MONO}`;
-    ctx.fillStyle = '#8a8f9c';
-    ctx.fillText('spec score', cx, cy + R * 0.42);
-  }
-
-  function renderCode(chars, program) {
-    let left = chars;
-    let html = '';
-    for (const line of program.split('\n')) {
-      if (left <= 0) break;
-      const part = line.slice(0, left);
-      left -= line.length + 1;
-      const t = line.trim();
-      const cls = t.startsWith('#') ? 'cm' : /^(for|if|else)\b/.test(t) ? 'kw' : / = /.test(t) ? 'as' : '';
-      html += `${cls ? `<span class="${cls}">` : ''}${escapeHtml(part)}${cls ? '</span>' : ''}${left > 0 ? '\n' : ''}`;
-    }
-    return `${html}<span class="cursor"></span>`;
-  }
-
   /**
    * @param {import('../core/contracts.js').RunState} run
-   * @param {{program:string, force?:boolean}} opts
+   * @param {{force?:boolean}} [opts]
    */
-  function update(run, opts) {
+  function update(run, opts = {}) {
     const now = performance.now();
     if (!opts.force && now - last < 50) return;
     last = now;
@@ -325,6 +179,8 @@ export function createHud(analysis, handlers) {
     set('s-flags', String(run.counts.flagged));
     set('s-t', run.t.toFixed(2));
     set('s-frame', String(run.frame).padStart(4, '0'));
+    set('s-score', String(run.score));
+    set('btn-flags', `flags to ask · ${run.counts.flagged}`);
 
     // Header + tabs + live region only change with the active section.
     const key = `${run.active}:${run.phase === 'boot'}`;
@@ -370,81 +226,6 @@ export function createHud(analysis, handlers) {
       prev.aria = label;
       $('stage').setAttribute('aria-label', label);
     }
-
-    // Crawl log.
-    if (prev.logSeq !== run.logSeq) {
-      prev.logSeq = run.logSeq;
-      const rows = run.log.slice(-LOG_ROWS);
-      const pad = LOG_ROWS - rows.length;
-      $('log').innerHTML =
-        '<li>&nbsp;</li>'.repeat(pad) +
-        rows
-          .map((e, i) => {
-            const fade = Math.min(1, 0.25 + (pad + i) / (LOG_ROWS * 0.5));
-            const color = A.sections[e.section]?.color ?? '#e6e8ee';
-            return `<li style="opacity:${fade.toFixed(2)}"><span class="tm">${e.clock}</span><span class="vb ${e.verb}">${e.verb}</span> <span style="color:${e.verb === 'walk' ? 'var(--mint)' : color}">${escapeHtml(e.text)}</span></li>`;
-          })
-          .join('');
-    }
-    set('m-wps', `${run.wps} w/s`);
-
-    // Sections.
-    const secKey = run.readCount.join() + run.active;
-    if (prev.secs !== secKey) {
-      prev.secs = secKey;
-      $('secs').querySelectorAll('li').forEach((li, i) => {
-        const s = A.sections[i];
-        li.className = i === run.active ? 'active' : '';
-        li.querySelector('.nm').style.color = i === run.active ? s.color : '';
-        li.querySelector('.ct').textContent = `${run.readCount[i]}/${s.count}`;
-        li.querySelector('.bar i').style.width = `${s.count ? (100 * run.readCount[i]) / s.count : 0}%`;
-      });
-      // Word heat: each cell is a bucket of the section's words.
-      $('heat').querySelectorAll('.row').forEach((row, i) => {
-        const s = A.sections[i];
-        row.querySelectorAll('i').forEach((cell, k) => {
-          const from = s.start + Math.floor((k * s.count) / HEAT_CELLS);
-          const to = s.start + Math.floor(((k + 1) * s.count) / HEAT_CELLS);
-          let read = 0;
-          for (let id = from; id < to; id++) if (run.wordState[id] === 2) read++;
-          const f = to > from ? read / (to - from) : 0;
-          cell.style.background = f > 0 ? withAlpha(s.color, 0.25 + 0.75 * f) : '';
-        });
-      });
-    }
-
-    // Kind bars.
-    const by = A.totals.byKind;
-    const kc = [
-      [run.counts.claims, by.claim],
-      [run.counts.owners, by.owner],
-      [run.counts.approvals, by.approval],
-    ];
-    const kKey = kc.map((k) => k[0]).join();
-    if (prev.kinds !== kKey) {
-      prev.kinds = kKey;
-      $('kinds').querySelectorAll('li').forEach((li, i) => {
-        li.querySelector('i').style.width = `${kc[i][1] ? (100 * kc[i][0]) / kc[i][1] : 0}%`;
-        li.querySelector('b').textContent = String(kc[i][0]);
-      });
-    }
-
-    set('wpm', `${run.wps * 60}/m`);
-    set('t-read', String(run.counts.read));
-    set('t-linked', String(run.counts.linked));
-    set('t-flagged', String(run.counts.flagged));
-    set('t-guessed', String(run.counts.guessed));
-    set('btn-flags', `flags to ask · ${run.counts.flagged}`);
-    set('m-lps', `${run.lps} l/s`);
-
-    if (prev.code !== run.codeChars) {
-      prev.code = run.codeChars;
-      $('code').innerHTML = renderCode(run.codeChars, opts.program);
-    }
-
-    drawRadar(run);
-    drawSpark(run);
-    drawGauge(run);
   }
 
   return {

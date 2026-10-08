@@ -12,6 +12,13 @@
 </head>
 <body>
 <div class="app">
+
+  <main class="stage" id="stage-wrap">
+    <canvas id="stage" role="img" aria-label="Prompt crawler"></canvas>
+    <canvas id="overlay" aria-hidden="true"></canvas>
+    <button type="button" id="btn-play-crawl" class="play-crawl" hidden>Play crawl</button>
+  </main>
+
   <header class="top">
     <div class="stats">
       <span class="stat"><b class="lbl">swarm</b> <b>prompt-crawler</b></span>
@@ -20,69 +27,27 @@
       <span class="stat"><b class="lbl">words read</b> <b id="s-words">0/0</b></span>
       <span class="stat"><b class="lbl">links</b> <b id="s-links" class="c-amber">0</b></span>
       <span class="stat"><b class="lbl">flags</b> <b id="s-flags" class="c-pink">0</b></span>
+      <span class="stat" id="score-stat"><b class="lbl">spec score</b> <b id="s-score">0</b></span>
       <span class="stat"><b class="lbl">t</b> <b id="s-t">0.00</b></span>
       <span class="stat"><b class="lbl">frame</b> <b id="s-frame">0000</b></span>
       <span class="file c-pink" id="s-file">studio.prompt</span>
     </div>
     <nav class="tabs" id="tabs" aria-label="Sections"></nav>
+    <div class="bar">
+      <div class="head" id="head">
+        <h1 id="head-title">00 BOOT</h1>
+        <p id="head-sub"></p>
+      </div>
+      <div class="controls">
+        <button type="button" id="btn-pause">Pause</button>
+        <button type="button" id="btn-replay">Replay</button>
+        <button type="button" id="btn-speed" aria-label="Playback speed">1×</button>
+        <button type="button" id="btn-flags" class="flags">flags to ask · 0</button>
+        <button type="button" id="btn-edit" class="primary">Your prompt</button>
+      </div>
+    </div>
   </header>
 
-  <main class="stage" id="stage-wrap">
-    <canvas id="stage" role="img" aria-label="Prompt crawler"></canvas>
-    <canvas id="overlay" aria-hidden="true"></canvas>
-    <div class="head" id="head">
-      <h1 id="head-title">00 BOOT</h1>
-      <p id="head-sub"></p>
-    </div>
-    <div class="controls">
-      <button type="button" id="btn-pause">Pause</button>
-      <button type="button" id="btn-replay">Replay</button>
-      <button type="button" id="btn-speed" aria-label="Playback speed">1×</button>
-      <button type="button" id="btn-edit" class="primary">Your prompt</button>
-    </div>
-    <button type="button" id="btn-play-crawl" class="play-crawl" hidden>Play crawl</button>
-  </main>
-
-  <section class="dash" aria-label="Crawl dashboard">
-    <div class="panel">
-      <h2>Crawl log <span class="meta" id="m-wps">0 w/s</span></h2>
-      <ol class="log" id="log"></ol>
-    </div>
-    <div class="panel">
-      <h2>Sections <span class="meta" id="m-sections">0</span></h2>
-      <ul class="secs" id="secs"></ul>
-      <p class="foot">words → kinds → links</p>
-    </div>
-    <div class="panel">
-      <h2>Coverage radar <span class="meta">live</span></h2>
-      <canvas class="radar" id="radar"></canvas>
-      <ul class="kinds" id="kinds"></ul>
-    </div>
-    <div class="panel">
-      <h2>Word heat <span class="meta" id="m-total">0</span></h2>
-      <div class="heat" id="heat"></div>
-      <p class="sub">words per second</p>
-      <p class="big" id="wpm">0/m</p>
-      <dl class="tally">
-        <dt>read</dt><dd id="t-read">0</dd>
-        <dt>linked</dt><dd id="t-linked" class="c-amber">0</dd>
-        <dt>flagged</dt><dd id="t-flagged" class="c-pink">0</dd>
-        <dt>guessed</dt><dd id="t-guessed" class="c-mint">0</dd>
-      </dl>
-    </div>
-    <div class="panel">
-      <h2>Spec score <span class="meta">live <button type="button" class="info" id="btn-info" aria-expanded="false" aria-controls="explainer">?</button></span></h2>
-      <p class="explainer" id="explainer" hidden></p>
-      <canvas class="spark" id="spark"></canvas>
-      <canvas class="gauge" id="gauge"></canvas>
-      <button type="button" class="flags-btn c-pink" id="btn-flags">flags to ask · 0</button>
-      <p class="foot">ask, don't guess</p>
-    </div>
-    <div class="panel">
-      <h2>crawler.py <span class="meta c-pink" id="m-lps">0 l/s</span></h2>
-      <pre class="code" id="code"></pre>
-    </div>
-  </section>
 </div>
 
 <dialog id="editor" aria-labelledby="editor-title">

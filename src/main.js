@@ -97,7 +97,7 @@ function render(dt, force = false) {
     drawLabels(octx, world, run, view, analysis);
     drawSpiderOverlay(octx, world, run, view, analysis);
   }
-  hud.update(run, { program: director.program, force });
+  hud.update(run, { force });
 }
 
 function frame(now) {
