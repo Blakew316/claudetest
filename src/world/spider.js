@@ -6,9 +6,10 @@
  * abdomen with spinnerets at the rear.
  *
  * Two ways of moving, which alternate through the crawl:
- *  - glide: between sections it lets go of the web and drifts along a curved
- *    path on its dragline (run.travel), legs floating and trailing on springs;
- *    near the end they reach out one by one and grab the new web.
+ *  - jump: between sections (run.travel) it crouches, launches and flies a
+ *    floaty ballistic arc on its dragline. On take-off the legs stream out
+ *    behind it; past the apex they swing forward to catch; on landing the
+ *    feet grab the web where they are and the body absorbs the impact.
  *  - crawl: inside a section it moves like a real spider, in short eased
  *    bursts with pauses between them, turning while paused; feet stay planted
  *    on web nodes and step individually, alternating groups.
@@ -24,9 +25,11 @@ export const CEPH = { RX: 11, RY: 9.5, RZ: 7, OFF: 9 };
 const SILK_CAP = 500;
 const SILK_EVERY = 36;
 const CELL = 40;
-const STEP_TIME = 0.2;
+const STEP_TIME = 0.17;
 const MAX_TURN = 2.2;
 const MAX_TILT = 0.5;
+const MAX_TILT_AIR = 0.95;
+const LAND_TIME = 0.32;
 const LEG_SCALE = [1.18, 1.1, 0.98, 0.92, 0.9, 0.97, 1.06, 1.15]; // front pair .. rear pair, per side
 
 const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
@@ -40,14 +43,6 @@ const add = (a, b, s = 1) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s]
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const smoother = (u) => u * u * u * (u * (u * 6 - 15) + 10);
 const ease = (u) => u * u * (3 - 2 * u);
-
-/** Cubic bezier point and tangent. */
-export function bezier(tr, u) {
-  const v = 1 - u;
-  const p = [0, 1, 2].map((i) => v * v * v * tr.from[i] + 3 * v * v * u * tr.c1[i] + 3 * v * u * u * tr.c2[i] + u * u * u * tr.to[i]);
-  const d = [0, 1, 2].map((i) => 3 * v * v * (tr.c1[i] - tr.from[i]) + 6 * v * u * (tr.c2[i] - tr.c1[i]) + 3 * u * u * (tr.to[i] - tr.c2[i]));
-  return { p, d };
-}
 
 /** 3D grid of every web particle, built once per world. */
 function nodeGrid(world) {
@@ -107,6 +102,8 @@ export class Spider {
     this.time = 0;
     this.mode = 'crawl';
     this.travelId = null;
+    this.launched = false;
+    this.airU = 0;
     this.burst = null;
     this.pause = 0.4;
     this.group = 0;
@@ -178,12 +175,12 @@ export class Spider {
   }
 
   /** Turn the body toward a direction at a capped rate, keeping it near level. */
-  orient(dir, dt, rate = 4) {
+  orient(dir, dt, rate = 4, maxTilt = MAX_TILT) {
     let d = norm(dir);
     const tilt = Math.asin(Math.max(-1, Math.min(1, d[1])));
-    if (Math.abs(tilt) > MAX_TILT) {
+    if (Math.abs(tilt) > maxTilt) {
       const h = norm([d[0], 0, d[2]]);
-      const t = Math.sign(tilt) * MAX_TILT;
+      const t = Math.sign(tilt) * maxTilt;
       d = [h[0] * Math.cos(t), Math.sin(t), h[2] * Math.cos(t)];
     }
     const ang = Math.acos(Math.max(-1, Math.min(1, dot(this.F, d))));
@@ -238,17 +235,14 @@ export class Spider {
     const tr = run.travel;
     if (tr && tr.id !== this.travelId) {
       this.travelId = tr.id;
-      this.mode = 'glide';
+      this.mode = 'jump';
       this.burst = null;
+      this.launched = false;
       run.spider.arrived = false;
-      for (const leg of this.legs) {
-        leg.free = true;
-        leg.step = 1;
-        leg.fv = [0, 0, 0];
-      }
     }
 
-    if (this.mode === 'glide') this.glide(dt, run, tr);
+    if (this.mode === 'jump') this.jump(dt, run, tr);
+    else if (this.mode === 'land') this.land(dt, run, tr);
     else this.crawl(dt, run);
 
     for (let i = 0; i < 3; i++) this.v[i] = (this.p[i] - prev[i]) / dt;
@@ -279,17 +273,60 @@ export class Spider {
     if (run.silk.length > SILK_CAP) run.silk.shift();
   }
 
-  /** Drift along the travel curve; legs float, then reach for the web near the end. */
-  glide(dt, run, tr) {
-    const u = Math.min(1, Math.max(0, (run.t - tr.t0) / tr.dur));
-    const { p, d } = bezier(tr, smoother(u));
-    // A slow sway along the dragline, fading out on arrival.
-    const sway = Math.sin(this.time * 1.6) * 6 * Math.sin(Math.PI * u);
-    this.p = add(p, this.S, sway);
-    if (len(d) > 1e-3) this.orient(d, dt, 2.2);
-    if (u >= 1 && this.legs.every((l) => !l.free && l.step >= 1)) {
+  /**
+   * Crouch, launch, fly a floaty ballistic arc, land. Horizontal travel is
+   * linear in time and height parabolic, like a real jump; a slightly
+   * lowered gravity (high apex, long airtime) makes it float.
+   */
+  jump(dt, run, tr) {
+    const T = run.t - tr.t0;
+    const flat = norm([tr.to[0] - tr.from[0], 0, tr.to[2] - tr.from[2]]);
+    if (T < tr.crouch) {
+      // Anticipation: sink onto the legs and turn toward the target.
+      const k = ease(T / tr.crouch);
+      this.p = add(tr.from, this.U, -8 * k);
+      this.orient(flat, dt, 7);
+      return;
+    }
+    if (!this.launched) {
+      this.launched = true;
+      this.launchAt = [...this.p];
+      this.anchor(run);
+      // Push off: feet let go and kick back as the body leaves.
+      for (const leg of this.legs) {
+        leg.free = true;
+        leg.step = 1;
+        leg.fv = flat.map((c) => -c * 90);
+      }
+    }
+    const u = Math.min(1, (T - tr.crouch) / tr.air);
+    const base = lerp3(this.launchAt, tr.to, u);
+    this.p = add(base, [0, 1, 0], tr.apex * 4 * u * (1 - u));
+    const vel = [tr.to[0] - this.launchAt[0], tr.to[1] - this.launchAt[1] + tr.apex * 4 * (1 - 2 * u), tr.to[2] - this.launchAt[2]];
+    this.orient(vel, dt, 6, MAX_TILT_AIR);
+    this.airU = u;
+    if (u >= 1) {
+      this.mode = 'land';
+      this.landT = 0;
+      // Feet grab the web wherever they come down.
+      for (const leg of this.legs) {
+        leg.free = false;
+        leg.from = [...leg.foot];
+        leg.to = nearestNode(this.world, leg.foot, 18) || leg.foot;
+        leg.step = 0;
+      }
+    }
+  }
+
+  /** Absorb the landing: dip, recover, then crawl. */
+  land(dt, run, tr) {
+    this.landT += dt;
+    const k = Math.min(1, this.landT / LAND_TIME);
+    this.p = add(tr.to, this.U, -7 * Math.sin(Math.PI * k));
+    this.orient([this.F[0], 0, this.F[2]], dt, 4);
+    if (k >= 1) {
       this.mode = 'crawl';
-      this.pause = range(this.rand, 0.25, 0.5);
+      this.pause = range(this.rand, 0.15, 0.35);
       run.spider.arrived = true;
       this.anchor(run);
     }
@@ -307,7 +344,7 @@ export class Spider {
       this.orient([b.to[0] - b.from[0], b.to[1] - b.from[1], b.to[2] - b.from[2]], dt, 5);
       if (u >= 1) {
         this.burst = null;
-        this.pause = range(this.rand, 0.2, 0.75);
+        this.pause = range(this.rand, 0.15, 0.55);
       }
       return;
     }
@@ -322,47 +359,47 @@ export class Spider {
       this.pause = range(this.rand, 0.6, 1.4);
       return;
     }
-    const L = Math.min(dist, range(this.rand, 18, 40));
+    const L = Math.min(dist, range(this.rand, 20, 44));
     const n = norm(to);
     const meander = range(this.rand, -0.45, 0.45);
     const dir = norm(add(add([0, 0, 0], n, Math.cos(meander)), this.S, Math.sin(meander)));
-    this.burst = { from: [...this.p], to: add(this.p, dir, L), t: 0, dur: 0.45 + L / 85 };
+    this.burst = { from: [...this.p], to: add(this.p, dir, L), t: 0, dur: 0.32 + L / 115 };
   }
 
   legsUpdate(dt, run) {
     const moving = this.mode === 'crawl' && this.burst;
     this.groupT += dt;
-    if (this.groupT > 0.16) {
+    if (this.groupT > 0.14) {
       this.groupT = 0;
       this.group ^= 1;
     }
     let stepping = this.legs.reduce((n, l) => n + (l.step < 1 ? 1 : 0), 0);
-    const gliding = this.mode === 'glide';
-    const tr = run.travel;
-    const u = gliding && tr ? (run.t - tr.t0) / tr.dur : 1;
-    for (const [i, leg] of this.legs.entries()) {
+    const airborne = this.mode === 'jump' && this.launched;
+    const body = this.cephCenter();
+    // Direction of flight, flattened, for legs streaming behind.
+    const back = norm([-this.F[0], -this.F[1] * 0.3, -this.F[2]]);
+    const reachOut = airborne ? Math.max(0, Math.min(1, (this.airU - 0.45) / 0.3)) : 0;
+    for (const leg of this.legs) {
       const fr = this.legFrame(leg);
       if (leg.free) {
-        // Floating: feet spring toward the tucked pose and trail behind motion.
+        // In the air: legs trail behind the body, then swing forward to catch the web.
+        const out = norm([fr.hip[0] - body[0], fr.hip[1] - body[1], fr.hip[2] - body[2]]);
+        const flow = Math.sin(this.time * 6 + leg.phase) * 0.12;
+        const trail = add(add(add(fr.hip, back, leg.reach * (0.72 + flow)), out, leg.reach * 0.42), this.U, -leg.reach * 0.18);
+        const ready = add(fr.rest, this.U, leg.reach * 0.12);
+        const target = lerp3(trail, ready, ease(reachOut));
         for (let j = 0; j < 3; j++) {
-          leg.fv[j] += ((fr.tuck[j] - leg.foot[j]) * 70 - leg.fv[j] * 13) * dt;
+          leg.fv[j] += ((target[j] - leg.foot[j]) * 60 - leg.fv[j] * 9.5) * dt;
           leg.foot[j] += leg.fv[j] * dt;
-        }
-        // Landing: one by one, legs reach out and grab the web.
-        if (u > 0.78 + (i % 8) * 0.018) {
-          leg.free = false;
-          leg.from = [...leg.foot];
-          leg.to = nearestNode(this.world, fr.rest, 16) || fr.rest;
-          leg.step = 0;
         }
         continue;
       }
       if (leg.step < 1) {
-        leg.step = Math.min(1, leg.step + dt / (gliding ? 0.28 : STEP_TIME));
+        leg.step = Math.min(1, leg.step + dt / (this.mode === 'land' ? 0.16 : STEP_TIME));
         leg.foot = lerp3(leg.from, leg.to, ease(leg.step));
         continue;
       }
-      if (gliding) continue;
+      if (this.mode === 'jump') continue; // crouching: feet stay put
       const { hip, rest } = fr;
       const off = Math.hypot(leg.foot[0] - rest[0], leg.foot[1] - rest[1], leg.foot[2] - rest[2]);
       const rel = [leg.foot[0] - hip[0], leg.foot[1] - hip[1], leg.foot[2] - hip[2]];
@@ -373,7 +410,7 @@ export class Spider {
       const due = off > leg.reach * 0.24 || twist > 0.42;
       if ((urgent || (moving && due && leg.group === this.group)) && stepping < 6) {
         const lead = moving ? norm([this.burst.to[0] - this.p[0], this.burst.to[1] - this.p[1], this.burst.to[2] - this.p[2]]) : [0, 0, 0];
-        const target = add(rest, lead, moving ? 10 : 0);
+        const target = add(rest, lead, moving ? 11 : 0);
         leg.from = [...leg.foot];
         leg.to = nearestNode(this.world, target, 14) || target;
         leg.step = 0;

@@ -1,8 +1,9 @@
 /**
  * WebGL renderer (three.js) for the crawl.
  *
- * Scene: volumetric webs (soft particles with depth of field, twinkle and a
- * slow drift; shimmering constellation strands; glows), a field of floating
+ * Scene: volumetric webs that carry their own light (soft particles with
+ * depth of field, twinkle and drift; shimmering strands; long sagging silk
+ * threads and bridges between webs; the web brightens around the spider), floating
  * dust for parallax, the word nodes, and the spider in detail (fresnel-shaded
  * cephalothorax and breathing abdomen with wire mesh, tumbling core, 16
  * three-segment legs with joints and bristles, eight eyes, fangs, palps,
@@ -36,19 +37,6 @@ const norm = (a) => {
   const l = Math.hypot(a[0], a[1], a[2]) || 1;
   return [a[0] / l, a[1] / l, a[2] / l];
 };
-
-function glowTexture() {
-  const c = document.createElement('canvas');
-  c.width = c.height = 128;
-  const g = c.getContext('2d');
-  const grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
-  grad.addColorStop(0, 'rgba(255,255,255,1)');
-  grad.addColorStop(0.3, 'rgba(255,255,255,0.32)');
-  grad.addColorStop(1, 'rgba(255,255,255,0)');
-  g.fillStyle = grad;
-  g.fillRect(0, 0, 128, 128);
-  return new THREE.CanvasTexture(c);
-}
 
 /** Latitude/longitude wireframe of a unit sphere, as line segments. */
 function latLong(lat, lon, seg = 32) {
@@ -121,11 +109,13 @@ function depthPoints(shared, { size, max, drift, dof }) {
       uMax: { value: max },
       uDrift: { value: drift },
       uDof: { value: dof },
+      uGain: { value: 1 },
     },
     vertexShader: `
       attribute float bright;
       attribute float phase;
-      uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDpr, uDrift, uDof;
+      uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDpr, uDrift, uDof, uGain, uLightR, uLightGain;
+      uniform vec3 uLight;
       varying float vA;
       varying float vBlur;
       void main() {
@@ -142,7 +132,10 @@ function depthPoints(shared, { size, max, drift, dof }) {
         float tw = 0.76 + 0.24 * sin(uTime * (0.7 + phase * 1.9) + phase * 31.0);
         // A blurred point spreads the same light over a bigger disc, so it dims.
         float energy = min(1.0, px) / pow(grow, 1.6);
-        vA = bright * tw * energy * exp(-pow(uFog * depth, 2.0));
+        // The web lights up around the spider as it moves through it.
+        float dl = distance(p, uLight);
+        float lit = uGain + uLightGain * exp(-dl * dl / (uLightR * uLightR));
+        vA = bright * tw * energy * lit * exp(-pow(uFog * depth, 2.0));
         vBlur = clamp(blur, 0.0, 1.0);
         gl_Position = projectionMatrix * mv;
       }`,
@@ -168,12 +161,15 @@ function strandMaterial(shared) {
   return new THREE.ShaderMaterial({
     uniforms: { ...shared, uColor: { value: new THREE.Color(1, 1, 1) }, uOpacity: { value: 0.2 } },
     vertexShader: `
-      uniform float uTime, uFog;
+      uniform float uTime, uFog, uLightR, uLightGain;
+      uniform vec3 uLight;
       varying float vA;
       void main() {
         vec4 mv = modelViewMatrix * vec4(position, 1.0);
         float sh = 0.5 + 0.5 * sin(uTime * 1.1 + dot(position, vec3(0.041, 0.029, 0.035)));
-        vA = (0.45 + 0.55 * sh * sh) * exp(-pow(uFog * -mv.z, 2.0));
+        float dl = distance(position, uLight);
+        float lit = 1.0 + uLightGain * 1.4 * exp(-dl * dl / (uLightR * uLightR));
+        vA = (0.45 + 0.55 * sh * sh) * lit * exp(-pow(uFog * -mv.z, 2.0));
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
@@ -228,11 +224,10 @@ export function createView3D(canvas) {
   const camera = new THREE.PerspectiveCamera(FOV, 1, 2, 60000);
   const composer = new EffectComposer(renderer);
   composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.42, 0.38, 0.3);
+  const bloom = new UnrealBloomPass(new THREE.Vector2(512, 512), 0.5, 0.35, 0.24);
   composer.addPass(bloom);
   composer.addPass(new OutputPass());
 
-  const glowTex = glowTexture();
   const orbit = { yaw: 0, pitch: 0 };
   const size = { w: 1, h: 1 };
   const tmp = new THREE.Vector3();
@@ -243,6 +238,9 @@ export function createView3D(canvas) {
     uFocus: { value: 800 },
     uScale: { value: 500 },
     uDpr: { value: 1 },
+    uLight: { value: new THREE.Vector3() },
+    uLightR: { value: 150 },
+    uLightGain: { value: 1.6 },
   };
   let W = null;
 
@@ -333,12 +331,20 @@ export function createView3D(canvas) {
       sg.setAttribute('bright', new THREE.Float32BufferAttribute(stars.map(() => 1).slice(0, starPh.length), 1));
       sg.setAttribute('phase', new THREE.Float32BufferAttribute(starPh, 1));
       const starPts = new THREE.Points(sg, depthPoints(shared, { size: 2.1, max: 14, drift: 1.2, dof: 0.6 }));
-      const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, opacity: 0, fog: false, ...additive }));
-      glow.position.set(c.cx, c.cy, c.cz);
-      glow.scale.setScalar(c.r * 2.6);
-      root.add(lines, points, starPts, glow);
-      return { points, lines, stars: starPts, glow, mix: 0, glowA: 0, color: new THREE.Color(c.color), tint: new THREE.Color() };
+      const tg = new THREE.BufferGeometry();
+      tg.setAttribute('position', new THREE.BufferAttribute(cloud.threads, 3));
+      const threads = new THREE.LineSegments(tg, strandMaterial(shared));
+      root.add(lines, threads, points, starPts);
+      return { points, lines, threads, stars: starPts, mix: 0, gain: 0.45, color: new THREE.Color(c.color), tint: new THREE.Color() };
     });
+
+    // Bridges: silk strung between neighbouring webs.
+    const bg = new THREE.BufferGeometry();
+    bg.setAttribute('position', new THREE.BufferAttribute(world._bridges, 3));
+    const bridges = new THREE.LineSegments(bg, strandMaterial(shared));
+    bridges.material.uniforms.uColor.value.set('#b9c6e6');
+    bridges.material.uniforms.uOpacity.value = 0.16;
+    root.add(bridges);
 
     // Word nodes: black (invisible under additive blending) until read.
     const nw = analysis.words.length;
@@ -375,22 +381,17 @@ export function createView3D(canvas) {
     const eyes = new THREE.Points(dynamicGeometry(8), new THREE.PointsMaterial({ color: '#eafff8', size: 3.2, sizeAttenuation: false, fog: false }));
     const core = new THREE.Mesh(new THREE.BoxGeometry(8, 8, 8), new THREE.MeshBasicMaterial({ color: FLAG, depthTest: false, fog: false }));
     core.renderOrder = 20;
-    const coreGlow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: FLAG, opacity: 0.6, fog: false, ...additive, depthTest: false }));
-    coreGlow.scale.setScalar(30);
-    coreGlow.renderOrder = 19;
-    const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: SPIDER, opacity: 0.14, fog: false, ...additive }));
-    halo.scale.setScalar(170);
     const tentacles = new THREE.Points(
       dynamicGeometry(MAX_TENTACLES * TENTACLE_DOTS),
       new THREE.PointsMaterial({ color: TENTACLE, size: 3, sizeAttenuation: false, transparent: true, depthWrite: false, depthTest: false, fog: false }),
     );
     tentacles.renderOrder = 15;
     const silk = new THREE.Line(dynamicGeometry(SILK_MAX, 3, 4), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }));
-    root.add(halo, silk, tentacles, legsThick, legsThin, bristles, palps, joints, abdomen, ceph, eyes, coreGlow, core);
+    root.add(silk, tentacles, legsThick, legsThin, bristles, palps, joints, abdomen, ceph, eyes, core);
 
     const fat = [legsThick, legsThin, bristles, palps];
     W = {
-      root, clusters, words, wcol, wordKey: '', world, analysis, abdomen, ceph, legsThick, legsThin, bristles, palps, joints, eyes, core, coreGlow, halo, tentacles, silk, fat,
+      root, clusters, words, wcol, wordKey: '', world, analysis, abdomen, ceph, legsThick, legsThin, bristles, palps, joints, eyes, core, tentacles, silk, fat,
       thickBuf: new Float32Array((LEG_COUNT * 2 + 1) * 6),
       thinBuf: new Float32Array((LEG_COUNT + 4) * 6),
       bristleBuf: new Float32Array(LEG_COUNT * BRISTLES * 6),
@@ -449,17 +450,20 @@ export function createView3D(canvas) {
     const fade = 1 - Math.exp(-4 * dt);
 
     W.clusters.forEach((cl, i) => {
+      // The web itself carries the light: the active web burns brightest, read webs stay lit.
       const on = run.status[i] !== 'queued' ? 1 : 0;
-      const glow = ship ? 0.06 : i === run.active ? 0.16 : on ? 0.04 : 0;
+      const gain = ship ? 1.15 : i === run.active ? 1.6 : on ? 0.95 : 0.45;
       cl.mix += (on - cl.mix) * fade;
-      cl.glowA += (glow - cl.glowA) * fade;
+      cl.gain += (gain - cl.gain) * fade;
       cl.tint.copy(grey).lerp(cl.color, cl.mix);
-      cl.points.material.uniforms.uColor.value.copy(cl.tint);
-      cl.stars.material.uniforms.uColor.value.copy(cl.tint);
+      for (const m of [cl.points.material, cl.stars.material]) {
+        m.uniforms.uColor.value.copy(cl.tint);
+        m.uniforms.uGain.value = cl.gain;
+      }
       cl.lines.material.uniforms.uColor.value.copy(cl.tint);
-      cl.lines.material.uniforms.uOpacity.value = 0.1 + 0.14 * cl.mix;
-      cl.glow.material.color.copy(cl.color);
-      cl.glow.material.opacity = cl.glowA;
+      cl.lines.material.uniforms.uOpacity.value = 0.07 * cl.gain + 0.12 * cl.mix * cl.gain;
+      cl.threads.material.uniforms.uColor.value.copy(cl.tint);
+      cl.threads.material.uniforms.uOpacity.value = 0.1 * cl.gain + 0.16 * cl.mix * cl.gain;
     });
 
     // Word nodes recolour only when reading state changes.
@@ -493,8 +497,7 @@ export function createView3D(canvas) {
     const corePos = add(ac, U, 3);
     W.core.position.set(...corePos);
     W.core.rotation.set(spider.time * 1.1, spider.time * 0.8, spider.time * 0.35);
-    W.coreGlow.position.copy(W.core.position);
-    W.halo.position.set(...spider.p);
+    shared.uLight.value.set(...spider.p);
 
     // Legs: femur and tibia thick, tarsus thin; joints; bristles along femur and tibia.
     const tb = W.thickBuf;

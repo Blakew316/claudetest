@@ -13,7 +13,7 @@ import { Spider } from '../world/spider.js';
 
 const BOOT = 0.4;
 const SHIP_SETTLE = 4;
-const READ_SECONDS = 3.2; // target time to read a section
+const READ_SECONDS = 2.8; // target time to read a section
 const LOG_CAP = 40;
 
 /** Program shown in the CRAWLER.PY panel; revealed as the crawl progresses. */
@@ -120,13 +120,14 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const a = angles[run.active];
     const s = run.spider;
     // Travelling: ride along with the spider. Reading: look between it and its web, drifting slowly.
-    const drift = run.phase === 'read' ? run.phaseT * 0.018 : 0;
-    const w = run.phase === 'walk' ? 0.7 : 0.5;
+    const drift = run.phase === 'read' ? run.phaseT * 0.03 : 0;
+    const push = run.phase === 'read' ? 1 - 0.14 * Math.min(1, run.phaseT / 5) : 1;
+    const w = run.phase === 'walk' ? 0.78 : 0.5;
     return {
       x: s.x * w + c.cx * (1 - w),
       y: s.y * w + c.cy * (1 - w),
       z: s.z * w + c.cz * (1 - w),
-      dist: fitDistance(c.r, aspect, 50, 0.95),
+      dist: fitDistance(c.r, aspect, 50, 0.95) * push,
       yaw: a.yaw + drift,
       pitch: a.pitch,
     };
@@ -152,24 +153,23 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     travelTo(run.spiderGoal, i);
   }
 
-  /** Let go of the web and drift along a curved arc to a point (the spider follows run.travel). */
+  /** Jump to a point: crouch, a floaty ballistic arc, landing (the spider follows run.travel). */
   function travelTo(goal, id) {
     const from = [run.spider.x, run.spider.y, run.spider.z];
     const to = [goal.x, goal.y, goal.z];
-    const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
-    const L = Math.hypot(...d) || 1;
-    // Sideways direction for a gentle S-curve, plus an upward bow like a swing on a thread.
-    const side = [-d[2] / L, 0, d[0] / L];
-    const bend = range(cadence, 0.08, 0.18) * (cadence() < 0.5 ? -1 : 1) * L;
-    const lift = L * range(cadence, 0.12, 0.22);
+    const L = Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]) || 1;
+    const first = run.silk.length <= 1 && run.counts.read === 0;
+    const crouch = first ? 0 : range(cadence, 0.18, 0.26);
+    const air = Math.max(1.0, Math.min(1.9, 0.75 + L / 560));
     run.travel = {
       id: `${id}:${run.t.toFixed(3)}`,
       from,
-      c1: [from[0] + d[0] * 0.3 + side[0] * bend, from[1] + d[1] * 0.3 + lift, from[2] + d[2] * 0.3 + side[2] * bend],
-      c2: [from[0] + d[0] * 0.72 - side[0] * bend * 0.6, from[1] + d[1] * 0.72 + lift * 0.55, from[2] + d[2] * 0.72 - side[2] * bend * 0.6],
       to,
       t0: run.t,
-      dur: Math.max(2.2, Math.min(4.2, 1.5 + L / 280)),
+      crouch,
+      air,
+      apex: first ? 24 : Math.max(45, L * range(cadence, 0.24, 0.32)),
+      dur: crouch + air + 0.32,
     };
   }
 
@@ -293,7 +293,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       }
     } else if (run.phase === 'walk') {
       // Read once it has landed and taken a breath.
-      if ((run.spider.arrived && run.phaseT > run.travel.dur + 0.35) || run.phaseT > run.travel.dur + 2) setPhase('read');
+      if ((run.spider.arrived && run.phaseT > run.travel.dur + 0.15) || run.phaseT > run.travel.dur + 2) setPhase('read');
     } else if (run.phase === 'read') {
       stepRead(dt);
     } else if (run.phase === 'ship' && run.phaseT > SHIP_SETTLE) {
@@ -317,7 +317,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run.lps = run.phase === 'read' ? 15 : run.phase === 'ship' ? 0 : 7;
 
     // Spring smoothing (seconds): calm while reading, slow sweeping travel between sections.
-    if (run.phase === 'walk') followCamera(run.camera, cameraTarget(), dt, 1.5, 2.6);
+    if (run.phase === 'walk') followCamera(run.camera, cameraTarget(), dt, 1.0, 2.4);
     else if (run.phase === 'ship') followCamera(run.camera, cameraTarget(), dt, 1.4, 1.4);
     else followCamera(run.camera, cameraTarget(), dt, 1.2, 2.2);
   }

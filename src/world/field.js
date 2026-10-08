@@ -198,6 +198,74 @@ function placeWords(cloud, r, count, rand) {
 }
 
 /**
+ * Long silk threads: sagging curves between particles, as line-segment
+ * endpoints. Within a cluster they span it; bridges join neighbouring
+ * clusters so the space between webs is strung with silk too.
+ */
+function sagThread(out, a, b, sub, sag, rand) {
+  const L = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+  const bow = (rand() - 0.5) * L * 0.08;
+  let prev = a;
+  for (let k = 1; k <= sub; k++) {
+    const u = k / sub;
+    const s = Math.sin(Math.PI * u);
+    const p = [a[0] + (b[0] - a[0]) * u + bow * s, a[1] + (b[1] - a[1]) * u - sag * L * s, a[2] + (b[2] - a[2]) * u - bow * s * 0.5];
+    out.push(...prev, ...p);
+    prev = p;
+  }
+}
+
+function clusterThreads(cloud, r, rand, count) {
+  const out = [];
+  const n = cloud.pos.length / 3;
+  const at = (i) => [cloud.pos[i * 3], cloud.pos[i * 3 + 1], cloud.pos[i * 3 + 2]];
+  for (let t = 0, tries = 0; t < count && tries < count * 20; tries++) {
+    const a = at(Math.floor(rand() * n));
+    const b = at(Math.floor(rand() * n));
+    const L = Math.hypot(b[0] - a[0], b[1] - a[1], b[2] - a[2]);
+    if (L < r * 0.5 || L > r * 1.6) continue;
+    sagThread(out, a, b, 10, 0.05, rand);
+    t++;
+  }
+  return new Float32Array(out);
+}
+
+function bridgeThreads(clusters, clouds, rand) {
+  const out = [];
+  const pick = (ci, toward) => {
+    // The particle among a sample that faces the other cluster best.
+    const cloud = clouds[ci];
+    const c = clusters[ci];
+    const n = cloud.pos.length / 3;
+    let best = null;
+    let score = -Infinity;
+    for (let k = 0; k < 40; k++) {
+      const i = Math.floor(rand() * n);
+      const p = [cloud.pos[i * 3], cloud.pos[i * 3 + 1], cloud.pos[i * 3 + 2]];
+      const sc = (p[0] - c.cx) * toward[0] + (p[1] - c.cy) * toward[1] + (p[2] - c.cz) * toward[2] + rand() * c.r * 0.3;
+      if (sc > score) {
+        score = sc;
+        best = p;
+      }
+    }
+    return best;
+  };
+  for (let i = 0; i < clusters.length; i++) {
+    for (let j = i + 1; j < clusters.length; j++) {
+      const A = clusters[i];
+      const B = clusters[j];
+      const d = [B.cx - A.cx, B.cy - A.cy, B.cz - A.cz];
+      const L = Math.hypot(...d);
+      if (L > (A.r + B.r) * 1.35) continue;
+      const u = d.map((x) => x / L);
+      const count = j === i + 1 ? 12 : 6;
+      for (let k = 0; k < count; k++) sagThread(out, pick(i, u), pick(j, u.map((x) => -x)), 16, 0.035, rand);
+    }
+  }
+  return new Float32Array(out);
+}
+
+/**
  * Build the 3D world for an analysis. Deterministic for (analysis, seed).
  * @param {import('../core/contracts.js').Analysis} analysis
  * @param {number} seed
@@ -221,6 +289,7 @@ export function buildWorld(analysis, seed) {
     }
     const rel = makeCloudRel(cloud, cx, cy, cz);
     cloud.edges = makeEdges(cloud.pos, r);
+    cloud.threads = clusterThreads(cloud, r, fork(seed, `threads:${i}`), Math.round(30 + sec.count * 0.6));
     const words = placeWords(rel, r, sec.count, fork(seed, `words:${i}`));
     for (let w = 0; w < sec.count; w++) {
       const id = sec.start + w;
@@ -242,7 +311,8 @@ export function buildWorld(analysis, seed) {
   });
   let radius = 200;
   clusters.forEach((c) => (radius = Math.max(radius, Math.hypot(c.cx - bx, c.cy - by, c.cz - bz) + c.r)));
-  return { clusters, wordPos, bounds: { x: bx, y: by, z: bz, radius }, _clouds: clouds };
+  const bridges = bridgeThreads(clusters, clouds, fork(seed, 'bridges'));
+  return { clusters, wordPos, bounds: { x: bx, y: by, z: bz, radius }, _clouds: clouds, _bridges: bridges };
 }
 
 /** Positions relative to the cluster centre, for word placement. */
