@@ -27,7 +27,7 @@ or spot contradictions. The spec score formula is in `src/analyze/score.js`.
 
 ```
 npm install
-npm run dev     # serves the repo at http://localhost:5173
+npm run dev     # builds, then serves dist/ at http://localhost:5173
 npm test        # analyzer tests
 npm run build   # dist/index.html, one self-contained file incl. three.js (what Netlify serves)
 ```
