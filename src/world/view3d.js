@@ -150,7 +150,7 @@ function depthPoints(shared, { size, max, drift, dof }) {
       attribute float bright;
       attribute float phase;
       attribute float hot;
-      uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDpr, uDrift, uDof, uGain, uLightR, uLightGain, uFogK;
+      uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDpr, uDrift, uDof, uGain, uLightR, uLightGain, uFogK, uClear;
       uniform vec3 uLight;
       varying float vA;
       varying float vBlur;
@@ -171,7 +171,14 @@ function depthPoints(shared, { size, max, drift, dof }) {
         float dl = distance(p, uLight);
         float lit = uGain + uLightGain * exp(-dl * dl / (uLightR * uLightR));
         float fz = uFog * depth * uFogK;
-        vA = bright * tw * energy * lit * exp(-fz * fz);
+        // Clear the stars between the camera and the spider so it always reads,
+        // however dense the cluster it is crawling through.
+        vec4 lv = viewMatrix * vec4(uLight, 1.0);
+        float ld = max(1.0, -lv.z);
+        float lateral = length(mv.xy / depth - lv.xy / ld) * ld;
+        float front = 1.0 - smoothstep(ld - 40.0, ld - 6.0, depth);
+        float clear = 1.0 - 0.88 * front * (1.0 - smoothstep(uClear * 0.3, uClear, lateral));
+        vA = bright * tw * energy * lit * clear * exp(-fz * fz);
         vBlur = clamp(blur, 0.0, 1.0);
         vHot = hot;
         gl_Position = projectionMatrix * mv;
@@ -288,7 +295,8 @@ export function createView3D(canvas) {
     uDpr: { value: 1 },
     uLight: { value: new THREE.Vector3() },
     uLightR: { value: 210 },
-    uLightGain: { value: 0.9 },
+    uLightGain: { value: 0.55 },
+    uClear: { value: 80 },
   };
   const mat4 = new THREE.Matrix4();
   const quat = new THREE.Quaternion();

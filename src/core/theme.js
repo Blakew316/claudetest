@@ -23,7 +23,7 @@ export const AMBER = '#f4b93a';
 
 /** Section palette in reading order; prompts with more sections cycle through the tail. */
 export const SECTION_PALETTE = [
-  '#e8eaf0', // 01 white   (role)
+  '#7d9bff', // 01 periwinkle (role); not white: dense white stardust swallowed the spider
   '#38c8ea', // 02 cyan    (objective)
   '#f0508a', // 03 pink    (context)
   '#f4b93a', // 04 amber   (roles)
