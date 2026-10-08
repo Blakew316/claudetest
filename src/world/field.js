@@ -21,7 +21,7 @@ export function clusterRadius(count) {
 
 /** Star count for a cluster. */
 export function particleCount(count) {
-  return Math.min(26000, Math.round(14000 + 1100 * Math.sqrt(count)));
+  return Math.min(34000, Math.round(18000 + 1400 * Math.sqrt(count)));
 }
 
 function norm(v) {

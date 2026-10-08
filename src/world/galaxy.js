@@ -240,9 +240,26 @@ export function makeBall(rand, r, count) {
     const p = warp([sq * Math.cos(th) * rr, u * rr * 0.9, sq * Math.sin(th) * rr]);
     pts.push([...p, range(rand, 0.12, 0.3), 0]);
   }
+  // Globular sub-clusters: tight little balls inside the ball, detail at every scale.
+  const subs = Math.round(range(rand, 7, 12));
+  for (let k = 0; k < subs; k++) {
+    const u = rand() * 2 - 1;
+    const th = rand() * Math.PI * 2;
+    const sq = Math.sqrt(1 - u * u);
+    const rr = r * range(rand, 0.2, 0.85);
+    const c = warp([sq * Math.cos(th) * rr, u * rr * 0.85, sq * Math.sin(th) * rr]);
+    const sr = r * range(rand, 0.035, 0.075);
+    const m = Math.round(range(rand, 160, 340));
+    for (let i = 0; i < m; i++) {
+      const d = Math.abs(gauss(rand)) * 0.55 + rand() ** 2 * 0.6;
+      const v = [gauss(rand), gauss(rand), gauss(rand)];
+      const l = Math.hypot(...v) || 1;
+      pts.push([c[0] + (v[0] / l) * d * sr, c[1] + (v[1] / l) * d * sr, c[2] + (v[2] / l) * d * sr, range(rand, 0.5, 0.95), 0.35 * Math.exp(-d * d * 3)]);
+    }
+  }
   // Bright knots.
   const base = pts.length;
-  const knots = Math.round(range(rand, 14, 24));
+  const knots = Math.round(range(rand, 22, 36));
   for (let k = 0; k < knots; k++) {
     const c = pts[Math.floor(rand() * base)];
     const m = Math.round(range(rand, 25, 60));

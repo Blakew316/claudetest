@@ -327,7 +327,9 @@ export class Spider {
       }
     }
     const u = Math.min(1, (T - tr.crouch) / tr.air);
-    this.p = add(lerp3(this.launchAt, tr.to, u), [0, 1, 0], tr.apex * 4 * u * (1 - u));
+    // Soft launch and soft landing along the path; height stays a parabola.
+    const h = u * 0.6 + ease(u) * 0.4;
+    this.p = add(lerp3(this.launchAt, tr.to, h), [0, 1, 0], tr.apex * 4 * u * (1 - u));
     const vel = [tr.to[0] - this.launchAt[0], tr.to[1] - this.launchAt[1] + tr.apex * 4 * (1 - 2 * u), tr.to[2] - this.launchAt[2]];
     this.orient(vel, dt, 6, MAX_TILT_AIR);
     this.airU = u;

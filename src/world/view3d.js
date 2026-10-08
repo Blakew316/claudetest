@@ -26,7 +26,9 @@ import { OutputPass } from 'three/examples/jsm/postprocessing/OutputPass.js';
 import { LineSegments2 } from 'three/examples/jsm/lines/LineSegments2.js';
 import { LineSegmentsGeometry } from 'three/examples/jsm/lines/LineSegmentsGeometry.js';
 import { LineMaterial } from 'three/examples/jsm/lines/LineMaterial.js';
-import { BG, QUEUED, FLAG, SPIDER, TENTACLE } from '../core/theme.js';
+import { BG, QUEUED, FLAG, SPIDER, TENTACLE, SECTION_PALETTE } from '../core/theme.js';
+import { makeBall } from './galaxy.js';
+import { mulberry32 } from '../core/rng.js';
 import { LEG_COUNT, MAX_TENTACLES } from '../core/contracts.js';
 import { ABDOMEN, CEPH } from './spider.js';
 
@@ -371,6 +373,25 @@ export function createView3D(canvas) {
     sky.uniforms.uColor.value.set('#9fb0d8');
     sky.uniforms.uFogK.value = 0;
     root.add(new THREE.Points(pointsGeo(spos, () => (rnd() < 0.05 ? 0.9 : 0.15 + 0.35 * rnd()), shot), sky));
+    // Other universes: small cluster balls far out in every direction, hazy with distance.
+    const far = mulberry32(98765);
+    for (let k = 0; k < 16; k++) {
+      const u = far() * 1.6 - 0.8;
+      const th = (k / 16) * Math.PI * 2 + far() * 0.35;
+      const rr = b.radius * (2.3 + 2.2 * far());
+      const sq = Math.sqrt(1 - u * u);
+      const g = makeBall(far, 45 + 90 * far(), Math.round(1400 + 1800 * far()));
+      for (let i = 0; i < g.pos.length; i += 3) {
+        g.pos[i] += b.x + rr * sq * Math.cos(th);
+        g.pos[i + 1] += b.y + rr * u * 0.7;
+        g.pos[i + 2] += b.z + rr * sq * Math.sin(th);
+      }
+      const m = depthPoints(shared, { size: 1.6, max: 5, drift: 0.5, dof: 0.3 });
+      m.uniforms.uColor.value.set(SECTION_PALETTE[k % 7]).lerp(new THREE.Color('#9fb0d8'), 0.45);
+      m.uniforms.uGain.value = 0.32;
+      m.uniforms.uFogK.value = 0.2;
+      root.add(new THREE.Points(pointsGeo(g.pos, (i) => Math.min(1, g.bright[i]), g.hot), m));
+    }
 
     const clusters = world.clusters.map((c, i) => {
       const g = world._clouds[i];
@@ -526,7 +547,7 @@ export function createView3D(canvas) {
     W.clusters.forEach((cl, i) => {
       // The stars carry the light: the active cluster burns brightest, read ones stay lit.
       const on = run.status[i] !== 'queued' ? 1 : 0;
-      const gain = ship ? 0.95 : i === run.active ? 1.45 : on ? 0.9 : 0.42;
+      const gain = ship ? 0.8 : i === run.active ? 1.05 : on ? 0.72 : 0.34;
       cl.mix += (on - cl.mix) * fade;
       cl.gain += (gain - cl.gain) * fade;
       cl.tint.copy(grey).lerp(cl.color, cl.mix);

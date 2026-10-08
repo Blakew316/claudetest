@@ -12,8 +12,13 @@ import { fork, range } from '../core/rng.js';
 import { Spider } from '../world/spider.js';
 
 const BOOT = 0.4;
-const SHIP_SETTLE = 4;
-const READ_SECONDS = 3.2; // target time to read a section
+const SHIP_SETTLE = 14; // the finale: a slow orbit around the whole nebula
+const READ_SECONDS = 6.5; // target time to read a section
+const INTRO_AIR = 4.4; // the opening abseil down onto the first cluster
+const smooth = (u) => {
+  const k = Math.max(0, Math.min(1, u));
+  return k * k * (3 - 2 * k);
+};
 const LOG_CAP = 40;
 
 /** Program shown in the CRAWLER.PY panel; revealed as the crawl progresses. */
@@ -110,7 +115,11 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     recent = [];
     run.silk.push({ x: spider.p[0], y: spider.p[1], z: spider.p[2], s: 0, t: 0 });
     scoreTick = 0;
-    run.camera = cameraTarget();
+    // Open far out on the whole nebula; the camera flies in as the spider drops.
+    const { width, height } = getStage();
+    const b = world.bounds;
+    const a0 = angles[0] || { yaw: 0, pitch: 0.5 };
+    run.camera = { x: b.x, y: b.y, z: b.z, dist: fitDistance(b.radius, width / Math.max(1, height), 50, 0.92) * 2.6, yaw: a0.yaw - 1.3, pitch: 0.95 };
   }
 
   function log(verb, text, section) {
@@ -123,23 +132,37 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const { width, height } = getStage();
     const aspect = width / Math.max(1, height);
     if (run.phase === 'ship' || !world.clusters[run.active]) {
+      // Finale: pull back and orbit the whole nebula, rising slowly over it.
       const b = world.bounds;
       const last = angles[Math.max(0, n - 1)] || { yaw: 0.6, pitch: 0.5 };
-      return { x: b.x, y: b.y, z: b.z, dist: fitDistance(b.radius, aspect, 50, 0.92), yaw: last.yaw + run.phaseT * 0.025, pitch: 0.5 };
+      const k = smooth(run.phaseT / 10);
+      return { x: b.x, y: b.y, z: b.z, dist: fitDistance(b.radius, aspect, 50, 0.92) * (1.08 - 0.14 * k), yaw: last.yaw + run.phaseT * 0.1, pitch: 0.3 + 0.38 * k };
     }
     const c = world.clusters[run.active];
     const a = angles[run.active];
     const s = run.spider;
-    // Travelling: ride along with the spider. Reading: look between it and its web, drifting slowly.
-    const drift = run.phase === 'read' ? run.phaseT * 0.025 : 0;
-    const push = run.phase === 'read' ? 1 - 0.14 * Math.min(1, run.phaseT / 5) : 1;
-    const w = run.phase === 'walk' ? 0.78 : 0.5;
+    const fit = fitDistance(c.r, aspect, 50, 1.15);
+    if (run.phase === 'read') {
+      // Establish the whole cluster, then push in slowly on the spider while it reads.
+      const k = smooth(run.phaseT / 8);
+      const w = 0.5 + 0.25 * k;
+      return {
+        x: s.x * w + c.cx * (1 - w),
+        y: s.y * w + c.cy * (1 - w),
+        z: s.z * w + c.cz * (1 - w),
+        dist: fit * (1 - 0.24 * k),
+        yaw: a.yaw + run.phaseT * 0.045,
+        pitch: a.pitch + 0.08 * Math.sin(run.phaseT * 0.35),
+      };
+    }
+    // In the air: pull back and ride along so the whole leap reads.
+    const w = 0.72;
     return {
       x: s.x * w + c.cx * (1 - w),
       y: s.y * w + c.cy * (1 - w),
       z: s.z * w + c.cz * (1 - w),
-      dist: fitDistance(c.r, aspect, 50, 1.15) * push,
-      yaw: a.yaw + drift,
+      dist: fit * 1.2,
+      yaw: a.yaw,
       pitch: a.pitch,
     };
   }
@@ -171,8 +194,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const to = [goal.x, goal.y, goal.z];
     const L = Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]) || 1;
     const first = run.silk.length <= 1 && run.counts.read === 0;
-    const crouch = first ? 0 : range(cadence, 0.22, 0.3);
-    const air = Math.max(1.15, Math.min(2.1, 0.85 + L / 520));
+    const crouch = first ? 0 : range(cadence, 0.3, 0.42);
+    const air = first ? INTRO_AIR : Math.max(1.7, Math.min(2.9, 1.4 + L / 420));
     run.travel = {
       id: `${id}:${run.t.toFixed(3)}`,
       from,
@@ -180,7 +203,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       t0: run.t,
       crouch,
       air,
-      apex: first ? 24 : Math.max(45, L * range(cadence, 0.24, 0.32)),
+      apex: first ? 14 : Math.max(55, L * range(cadence, 0.26, 0.36)),
       dur: crouch + air + 0.36,
     };
   }
@@ -262,7 +285,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const sec = analysis.sections[run.active];
     const end = sec.start + sec.count;
     // Irregular cadence: little flurries of reaches with hesitations between, like attention.
-    const rate = Math.max(6, Math.min(28, sec.count / READ_SECONDS));
+    const rate = Math.max(4, Math.min(20, sec.count / READ_SECONDS));
     readAcc += dt;
     while (readAcc >= nextReach && cursor < end) {
       const reaching = run.tentacles.reduce((k, tn) => k + (tn.stage !== 'retract' ? 1 : 0), 0);
@@ -275,9 +298,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         born: run.t,
         stage: 'reach',
         p: 0,
-        reach: range(cadence, 0.22, 0.42),
-        hold: range(cadence, 0.3, 0.75),
-        retract: range(cadence, 0.25, 0.45),
+        reach: range(cadence, 0.28, 0.5),
+        hold: range(cadence, 0.45, 0.95),
+        retract: range(cadence, 0.3, 0.55),
       });
       cursor++;
     }
@@ -306,7 +329,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       }
     } else if (run.phase === 'walk') {
       // Read once it has landed and taken a breath.
-      if ((run.spider.arrived && run.phaseT > run.travel.dur + 0.15) || run.phaseT > run.travel.dur + 2) setPhase('read');
+      if ((run.spider.arrived && run.phaseT > run.travel.dur + 0.7) || run.phaseT > run.travel.dur + 2.5) setPhase('read');
     } else if (run.phase === 'read') {
       stepRead(dt);
     } else if (run.phase === 'ship' && run.phaseT > SHIP_SETTLE) {
@@ -330,9 +353,10 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run.lps = run.phase === 'read' ? 15 : run.phase === 'ship' ? 0 : 7;
 
     // Spring smoothing (seconds): calm while reading, slow sweeping travel between sections.
-    if (run.phase === 'walk') followCamera(run.camera, cameraTarget(), dt, 0.9, 1.5);
+    if (run.counts.read === 0 && run.phase !== 'ship') followCamera(run.camera, cameraTarget(), dt, 1.6, 2.2);
+    else if (run.phase === 'walk') followCamera(run.camera, cameraTarget(), dt, 0.9, 1.5);
     else if (run.phase === 'ship') followCamera(run.camera, cameraTarget(), dt, 1.4, 1.4);
-    else followCamera(run.camera, cameraTarget(), dt, 1.2, 2.2);
+    else followCamera(run.camera, cameraTarget(), dt, 1.1, 2.4);
   }
 
   /** Restart and fast-forward to sim time t. */
