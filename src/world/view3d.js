@@ -36,12 +36,14 @@ export const FOV = 50;
 const TENTACLE_DOTS = 200;
 const SILK_SUB = 5;
 const SILK_MAX = 520 * SILK_SUB + 24;
-const HAIRS = 10;
-const LIMBS = LEG_COUNT * 3 + 2 + 6; // legs, fangs, palps
-const JOINTS = LEG_COUNT * 4;
+const HAIRS = 28; // setae per leg, a few of them long spines
+const LEG_SEGS = 8; // coxa, femur, patella, tibia, metatarsus, tarsus, two claws
+const LIMBS = LEG_COUNT * LEG_SEGS + 1 + 2 + 6; // legs, pedicel, fangs, palps
+const JOINTS = LEG_COUNT * 6;
 
 const add = (a, b, s = 1) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const norm = (a) => {
   const l = Math.hypot(a[0], a[1], a[2]) || 1;
@@ -78,13 +80,34 @@ function latLong(lat, lon, seg = 32) {
  * Dorsal pattern on the abdomen (unit-sphere space: x forward, y up, z side):
  * a midline mark and a row of chevrons down the back.
  */
+/** Radial grooves (striae) and the central fovea on the top of the cephalothorax (unit sphere). */
+function striae() {
+  const v = [];
+  const surf = (x, z) => [x, Math.sqrt(Math.max(0, 1 - x * x - z * z)) * 1.012, z];
+  const seg = (a, b) => v.push(...a, ...b);
+  const cx = -0.12;
+  for (let k = 0; k < 10; k++) {
+    const a = (k / 10) * Math.PI * 2;
+    const steps = 6;
+    for (let j = 0; j < steps; j++) {
+      const r0 = 0.12 + (j / steps) * 0.62;
+      const r1 = 0.12 + ((j + 1) / steps) * 0.62;
+      seg(surf(cx + Math.cos(a) * r0, Math.sin(a) * r0 * 0.9), surf(cx + Math.cos(a) * r1, Math.sin(a) * r1 * 0.9));
+    }
+  }
+  for (let j = 0; j < 4; j++) seg(surf(cx - 0.12 + j * 0.06, 0), surf(cx - 0.06 + j * 0.06, 0)); // the fovea
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+  return g;
+}
+
 function chevrons() {
   const v = [];
   const surf = (x, z) => [x, Math.sqrt(Math.max(0, 1 - x * x - z * z)) * 1.012, z];
   const seg = (a, b) => v.push(...a, ...b);
-  for (let c = 0; c < 5; c++) {
-    const x0 = 0.55 - c * 0.26;
-    const w = 0.42 - c * 0.06;
+  for (let c = 0; c < 7; c++) {
+    const x0 = 0.62 - c * 0.2;
+    const w = 0.46 - c * 0.05;
     const steps = 6;
     for (const sg of [-1, 1]) {
       for (let k = 0; k < steps; k++) {
@@ -423,7 +446,8 @@ export function createView3D(canvas) {
       const n = g.pos.length / 3;
       const big = [];
       for (let k = 0; k < n; k++) if (g.bright[k] > 1.2) big.push(k);
-      const points = new THREE.Points(pointsGeo(g.pos, (k) => Math.min(1, g.bright[k]), g.hot), depthPoints(shared, { size: 0.95, max: 7, drift: 1.2, dof: 0.5 }));
+      // A real luminosity function: most stars faint, a few bright (gain is raised to match).
+      const points = new THREE.Points(pointsGeo(g.pos, (k) => Math.min(1, g.bright[k]) * (0.22 + 0.78 * rnd() ** 2.4), g.hot), depthPoints(shared, { size: 0.95, max: 7, drift: 1.2, dof: 0.5 }));
       const bpos = new Float32Array(big.length * 3);
       const bhot = new Float32Array(big.length);
       big.forEach((k, j) => {
@@ -461,7 +485,7 @@ export function createView3D(canvas) {
     const sphere = new THREE.SphereGeometry(1, 40, 24);
     const skin = fresnel(0x020b0a, '#7dffd6');
     const rimMat = new THREE.MeshBasicMaterial({ color: SPIDER, side: THREE.BackSide });
-    const wireMat = new THREE.LineBasicMaterial({ color: SPIDER, transparent: true, opacity: 0.7 });
+    const wireMat = new THREE.LineBasicMaterial({ color: SPIDER, transparent: true, opacity: 0.42 });
     const part = (lat, lon, pattern) => {
       const grp = new THREE.Group();
       grp.matrixAutoUpdate = false;
@@ -470,11 +494,11 @@ export function createView3D(canvas) {
       const wire = new THREE.LineSegments(latLong(lat, lon), wireMat);
       wire.scale.setScalar(1.006);
       grp.add(new THREE.Mesh(sphere, skin), rim, wire);
-      if (pattern) grp.add(new THREE.LineSegments(chevrons(), new THREE.LineBasicMaterial({ color: '#c9fff0', transparent: true, opacity: 0.85 })));
+      if (pattern) grp.add(new THREE.LineSegments(pattern(), new THREE.LineBasicMaterial({ color: '#c9fff0', transparent: true, opacity: 0.85 })));
       return grp;
     };
-    const abdomen = part(9, 18, true);
-    const ceph = part(5, 10, false);
+    const abdomen = part(14, 28, chevrons);
+    const ceph = part(8, 16, striae);
     // Tapered limb segments (base radius 1, tip radius 0.6, spanning y 0..1) and ball joints.
     const limbGeo = new THREE.CylinderGeometry(0.6, 1, 1, 10, 1);
     limbGeo.translate(0, 0.5, 0);
@@ -485,9 +509,13 @@ export function createView3D(canvas) {
     limbs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     joints.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     const hairs = fatSegments(LEG_COUNT * HAIRS, SPIDER, 0.6, 0.55);
-    const eyes = new THREE.Points(dynamicGeometry(8), new THREE.PointsMaterial({ color: '#eafff8', size: 2.2, sizeAttenuation: false, fog: false }));
+    // Eyes: the two big anterior median eyes, and six smaller ones.
+    const eyes = new THREE.Points(dynamicGeometry(2), new THREE.PointsMaterial({ color: '#f2fffb', size: 3.4, sizeAttenuation: false, fog: false }));
+    const eyesSmall = new THREE.Points(dynamicGeometry(6), new THREE.PointsMaterial({ color: '#cfeee6', size: 1.8, sizeAttenuation: false, fog: false }));
     const spinnerets = new THREE.Points(dynamicGeometry(3), new THREE.PointsMaterial({ color: SPIDER, size: 2, sizeAttenuation: false }));
-    const core = new THREE.Mesh(new THREE.BoxGeometry(7 * SS, 7 * SS, 7 * SS), new THREE.MeshBasicMaterial({ color: FLAG, depthTest: false, fog: false }));
+    // The heart: a long pulsing vessel along the top of the abdomen, seen through the glassy body.
+    const core = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12), new THREE.MeshBasicMaterial({ color: FLAG, depthTest: false, fog: false, transparent: true, opacity: 0.9 }));
+    core.matrixAutoUpdate = false;
     core.renderOrder = 20;
     const tentacles = new THREE.Points(
       dynamicGeometry(MAX_TENTACLES * TENTACLE_DOTS),
@@ -495,10 +523,10 @@ export function createView3D(canvas) {
     );
     tentacles.renderOrder = 15;
     const silk = new THREE.Line(dynamicGeometry(SILK_MAX, 3, 4), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }));
-    root.add(silk, tentacles, limbs, joints, hairs, spinnerets, abdomen, ceph, eyes, core);
+    root.add(silk, tentacles, limbs, joints, hairs, spinnerets, abdomen, ceph, eyes, eyesSmall, core);
 
     const fat = [hairs];
-    W = { root, clusters, streams, words, wcol, wordKey: '', world, abdomen, ceph, limbs, joints, hairs, eyes, spinnerets, core, tentacles, silk, fat, hairBuf: new Float32Array(LEG_COUNT * HAIRS * 6) };
+    W = { root, clusters, streams, words, wcol, wordKey: '', world, abdomen, ceph, limbs, joints, hairs, eyes, eyesSmall, spinnerets, core, tentacles, silk, fat, hairBuf: new Float32Array(LEG_COUNT * HAIRS * 6) };
     for (const l of fat) l.material.resolution.set(size.w, size.h);
   }
 
@@ -579,10 +607,10 @@ export function createView3D(canvas) {
       cl.tint.copy(grey).lerp(cl.color, cl.mix);
       for (const m of [cl.points.material, cl.stars.material]) {
         m.uniforms.uColor.value.copy(cl.tint);
-        m.uniforms.uGain.value = cl.gain;
+        m.uniforms.uGain.value = cl.gain * (m === cl.points.material ? 1.85 : 1);
       }
       cl.lines.material.uniforms.uColor.value.copy(cl.tint);
-      cl.lines.material.uniforms.uOpacity.value = (0.05 + 0.08 * cl.mix) * cl.gain;
+      cl.lines.material.uniforms.uOpacity.value = (0.03 + 0.05 * cl.mix) * cl.gain;
     });
 
     // Word nodes recolour only when reading state changes.
@@ -612,43 +640,68 @@ export function createView3D(canvas) {
     const ab = spider.abdomenFrame();
     setBody(W.abdomen, ab.c, ab.F, ab.U, ab.S, ABDOMEN.RX * breath, ABDOMEN.RY * breath, ABDOMEN.RZ * breath);
     setBody(W.ceph, spider.cephCenter(), F, U, S, CEPH.RX, CEPH.RY, CEPH.RZ);
-    W.core.position.set(...add(ab.c, ab.U, 3 * SS));
-    W.core.rotation.set(spider.time * 1.1, spider.time * 0.8, spider.time * 0.35);
+    // Heartbeat: a quick double pulse, then rest.
+    const beat = spider.time * 1.6 - Math.floor(spider.time * 1.6);
+    const pulse = 1 + 0.18 * (Math.exp(-((beat - 0.1) ** 2) / 0.002) + 0.6 * Math.exp(-((beat - 0.28) ** 2) / 0.002));
+    setBody(W.core, add(add(ab.c, ab.U, ABDOMEN.RZ * 0.55), ab.F, ABDOMEN.RX * 0.12), ab.F, ab.U, ab.S, ABDOMEN.RX * 0.44, ABDOMEN.RY * 0.09 * pulse, ABDOMEN.RZ * 0.09 * pulse);
 
-    // Legs as tapered 3D segments with ball joints; hairs along femur and tibia.
+    // Legs: all seven segments (coxa, femur, patella, tibia, metatarsus, tarsus,
+    // paired claws) as tapered 3D limbs with ball joints, and setae and spines.
     const hb = W.hairBuf;
     let hi = 0;
+    const cc = spider.cephCenter();
     spider.legs.forEach((leg, i) => {
-      limb(i * 3, leg.hip, leg.knee, 1.9 * SS);
-      limb(i * 3 + 1, leg.knee, leg.ankle, 1.35 * SS);
-      limb(i * 3 + 2, leg.ankle, leg.tip, 0.85 * SS);
-      joint(i * 4, leg.hip, 2.1 * SS);
-      joint(i * 4 + 1, leg.knee, 1.75 * SS);
-      joint(i * 4 + 2, leg.ankle, 1.25 * SS);
-      joint(i * 4 + 3, leg.tip, 0.7 * SS);
-      const segs = [
-        [leg.hip, leg.knee, 1.8 * SS],
-        [leg.knee, leg.ankle, 1.3 * SS],
+      const { hip, knee, ankle, tip } = leg;
+      const coxa0 = lerp3(hip, cc, 0.32);
+      const pat = lerp3(knee, ankle, 0.16);
+      const tib = lerp3(knee, ankle, 0.6);
+      let li = i * LEG_SEGS;
+      limb(li++, coxa0, hip, 2.3 * SS);
+      limb(li++, hip, knee, 1.95 * SS);
+      limb(li++, knee, pat, 1.6 * SS);
+      limb(li++, pat, tib, 1.38 * SS);
+      limb(li++, tib, ankle, 1.02 * SS);
+      limb(li++, ankle, tip, 0.7 * SS);
+      const td = norm(sub(tip, ankle));
+      const side = norm(cross(td, U));
+      for (const sg of [-1, 1]) limb(li++, tip, add(add(add(tip, td, 1.2 * SS), side, sg * 0.55 * SS), U, -0.7 * SS), 0.26 * SS);
+      let ji = i * 6;
+      joint(ji++, hip, 2.25 * SS);
+      joint(ji++, knee, 1.85 * SS);
+      joint(ji++, pat, 1.5 * SS);
+      joint(ji++, tib, 1.18 * SS);
+      joint(ji++, ankle, 0.92 * SS);
+      joint(ji++, tip, 0.55 * SS);
+      // Setae along femur, patella-tibia and metatarsus; every 7th a long, stiffer spine.
+      const groups = [
+        [hip, knee, 1.85 * SS, 10],
+        [knee, tib, 1.45 * SS, 10],
+        [tib, ankle, 1.05 * SS, 8],
       ];
-      for (let k = 0; k < HAIRS; k++) {
-        const [a, c, rad] = segs[k < HAIRS / 2 ? 0 : 1];
-        const t = 0.12 + ((k % (HAIRS / 2)) / (HAIRS / 2)) * 0.8;
+      let k = 0;
+      for (const [a, c, rad, count] of groups) {
         const dir = norm(sub(c, a));
-        const p0 = add(a, sub(c, a), t);
-        const around = (k * 2.4) % (Math.PI * 2);
-        const side = norm(cross(dir, U));
-        const radial = norm(add(add([0, 0, 0], side, Math.cos(around)), U, Math.abs(Math.sin(around)) + 0.3));
-        const base = add(p0, radial, rad);
-        // Hairs lean back toward the body, like setae.
-        const tipDir = norm(add(radial, dir, -0.7));
-        hb.set(base, hi);
-        hb.set(add(base, tipDir, 3.6 * SS), hi + 3);
-        hi += 6;
+        const sd = norm(cross(dir, U));
+        for (let j = 0; j < count; j++, k++) {
+          const t = 0.08 + (j / count) * 0.86;
+          const p0 = add(a, sub(c, a), t);
+          const around = (k * 2.39996) % (Math.PI * 2);
+          const radial = norm(add(add([0, 0, 0], sd, Math.cos(around)), U, Math.abs(Math.sin(around)) + 0.25));
+          const base = add(p0, radial, rad);
+          const spine = k % 7 === 3;
+          // Hairs lean back toward the body; spines stand up more.
+          const tipDir = norm(add(radial, dir, spine ? -0.35 : -0.75));
+          hb.set(base, hi);
+          hb.set(add(base, tipDir, (spine ? 4.6 : 2.4 + 0.8 * ((k * 0.618) % 1)) * SS), hi + 3);
+          hi += 6;
+        }
       }
     });
+    // The pedicel: the narrow waist joining cephalothorax and abdomen.
+    let li = LEG_COUNT * LEG_SEGS;
+    limb(li++, add(cc, F, -CEPH.RX * 0.8), add(ab.c, ab.F, ABDOMEN.RX * 0.88), 1.7 * SS);
     // Fangs (chelicerae) and two jointed palps at the face.
     const face = spider.face();
-    let li = LEG_COUNT * 3;
     for (const sg of [-1, 1]) {
       const base = add(add(face, S, sg * 2.4 * SS), U, -1.5 * SS);
       limb(li++, base, add(add(base, F, 4 * SS), U, -5 * SS), 1.5 * SS);
@@ -667,15 +720,17 @@ export function createView3D(canvas) {
     W.joints.instanceMatrix.needsUpdate = true;
     writeSegments(W.hairs, hb);
 
-    // Eight eyes in two rows on the front of the cephalothorax.
+    // Eight eyes in two rows on the front of the cephalothorax: two big anterior median eyes.
+    const eyeAt = (sx, up) => add(add(add(face, S, sx * SS), U, (up - 2.5) * SS), F, -1.5 * SS);
     const ep = W.eyes.geometry.attributes.position.array;
-    const eyes = [
-      [-1.6, 4.2], [1.6, 4.2], [-3.6, 3.4], [3.6, 3.4],
-      [-2.4, 5.6], [2.4, 5.6], [-4.6, 4.8], [4.6, 4.8],
-    ];
-    eyes.forEach(([sx, up], k) => ep.set(add(add(add(face, S, sx * SS), U, (up - 2.5) * SS), F, -1.5 * SS), k * 3));
-    W.eyes.geometry.attributes.position.needsUpdate = true;
-    W.eyes.geometry.computeBoundingSphere();
+    ep.set(eyeAt(-1.5, 4.0), 0);
+    ep.set(eyeAt(1.5, 4.0), 3);
+    const es = W.eyesSmall.geometry.attributes.position.array;
+    [[-3.6, 3.4], [3.6, 3.4], [-2.4, 5.8], [2.4, 5.8], [-4.6, 4.9], [4.6, 4.9]].forEach(([sx, up], k) => es.set(eyeAt(sx, up), k * 3));
+    for (const e of [W.eyes, W.eyesSmall]) {
+      e.geometry.attributes.position.needsUpdate = true;
+      e.geometry.computeBoundingSphere();
+    }
     const spin = spider.spinneret();
     const sp3 = W.spinnerets.geometry.attributes.position.array;
     for (let k = 0; k < 3; k++) sp3.set(add(add(spin, ab.S, (k - 1) * 2.2 * SS), ab.U, -1.5 * SS), k * 3);
