@@ -59,6 +59,7 @@ const ORBIT_U = [0.08, 0.92]; // reading-progress window of the close orbit
 const ORBIT_RATE = 0.16; // rad/s round the spider
 const ORBIT_DIST = 0.7; // of the ball's fit distance
 const PI = Math.PI;
+const ROAM_SPEED = 19; // world units/s the spider averages over a read, pauses included
 const ZOOM_MAX = 1.0; // camera zoom rate cap, log distance per second (~1.7% a frame)
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -122,6 +123,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   const B = world.bounds;
   const visits = planVisits();
   const readT = planReadTimes();
+  const routes = planRoutes();
 
   let run;
   let spider;
@@ -140,6 +142,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   let intro; // intro keys (absolute run.t)
   let ship; // finale plan
   let lastRecipe;
+  let roamIdx; // next waypoint of the active section's route
   let visitQueue; // extra balls still to visit before the next section
   let visit; // the extra ball being visited: { c, land, exit, crawl, t0, yaw0, pitch0, spin }
   const key = {};
@@ -235,6 +238,42 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return gaps;
   }
 
+  /**
+   * Each read is a walk across its ball: from where it lands, through
+   * waypoints spread over the ball (as many as it can cover in the read),
+   * ending on the side facing where it goes next.
+   */
+  function planRoutes() {
+    return analysis.sections.map((sec, i) => {
+      const c = clusters[i];
+      const rand = fork(seed, `roam:${i}`);
+      const start = landing(i);
+      const nx = visits[i][0];
+      const next = nx ? { x: nx.cx, y: nx.cy, z: nx.cz } : legEnd(i);
+      const route = [start];
+      let length = 0;
+      const want = ROAM_SPEED * readT[i];
+      for (let guard = 0; guard < 40 && length < want * 0.8; guard++) {
+        const prev = route[route.length - 1];
+        const u = rand() * 2 - 1;
+        const th = rand() * PI * 2;
+        const sq = Math.sqrt(1 - u * u);
+        const rr = c.r * range(rand, 0.3, 0.68);
+        const q = { x: c.cx + sq * Math.cos(th) * rr, y: c.cy + u * rr * 0.8, z: c.cz + sq * Math.sin(th) * rr };
+        const step = Math.hypot(q.x - prev.x, q.y - prev.y, q.z - prev.z);
+        if (step < c.r * 0.4) continue; // a real walk, not a shuffle on the spot
+        route.push(q);
+        length += step;
+      }
+      const dx = next.x - c.cx;
+      const dy = next.y - c.cy;
+      const dz = next.z - c.cz;
+      const l = Math.hypot(dx, dy, dz) || 1;
+      route.push({ x: c.cx + (dx / l) * c.r * 0.5, y: c.cy + (dy / l) * c.r * 0.5, z: c.cz + (dz / l) * c.r * 0.5 });
+      return route;
+    });
+  }
+
   /** Per-section read times, scaled down if the whole run would overrun the budget. */
   function planReadTimes() {
     const out = analysis.sections.map((s) => readSeconds(s.count));
@@ -262,9 +301,19 @@ export function createDirector(analysis, world, getStage, seed = 1) {
 
   /** Roughly where the spider is at reading progress u (0..1) of section i. */
   function spiderAt(i, u) {
-    const sec = analysis.sections[i];
-    const a = sec.start + Math.min(Math.max(0, sec.count - 1), Math.floor(u * sec.count));
-    return centroid(a, Math.min(sec.start + sec.count, a + 4)) || landing(i);
+    const route = routes[i];
+    let left = ROAM_SPEED * readT[i] * clamp(u, 0, 1);
+    for (let k = 1; k < route.length; k++) {
+      const a = route[k - 1];
+      const b = route[k];
+      const L = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
+      if (left <= L) {
+        const t = L > 0 ? left / L : 0;
+        return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t) };
+      }
+      left -= L;
+    }
+    return route[route.length - 1];
   }
 
   /**
@@ -352,13 +401,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       // passes this angle late in the flight, on one smooth turn from where the
       // last shot ended to the next establishing view.
       const tr = run.travel;
-      const tm = tr.crouch + tr.air * 0.7;
+      const tm = tr.crouch + tr.air * 0.08;
       const tEnd = tr.dur + BREATH + TURN_U * readT[i];
       const line = lerp(cam.pitch, Pe, tm / tEnd);
       const leapYaw = Math.atan2(goal.x - from[0], goal.z - from[2]);
       const skip = [i, i - 1];
       let bestCost = Infinity;
-      air = { yaw: cam.yaw, pitch: line, t: tm, end: tEnd };
+      air = { yaw: cam.yaw, pitch: line, t: tm, hold: tr.crouch + tr.air + 0.25, end: tEnd };
       for (const pitch of [line, clamp(line + 0.2, -0.4, 1.0)]) {
         for (let k = -4; k <= 4; k++) {
           const y = cam.yaw + k * 0.15;
@@ -377,7 +426,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
           }
           if (cost < bestCost) {
             bestCost = cost;
-            air = { yaw: y, pitch, t: tm, end: tEnd };
+            air = { yaw: y, pitch, t: tm, hold: tr.crouch + tr.air + 0.25, end: tEnd };
           }
         }
       }
@@ -385,6 +434,14 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         turn = Math.sign(air.yaw - cam.yaw);
         moving = true;
       }
+      // Whatever was clearest, watch the leap itself side-on and low, so the arc reads.
+      let side = Infinity;
+      for (const off of [PI / 2, -PI / 2]) {
+        const d = Math.atan2(Math.sin(leapYaw + off - cam.yaw), Math.cos(leapYaw + off - cam.yaw));
+        if (Math.abs(d) < Math.abs(side)) side = d;
+      }
+      air.yaw = cam.yaw + side;
+      air.pitch = 0.12;
       yawRef = air.yaw;
     }
 
@@ -426,7 +483,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       // elevation stays slow.
       const ang = (t, yaw, pitch) => ({ t, b: 0, w: 0, ld: 0, yaw, pitch });
       const to = sampleKeys(keys, TURN_U, {});
-      plans[i].turnKeys = [ang(0, cam.yaw, cam.pitch), ang(air.t, air.yaw, air.pitch), ang(air.end, to.yaw, to.pitch)];
+      // Side-on is held through the whole flight; the move to the next view starts after touchdown.
+      plans[i].turnKeys = [ang(0, cam.yaw, cam.pitch), ang(air.t, air.yaw, air.pitch), ang(Math.min(air.hold, air.end - 0.3), air.yaw, air.pitch), ang(air.end, to.yaw, to.pitch)];
     }
   }
 
@@ -719,7 +777,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // round off every change so nothing lurches.
     if (run.phase === 'ship') followCamera(run.camera, t, dt, 1.3, 1.5);
     else if (run.active === 0 && run.phase !== 'read') followCamera(run.camera, t, dt, 0.7, 0.8);
-    else if (run.phase === 'walk' || run.phase === 'visit') followCamera(run.camera, t, dt, 0.85, 1.0);
+    else if (run.phase === 'walk') followCamera(run.camera, t, dt, 0.85, 0.7);
+    else if (run.phase === 'visit') followCamera(run.camera, t, dt, 0.85, 1.0);
     else followCamera(run.camera, t, dt, 0.8, 1.4);
     // Backstop for corners the springs cut through a ball: only ever outward,
     // and gently, so it can't fight the springs.
@@ -799,6 +858,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   function enterRead() {
     plans[run.active].walkT = run.phaseT;
     setPhase('read');
+    roamIdx = 1;
     const sec = analysis.sections[run.active];
     const T = plans[run.active].T;
     const reachTime = Math.max(1, T - TAIL - 0.4);
@@ -900,9 +960,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       cursor += take;
     }
     if (cursor >= end) readAcc = 0;
-    const w = centroid(cursor, Math.min(end, cursor + 4));
-    // Crawl over the ball toward the next words.
-    if (w) run.spiderGoal = { x: w.x, y: w.y, z: w.z };
+    // Walk the ball along its route, reaching for the words as it goes.
+    const route = routes[run.active];
+    const s = run.spider;
+    const g = route[Math.min(roamIdx, route.length - 1)];
+    if (roamIdx < route.length - 1 && Math.hypot(s.x - g.x, s.y - g.y, s.z - g.z) < 40) roamIdx++;
+    const goal = route[Math.min(roamIdx, route.length - 1)];
+    run.spiderGoal = { x: goal.x, y: goal.y, z: goal.z };
     const T = plans[run.active].T;
     // Leave once the words are read and the shot has eased back out.
     if (cursor >= end && run.tentacles.length === 0 && run.phaseT >= T - 0.25) {

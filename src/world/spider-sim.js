@@ -47,7 +47,7 @@ const SILK_CAP = 500;
 const SILK_EVERY = 40;
 const CELL = 30;
 const STRIDE = 12.5; // world units of body travel per gait cycle
-const CRUISE = 42; // walking speed, sim units/s (21 in the world at SCALE 0.5)
+const CRUISE = 52; // walking speed, sim units/s (26 in the world at SCALE 0.5)
 const MAX_TURN = 0.7; // rad/s
 const MAX_TILT = 1.05;
 const MAX_TILT_AIR = 0.9;
@@ -929,11 +929,11 @@ export class Spider {
     this.intentT -= dt;
     if (this.shuffle) this.shuffleStep(dt);
     if (this.walking) {
-      if (this.intentT <= 0 || dist < 8) this.beginPause(dist > 150 ? range(this.rand, 0.5, 0.9) : range(this.rand, 1.0, 2.2));
+      if (this.intentT <= 0 || dist < 8) this.beginPause(dist > 150 ? range(this.rand, 0.35, 0.7) : range(this.rand, 0.8, 1.8));
     } else {
       this.pauseT += dt;
       if (this.intentT <= 0 && !this.shuffle) {
-        if (dist > 14) this.beginWalk(range(this.rand, 1.1, 2.4) * (dist > 150 ? 1.3 : 1));
+        if (dist > 14) this.beginWalk(range(this.rand, 1.1, 2.4) * (dist > 150 ? 1.7 : 1));
         else this.beginPause(range(this.rand, 1.0, 2.2));
       }
     }
