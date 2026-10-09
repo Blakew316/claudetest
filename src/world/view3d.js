@@ -36,6 +36,8 @@ export const FOV = 50;
 const TENTACLE_DOTS = 200;
 const SILK_SUB = 5;
 const SILK_MAX = 520 * SILK_SUB + 24;
+const MOTES = 500; // dust motes drifting past the lens
+const MOTE_BOX = 360; // ...in a box this wide (world units) wrapped round the camera
 const HAIRS = 60; // setae per leg: spines on femur and tibia, a dense scopula under the foot
 const LR = 1.18; // leg thickness: eight sturdy legs
 const LEG_SEGS = 9; // coxa, femur (two, bowed), patella, tibia, metatarsus, tarsus, two claws
@@ -469,6 +471,16 @@ export function createView3D(canvas) {
       dpos[i * 3 + 1] = b.y + rr * u * 0.6;
       dpos[i * 3 + 2] = b.z + rr * sq * Math.sin(th);
     }
+    // Motes: faint specks in a box that wraps round the camera, so there is always
+    // something drifting past the lens and every camera move reads in depth.
+    const mpos = new Float32Array(MOTES * 3);
+    const mbase = Float32Array.from({ length: MOTES * 3 }, () => rnd() * MOTE_BOX);
+    const mglow = Float32Array.from({ length: MOTES }, () => 0.05 + 0.08 * rnd());
+    const mm = depthPoints(shared, { size: 1, max: 5, drift: 0, dof: 0.6 });
+    mm.uniforms.uColor.value.set('#a8b8e0');
+    const motes = new THREE.Points(pointsGeo(mpos, () => 0), mm);
+    motes.frustumCulled = false;
+    root.add(motes);
     const dm = depthPoints(shared, { size: 1.1, max: 16, drift: 7, dof: 1.3 });
     dm.uniforms.uColor.value.set('#8fa0c8');
     root.add(new THREE.Points(pointsGeo(dpos, () => 0.05 + 0.15 * rnd()), dm));
@@ -603,7 +615,7 @@ export function createView3D(canvas) {
     root.add(silk, tentacles, limbs, joints, hairs, spinnerets, abdomen, ceph, eyeBalls, eyes, eyesSmall, core);
 
     const fat = [hairs];
-    W = { root, clusters, streams, words, wcol, wordKey: '', world, abdomen, ceph, limbs, joints, hairs, eyeBalls, eyes, eyesSmall, spinnerets, core, tentacles, silk, fat, hairBuf: new Float32Array(LEG_COUNT * HAIRS * 6) };
+    W = { root, motes, mbase, mglow, clusters, streams, words, wcol, wordKey: '', world, abdomen, ceph, limbs, joints, hairs, eyeBalls, eyes, eyesSmall, spinnerets, core, tentacles, silk, fat, hairBuf: new Float32Array(LEG_COUNT * HAIRS * 6) };
     for (const l of fat) l.material.resolution.set(size.w, size.h);
   }
 
@@ -618,14 +630,27 @@ export function createView3D(canvas) {
     return out;
   }
 
-  function placeCamera(run, focus, c, t) {
+  let bank = 0;
+  let lastYaw = null;
+  function placeCamera(run, spider, c, t, dt) {
+    const focus = spider.b;
     // A slow handheld drift so the view breathes even when the shot is still.
     const hy = 0.006 * Math.sin(t * 0.37) + 0.004 * Math.sin(t * 0.83 + 1.3);
     const hp = 0.004 * Math.sin(t * 0.49 + 0.7) + 0.003 * Math.sin(t * 0.97);
     const yaw = c.yaw + orbit.yaw + hy;
     const pitch = Math.max(-1.3, Math.min(1.4, c.pitch + orbit.pitch + hp));
-    camera.position.set(c.x + c.dist * Math.cos(pitch) * Math.sin(yaw), c.y + c.dist * Math.sin(pitch), c.z + c.dist * Math.cos(pitch) * Math.cos(yaw));
-    camera.lookAt(c.x, c.y, c.z);
+    // The camera rides a landing's impact: a quick, damped bounce.
+    const jolt = (spider.jolt || 0) * c.dist * 0.008;
+    camera.position.set(c.x + c.dist * Math.cos(pitch) * Math.sin(yaw), c.y + c.dist * Math.sin(pitch) + jolt, c.z + c.dist * Math.cos(pitch) * Math.cos(yaw));
+    camera.lookAt(c.x, c.y + jolt * 0.4, c.z);
+    // Banking into a sweep like a drone, a few degrees at most.
+    if (dt > 1e-3) {
+      const turn = lastYaw === null ? 0 : yaw - lastYaw;
+      const rate = Math.atan2(Math.sin(turn), Math.cos(turn)) / dt;
+      bank += (Math.max(-0.06, Math.min(0.06, -0.15 * rate)) - bank) * (1 - Math.exp(-2.5 * dt));
+      lastYaw = yaw;
+    }
+    camera.rotateZ(bank);
     camera.updateMatrixWorld();
     fog.density = 0.45 / c.dist;
     shared.uFog.value = fog.density;
@@ -668,7 +693,22 @@ export function createView3D(canvas) {
   function render(run, analysis, spider, dt, between = null) {
     if (!W) return;
     const t = between ? between.t : run.t;
-    placeCamera(run, spider.b, between ? between.camera : run.camera, t);
+    placeCamera(run, spider, between ? between.camera : run.camera, t, dt);
+    // Motes wrap round the camera, fading out near the box's faces so none pops.
+    const mp = W.motes.geometry.attributes.position;
+    const mb = W.motes.geometry.attributes.bright;
+    const cp = camera.position;
+    for (let i = 0; i < MOTES; i++) {
+      let edge = 0;
+      for (let j = 0; j < 3; j++) {
+        const rel = (((W.mbase[i * 3 + j] - cp.getComponent(j)) % MOTE_BOX) + MOTE_BOX * 1.5) % MOTE_BOX - MOTE_BOX / 2;
+        mp.array[i * 3 + j] = cp.getComponent(j) + rel;
+        edge = Math.max(edge, Math.abs(rel) / (MOTE_BOX / 2));
+      }
+      mb.array[i] = W.mglow[i] * (1 - Math.max(0, Math.min(1, (edge - 0.6) / 0.4)));
+    }
+    mp.needsUpdate = true;
+    mb.needsUpdate = true;
     shared.uLight.value.set(...spider.b);
     const ship = run.phase === 'ship';
     const fade = 1 - Math.exp(-4 * dt);

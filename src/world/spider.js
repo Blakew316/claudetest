@@ -52,7 +52,7 @@ const JOINTS = ['hip', 'knee', 'ankle', 'tip', 'foot'];
 
 /** What the renderer reads, at world scale (cC/fC/sC: cephalothorax centre, face, spinneret; a*: abdomen frame). */
 function pose(legs) {
-  const o = { time: 0, taut: 0, palpTap: [0, 0], legs: Array.from({ length: legs }, () => Object.fromEntries(JOINTS.map((j) => [j, [0, 0, 0]]))) };
+  const o = { time: 0, taut: 0, jolt: 0, palpTap: [0, 0], legs: Array.from({ length: legs }, () => Object.fromEntries(JOINTS.map((j) => [j, [0, 0, 0]]))) };
   for (const k of [...POINTS, ...AXES]) o[k] = [0, 0, 0];
   return o;
 }
@@ -80,6 +80,8 @@ export class Spider {
     this.simRun = { t: 0, silkSection: 0, travel: null, spiderGoal: { x: 0, y: 0, z: 0 }, spider: { arrived: false }, silk: [] };
     this.lastTravel = null;
     this.taut = 0; // the dragline pulled taut by a leap, eased so it never snaps slack
+    this.hit = 0; // a landing's impact (0..1) and the time since, for the camera's jolt
+    this.hitAge = 9;
     this.p = [0, 0, 0];
     this.b = [0, 0, 0];
     this.legs = this.sim.legs.map(() => ({ hip: [0, 0, 0], knee: [0, 0, 0], ankle: [0, 0, 0], tip: [0, 0, 0], foot: [0, 0, 0] }));
@@ -115,6 +117,12 @@ export class Spider {
     [this.prev, this.cur] = [this.cur, this.prev];
     this.sim.update(dt, r);
     const flying = this.sim.mode === 'jump' && this.sim.launched && !this.sim.abseil;
+    if (this.sim.mode === 'land' && this.wasFlying) {
+      const v = this.sim.landV;
+      this.hit = Math.min(1, Math.hypot(v[0], v[1], v[2]) / 110);
+      this.hitAge = 0;
+    } else this.hitAge += dt;
+    this.wasFlying = flying;
     this.taut += ((flying ? 1 : 0) - this.taut) * (1 - Math.exp(-(flying ? 8 : 2.5) * dt));
     const s = r.spider;
     run.spider.x = s.x * SCALE;
@@ -175,6 +183,7 @@ export class Spider {
     copy(a.S, o.aS);
     o.time = m.time;
     o.taut = this.taut;
+    o.jolt = -this.hit * Math.exp(-7 * this.hitAge) * Math.sin(38 * this.hitAge);
     o.palpTap[0] = m.palpTap[0];
     o.palpTap[1] = m.palpTap[1];
     m.legs.forEach((l, i) => {
@@ -196,6 +205,7 @@ export class Spider {
     for (const k of AXES) unit(mix(a[k], c[k], alpha, d[k]));
     d.time = a.time + (c.time - a.time) * alpha;
     d.taut = a.taut + (c.taut - a.taut) * alpha;
+    d.jolt = a.jolt + (c.jolt - a.jolt) * alpha;
     d.palpTap[0] = a.palpTap[0] + (c.palpTap[0] - a.palpTap[0]) * alpha;
     d.palpTap[1] = a.palpTap[1] + (c.palpTap[1] - a.palpTap[1]) * alpha;
     d.legs.forEach((l, i) => {
