@@ -557,7 +557,10 @@ export class Spider {
     const gaitAmp = this.mode === 'crawl' ? Math.min(1, this.speed / CRUISE) : 0;
     const bob = Math.sin(this.gait * Math.PI * 4) * 0.6 * gaitAmp + Math.sin(this.time * 1.9) * 0.35;
     const sway = Math.sin(this.gait * Math.PI * 2) * 0.7 * gaitAmp;
-    this.b = add(add(add(this.p, hU, bob - pose.lower), hS, sway + pose.shiftS), hF, pose.shiftF);
+    // Walking it runs low, and surges a little with each push of its legs.
+    const crouch = 1.4 * gaitAmp;
+    const surge = Math.sin(this.gait * Math.PI * 4 + 0.8) * 0.5 * gaitAmp;
+    this.b = add(add(add(this.p, hU, bob - pose.lower - crouch), hS, sway + pose.shiftS), hF, pose.shiftF + surge);
   }
 
   /** Joint positions: tarsus drops to the foot from the ankle (or carries on the leg's line in the air); femur+tibia by 2-bone IK. */
@@ -1053,9 +1056,11 @@ export class Spider {
       if (leg.mode === 'step') {
         leg.step = Math.min(1, leg.step + dt / leg.stepDur);
         const u = leg.step;
-        // Lift, swing, place: the foot rises a beat before it travels and settles onto the star.
-        const h = ease(clamp((u - 0.06) / 0.86, 0, 1));
-        leg.foot = add(lerp3(leg.from, leg.to, h), this.hU, Math.sin(Math.PI * u) * leg.lift);
+        // Lift, swing, place: the foot snaps up first, travels, reaches a touch past
+        // its star and settles back onto it.
+        const e = ease(clamp((u - 0.06) / 0.86, 0, 1));
+        const h = e + 0.09 * Math.sin(Math.PI * e) * e;
+        leg.foot = add(lerp3(leg.from, leg.to, h), this.hU, Math.sin(Math.PI * u ** 0.72) * leg.lift);
         if (u >= 1) {
           leg.mode = 'plant';
           leg.foot = [...leg.to];
@@ -1083,7 +1088,8 @@ export class Spider {
       if (leg.due && !blocked && stepping < 11) {
         const [lo, hi] = this.window(leg);
         const target = locomoting ? this.stepTarget(rest, cycle, swing, leg) : rest;
-        if (lo < hi && this.startStep(leg, target, swing, locomoting ? 7 : 5, 12, critical)) stepping++;
+        const gaitAmp = Math.min(1, this.loco / CRUISE);
+        if (lo < hi && this.startStep(leg, target, swing, locomoting ? 5 + 4 * gaitAmp : 5, 12, critical)) stepping++;
       }
     }
     // Standing: one foot at a time eases back under the body when it has drifted.

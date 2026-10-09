@@ -36,13 +36,14 @@ export const FOV = 50;
 const TENTACLE_DOTS = 200;
 const SILK_SUB = 5;
 const SILK_MAX = 520 * SILK_SUB + 24;
-const HAIRS = 28; // setae per leg, a few of them long spines
-const LEG_SEGS = 8; // coxa, femur, patella, tibia, metatarsus, tarsus, two claws
+const HAIRS = 44; // setae per leg: spines on femur and tibia, a dense scopula under the foot
+const LEG_SEGS = 9; // coxa, femur (two, bowed), patella, tibia, metatarsus, tarsus, two claws
 const LIMBS = LEG_COUNT * LEG_SEGS + 1 + 2 + 6; // legs, pedicel, fangs, palps
 const JOINTS = LEG_COUNT * 6;
 
 const add = (a, b, s = 1) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+const len3 = (a) => Math.hypot(a[0], a[1], a[2]);
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const norm = (a) => {
@@ -297,7 +298,7 @@ function fresnel(core, rim, band = 9) {
         float g = clamp(1.0 - abs(dot(normalize(vN), normalize(vV))), 0.0, 1.0);
         float f = g * g;
         float band = 0.5 + 0.5 * sin(vP.y * uBand);
-        vec3 c = mix(uCore * (0.8 + 0.4 * band), uRim, f * 0.92);
+        vec3 c = mix(uCore * (0.62 + 0.76 * band), uRim * (0.85 + 0.15 * band), f * 0.92);
         gl_FragColor = vec4(c, 1.0);
       }`,
   });
@@ -656,12 +657,17 @@ export function createView3D(canvas) {
       const pat = lerp3(knee, ankle, 0.16);
       const tib = lerp3(knee, ankle, 0.6);
       let li = i * LEG_SEGS;
-      limb(li++, coxa0, hip, 2.3 * SS);
-      limb(li++, hip, knee, 1.95 * SS);
-      limb(li++, knee, pat, 1.6 * SS);
-      limb(li++, pat, tib, 1.38 * SS);
-      limb(li++, tib, ankle, 1.02 * SS);
-      limb(li++, ankle, tip, 0.7 * SS);
+      // A real femur is bowed: bend its middle up and out a little.
+      const fl = len3(sub(knee, hip));
+      const out = norm(sub(hip, cc));
+      const fmid = add(add(lerp3(hip, knee, 0.5), U, fl * 0.07), out, fl * 0.04);
+      limb(li++, coxa0, hip, 2.4 * SS);
+      limb(li++, hip, fmid, 2.05 * SS);
+      limb(li++, fmid, knee, 1.75 * SS);
+      limb(li++, knee, pat, 1.55 * SS);
+      limb(li++, pat, tib, 1.36 * SS);
+      limb(li++, tib, ankle, 0.98 * SS);
+      limb(li++, ankle, tip, 0.66 * SS);
       const td = norm(sub(tip, ankle));
       const side = norm(cross(td, U));
       for (const sg of [-1, 1]) limb(li++, tip, add(add(add(tip, td, 1.2 * SS), side, sg * 0.55 * SS), U, -0.7 * SS), 0.26 * SS);
@@ -673,26 +679,32 @@ export function createView3D(canvas) {
       joint(ji++, ankle, 0.92 * SS);
       joint(ji++, tip, 0.55 * SS);
       // Setae along femur, patella-tibia and metatarsus; every 7th a long, stiffer spine.
+      // [from, to, radius, count, kind]: setae with a few spines, then the
+      // scopula: a dense pad of short hairs under the metatarsus and tarsus.
       const groups = [
-        [hip, knee, 1.85 * SS, 10],
-        [knee, tib, 1.45 * SS, 10],
-        [tib, ankle, 1.05 * SS, 8],
+        [hip, knee, 1.95 * SS, 12, 0],
+        [knee, tib, 1.45 * SS, 14, 0],
+        [tib, ankle, 1.0 * SS, 10, 1],
+        [ankle, tip, 0.7 * SS, 8, 1],
       ];
       let k = 0;
-      for (const [a, c, rad, count] of groups) {
+      for (const [a, c, rad, count, kind] of groups) {
         const dir = norm(sub(c, a));
         const sd = norm(cross(dir, U));
         for (let j = 0; j < count; j++, k++) {
           const t = 0.08 + (j / count) * 0.86;
           const p0 = add(a, sub(c, a), t);
           const around = (k * 2.39996) % (Math.PI * 2);
-          const radial = norm(add(add([0, 0, 0], sd, Math.cos(around)), U, Math.abs(Math.sin(around)) + 0.25));
+          // Setae all round (more on top); the scopula only underneath.
+          const radial = kind
+            ? norm(add(add([0, 0, 0], sd, Math.cos(around) * 0.6), U, -1))
+            : norm(add(add([0, 0, 0], sd, Math.cos(around)), U, Math.abs(Math.sin(around)) + 0.25));
           const base = add(p0, radial, rad);
-          const spine = k % 7 === 3;
-          // Hairs lean back toward the body; spines stand up more.
-          const tipDir = norm(add(radial, dir, spine ? -0.35 : -0.75));
+          const spine = !kind && k % 7 === 3;
+          const tipDir = kind ? norm(add(radial, dir, 0.6)) : norm(add(radial, dir, spine ? -0.35 : -0.75));
+          const lenH = kind ? 1.1 + 0.4 * ((k * 0.618) % 1) : spine ? 4.6 : 2.4 + 0.8 * ((k * 0.618) % 1);
           hb.set(base, hi);
-          hb.set(add(base, tipDir, (spine ? 4.6 : 2.4 + 0.8 * ((k * 0.618) % 1)) * SS), hi + 3);
+          hb.set(add(base, tipDir, lenH * SS), hi + 3);
           hi += 6;
         }
       }
