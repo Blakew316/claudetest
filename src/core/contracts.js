@@ -93,7 +93,7 @@ export const SIM_DT = 1 / 60;
  * @typedef {Object} RunState
  * @property {number} t                 sim seconds since start
  * @property {number} frame             sim frames since start
- * @property {'boot'|'walk'|'read'|'ship'} phase
+ * @property {'boot'|'walk'|'read'|'visit'|'ship'} phase
  * @property {number} phaseT            seconds since the phase began
  * @property {number} active            active section; === sections.length in 'ship'
  * @property {('queued'|'reading'|'done')[]} status   per section
@@ -115,6 +115,7 @@ export const SIM_DT = 1 / 60;
  * @property {number} codeChars         characters of crawler.py revealed so far
  * @property {number} lps               crawler.py lines/second for the panel header
  * @property {{id:string, from:number[], c1:number[], c2:number[], to:number[], t0:number, dur:number}} [travel]
+ * @property {{cluster:number}|null} [visit]  the extra (no-word) ball being leapt through, if any
  *           current drift between sections (cubic bezier), set by the director, followed by Spider
  * @property {boolean} done             ship phase has settled
  */

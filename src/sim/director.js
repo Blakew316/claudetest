@@ -44,6 +44,13 @@ const RUN_BUDGET = 300; // seconds: even a 1500-word, 12-section prompt finishes
 const MIN_READ = 7;
 const MAX_READ = 18;
 const LOG_CAP = 40;
+// Between sections the spider also leaps through the extra (no-word) balls:
+// it lands on the side facing where it came from and crawls toward the side
+// facing where it goes next, for at most VISIT_CRAWL seconds.
+const VISIT_CRAWL = 3.5;
+const VISIT_EASE = 1.4; // the camera eases back out this long before the next leap
+const VISIT_DIST = 0.5; // of the ball's fit distance, once landed
+const VISIT_TURN = 0.22; // rad/s round it
 const TURN_U = 0.12; // the leap's camera turn finishes this far into the reading
 // While the spider crawls through a ball the camera comes in close and keeps
 // revolving round it (rising and dipping once), so the stardust slides past in
@@ -52,6 +59,7 @@ const ORBIT_U = [0.08, 0.92]; // reading-progress window of the close orbit
 const ORBIT_RATE = 0.2; // rad/s round the spider
 const ORBIT_DIST = 0.58; // of the ball's fit distance
 const PI = Math.PI;
+const ZOOM_MAX = 1.0; // camera zoom rate cap, log distance per second (~1.7% a frame)
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -112,6 +120,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   const program = crawlerProgram(analysis.fileName);
   const clusters = world.clusters;
   const B = world.bounds;
+  const visits = planVisits();
   const readT = planReadTimes();
 
   let run;
@@ -131,6 +140,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   let intro; // intro keys (absolute run.t)
   let ship; // finale plan
   let lastRecipe;
+  let visitQueue; // extra balls still to visit before the next section
+  let visit; // the extra ball being visited: { c, land, exit, crawl, t0, yaw0, pitch0, spin }
   const key = {};
   const tgt = { x: 0, y: 0, z: 0, dist: 1, yaw: 0, pitch: 0 };
   const dir = [0, 0, 0];
@@ -182,6 +193,48 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return centroid(sec.start, Math.min(sec.start + 6, sec.start + sec.count)) || { x: c.cx, y: c.cy, z: c.cz };
   }
 
+  /** Where the spider leaves section i from: among its last words. */
+  function leaving(i) {
+    const a = analysis.sections[i];
+    return centroid(Math.max(a.start, a.start + a.count - 4), a.start + a.count) || { x: clusters[i].cx, y: clusters[i].cy, z: clusters[i].cz };
+  }
+
+  /** Where the leg after section i ends: the next section's first words, or the middle for the finale. */
+  function legEnd(i) {
+    return i + 1 < n ? landing(i + 1) : { x: B.x, y: B.y, z: B.z };
+  }
+
+  /**
+   * Assign every extra ball to the gap after a section where it is the
+   * smallest detour (gaps already holding one cost more, so they spread
+   * out), and order each gap's balls along the way.
+   */
+  function planVisits() {
+    const gaps = Array.from({ length: n }, () => []);
+    if (!n) return gaps;
+    const d = (P, c) => Math.hypot(P.x - c.cx, P.y - c.cy, P.z - c.cz);
+    for (const c of clusters) {
+      if (!c.extra) continue;
+      let best = 0;
+      let bestCost = Infinity;
+      for (let i = 0; i < n; i++) {
+        const A = leaving(i);
+        const E = legEnd(i);
+        const cost = d(A, c) + d(E, c) - Math.hypot(E.x - A.x, E.y - A.y, E.z - A.z) + gaps[i].length * 260;
+        if (cost < bestCost) {
+          bestCost = cost;
+          best = i;
+        }
+      }
+      gaps[best].push(c);
+    }
+    gaps.forEach((g, i) => {
+      const A = leaving(i);
+      g.sort((p, q) => d(A, p) - d(A, q));
+    });
+    return gaps;
+  }
+
   /** Per-section read times, scaled down if the whole run would overrun the budget. */
   function planReadTimes() {
     const out = analysis.sections.map((s) => readSeconds(s.count));
@@ -192,6 +245,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       const to = landing(i);
       fixed += 0.48 + airTime(Math.hypot(to.x - from.x, to.y - from.y, to.z - from.z)) + LAND + BREATH + 0.2;
     }
+    for (const g of visits) fixed += g.length * (0.48 + airTime(400) + LAND + 0.3 + VISIT_CRAWL + VISIT_EASE);
     const sum = out.reduce((s, t) => s + t, 0);
     if (sum > 0 && fixed + sum > RUN_BUDGET) {
       const k = Math.max(0, RUN_BUDGET - fixed) / sum;
@@ -417,6 +471,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
 
   function reset() {
     run = createRunState(analysis);
+    visitQueue = [];
+    visit = null;
+    run.visit = null;
     run.logSeq = 0;
     planRand = fork(seed, 'camera');
     cadence = fork(seed, 'cadence');
@@ -513,6 +570,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       if (run.phaseT > SHIP_SETTLE) k.yaw += ship.turn * 0.012 * (run.phaseT - SHIP_SETTLE);
       return fromKey(k, ship.cluster);
     }
+    if (run.phase === 'visit') return visitFrame();
     const p = plans[run.active];
     if (run.phase === 'read') {
       const u = run.phaseT / p.T;
@@ -615,6 +673,30 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return best;
   }
 
+  /**
+   * Camera through a visit: in the air it frames the spider and the ball it
+   * is leaping for; once it lands it closes in and circles it over the ball.
+   * The angles keep turning the way they were, easing to a three-quarter view.
+   */
+  function visitFrame() {
+    const c = visit.c;
+    const s = run.spider;
+    const tr = run.travel;
+    if (tr && run.phaseT < tr.crouch + tr.air) airFrame(s, run.spiderGoal, c);
+    else {
+      tgt.x = lerp(c.cx, s.x, 0.8);
+      tgt.y = lerp(c.cy, s.y, 0.8);
+      tgt.z = lerp(c.cz, s.z, 0.8);
+      const out = visit.leaveAt ? smooth(clamp(1 - (visit.leaveAt - run.phaseT) / VISIT_EASE, 0, 1)) : 0;
+      tgt.dist = fitR(c.r) * lerp(VISIT_DIST, 1.0, out);
+    }
+    // Hold the angle through the leap; circle once it has landed.
+    const flown = tr ? tr.crouch + tr.air : 0;
+    tgt.yaw = visit.yaw0 + visit.spin * VISIT_TURN * Math.max(0, run.phaseT - flown);
+    tgt.pitch = lerp(visit.pitch0, 0.42 + 0.16 * Math.sin(run.phaseT * 0.5), smooth(clamp(run.phaseT / 2.5, 0, 1)));
+    return tgt;
+  }
+
   /** Keep the target camera position out of every ball's dense core. */
   function keepClear(t) {
     orbitDir(t.yaw, t.pitch, dir);
@@ -623,6 +705,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   }
 
   function stepCamera(dt) {
+    const d0 = run.camera.dist;
     const t = keepClear(cameraTarget());
     // The springs lag the target's angles (always, in an orbit), so clear the
     // target distance along the camera's actual direction too; otherwise the
@@ -634,7 +717,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // round off every change so nothing lurches.
     if (run.phase === 'ship') followCamera(run.camera, t, dt, 1.3, 1.5);
     else if (run.active === 0 && run.phase !== 'read') followCamera(run.camera, t, dt, 0.7, 0.8);
-    else if (run.phase === 'walk') followCamera(run.camera, t, dt, 0.85, 1.0);
+    else if (run.phase === 'walk' || run.phase === 'visit') followCamera(run.camera, t, dt, 0.85, 1.0);
     else followCamera(run.camera, t, dt, 0.8, 1.4);
     // Backstop for corners the springs cut through a ball: only ever outward,
     // and gently, so it can't fight the springs.
@@ -642,6 +725,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     orbitDir(cam.yaw, cam.pitch, dir);
     const safe = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, 0.85, cam.dist);
     if (safe > cam.dist) cam.dist += (safe - cam.dist) * (1 - Math.exp(-3 * dt));
+    // Never zoom faster than ZOOM_MAX (log distance per second), whatever the
+    // geometry asks for: a blocked shot that suddenly clears must not lurch.
+    const step = Math.log(cam.dist / d0);
+    if (Math.abs(step) > ZOOM_MAX * dt) {
+      cam.dist = d0 * Math.exp(Math.sign(step) * ZOOM_MAX * dt);
+      if (cam.v) cam.v.dist = clamp(cam.v.dist, -ZOOM_MAX, ZOOM_MAX);
+    }
   }
 
   /* ---------------------------------------------------------- timeline */
@@ -815,8 +905,92 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // Leave once the words are read and the shot has eased back out.
     if (cursor >= end && run.tentacles.length === 0 && run.phaseT >= T - 0.25) {
       run.status[run.active] = 'done';
-      if (run.active + 1 < n) enterWalk(run.active + 1);
-      else enterShip();
+      visitQueue = visits[run.active].slice();
+      nextLeg();
+    }
+  }
+
+  /** After a read: the next extra ball to leap through, else the next section, else the finale. */
+  function nextLeg() {
+    if (visitQueue.length) enterVisit(visitQueue.shift());
+    else if (run.active + 1 < n) enterWalk(run.active + 1);
+    else enterShip();
+  }
+
+  /** A point on ball c, half its radius out, on the side facing P. */
+  function sideFacing(c, P) {
+    const dx = P.x - c.cx;
+    const dy = P.y - c.cy;
+    const dz = P.z - c.cz;
+    const l = Math.hypot(dx, dy, dz) || 1;
+    return { x: c.cx + (dx / l) * c.r * 0.5, y: c.cy + (dy / l) * c.r * 0.5, z: c.cz + (dz / l) * c.r * 0.5 };
+  }
+
+  function enterVisit(c) {
+    setPhase('visit');
+    const nx = visitQueue[0];
+    const next = nx ? { x: nx.cx, y: nx.cy, z: nx.cz } : legEnd(run.active);
+    const cam = run.camera;
+    visit = {
+      c,
+      land: sideFacing(c, run.spider),
+      exit: sideFacing(c, next),
+      crawl: false,
+      t0: 0,
+      leaveAt: 0,
+      yaw0: cam.yaw,
+      pitch0: cam.pitch,
+      spin: 0,
+    };
+    visit.spin = visitSpin(c, visit.land, Math.abs(cam.v?.yaw || 0) > 0.01 ? Math.sign(cam.v.yaw) : 1);
+    run.visit = { cluster: c.index };
+    run.spiderGoal = { ...visit.land };
+    travelTo(run.spiderGoal, `x${c.index}`);
+  }
+
+  /**
+   * Which way to circle a visited ball (preferring the way the camera already
+   * turns) so the camera stays clear of every section ball; 0 if neither is.
+   */
+  function visitSpin(c, land, prefer) {
+    const fit = fitR(c.r);
+    const pos = [0, 0, 0];
+    let best = 0;
+    let bestCost = Infinity;
+    for (const spin of [prefer, -prefer]) {
+      let cost = spin === prefer ? 0 : 0.2;
+      for (let k = 0; k <= 10; k++) {
+        const yaw = run.camera.yaw + spin * VISIT_TURN * (k / 10) * (VISIT_CRAWL + 2);
+        orbitDir(yaw, 0.42, pos);
+        const x = lerp(c.cx, land.x, 0.8) + pos[0] * fit * VISIT_DIST;
+        const y = lerp(c.cy, land.y, 0.8) + pos[1] * fit * VISIT_DIST;
+        const z = lerp(c.cz, land.z, 0.8) + pos[2] * fit * VISIT_DIST;
+        for (const o of clusters) if (!o.extra && Math.hypot(x - o.cx, y - o.cy, z - o.cz) < o.r * 0.95) cost += 1;
+      }
+      if (cost < bestCost) {
+        bestCost = cost;
+        best = spin;
+      }
+    }
+    return bestCost >= 2 ? 0 : best;
+  }
+
+  function stepVisit() {
+    const tr = run.travel;
+    if (!visit.crawl && ((run.spider.arrived && run.phaseT > tr.dur + 0.3) || run.phaseT > tr.dur + 3)) {
+      // Landed: crawl over the ball toward where it leaps next.
+      visit.crawl = true;
+      visit.t0 = run.phaseT;
+      run.spiderGoal = { ...visit.exit };
+    }
+    if (!visit.crawl) return;
+    const s = run.spider;
+    const e = visit.exit;
+    // Across (or out of time): a beat while the camera eases back out, then leap on.
+    if (!visit.leaveAt && (Math.hypot(s.x - e.x, s.y - e.y, s.z - e.z) < 8 || run.phaseT - visit.t0 > VISIT_CRAWL)) visit.leaveAt = run.phaseT + VISIT_EASE;
+    if (visit.leaveAt && run.phaseT >= visit.leaveAt) {
+      run.visit = null;
+      nextLeg();
     }
   }
 
@@ -838,6 +1012,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       if ((run.spider.arrived && run.phaseT > dur + breath) || run.phaseT > dur + breath + 2) enterRead();
     } else if (run.phase === 'read') {
       stepRead(dt);
+    } else if (run.phase === 'visit') {
+      stepVisit();
     } else if (run.phase === 'ship' && run.phaseT > SHIP_SETTLE) {
       run.done = true;
     }

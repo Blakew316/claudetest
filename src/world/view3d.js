@@ -573,7 +573,7 @@ export function createView3D(canvas) {
       // Extra balls (no words) glow softly in their own colour throughout.
       const extra = i >= run.status.length;
       const on = extra || run.status[i] !== 'queued' ? 1 : 0;
-      const gain = ship ? 0.8 : extra ? 0.5 : i === run.active ? 1.05 : on ? 0.72 : 0.34;
+      const gain = ship ? 0.8 : extra ? (run.visit && run.visit.cluster === i ? 1.0 : 0.5) : i === run.active ? 1.05 : on ? 0.72 : 0.34;
       cl.mix += (on - cl.mix) * fade;
       cl.gain += (gain - cl.gain) * fade;
       cl.tint.copy(grey).lerp(cl.color, cl.mix);
