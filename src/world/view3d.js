@@ -638,7 +638,7 @@ export function createView3D(canvas) {
       limb(li++, base, add(add(base, F, 4 * SS), U, -5 * SS), 1.5 * SS);
     }
     for (const sg of [-1, 1]) {
-      const tap = Math.sin(spider.time * 3.1 + (sg > 0 ? 1.4 : 0)) * 0.35;
+      const tap = spider.palpTap ? spider.palpTap[sg > 0 ? 1 : 0] : Math.sin(spider.time * 3.1 + (sg > 0 ? 1.4 : 0)) * 0.35;
       const p0 = add(add(face, S, sg * 3.8 * SS), U, -0.5 * SS);
       const p1 = add(add(add(p0, F, 5 * SS), S, sg * 3.5 * SS), U, (3 + tap * 3) * SS);
       const p2 = add(add(add(p1, F, 6 * SS), S, sg * 1.5 * SS), U, (-2 + tap * 2) * SS);
