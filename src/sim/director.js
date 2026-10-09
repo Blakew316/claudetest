@@ -49,15 +49,15 @@ const LOG_CAP = 40;
 // facing where it goes next, for at most VISIT_CRAWL seconds.
 const VISIT_CRAWL = 3.5;
 const VISIT_EASE = 1.4; // the camera eases back out this long before the next leap
-const VISIT_DIST = 0.5; // of the ball's fit distance, once landed
-const VISIT_TURN = 0.22; // rad/s round it
+const VISIT_DIST = 0.7; // of the ball's fit distance, once landed
+const VISIT_TURN = 0.16; // rad/s round it
 const TURN_U = 0.12; // the leap's camera turn finishes this far into the reading
 // While the spider crawls through a ball the camera comes in close and keeps
 // revolving round it (rising and dipping once), so the stardust slides past in
 // depth; it eases back out to the keyed wide view before the leap.
 const ORBIT_U = [0.08, 0.92]; // reading-progress window of the close orbit
-const ORBIT_RATE = 0.2; // rad/s round the spider
-const ORBIT_DIST = 0.58; // of the ball's fit distance
+const ORBIT_RATE = 0.16; // rad/s round the spider
+const ORBIT_DIST = 0.7; // of the ball's fit distance
 const PI = Math.PI;
 const ZOOM_MAX = 1.0; // camera zoom rate cap, log distance per second (~1.7% a frame)
 
@@ -690,10 +690,12 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       const out = visit.leaveAt ? smooth(clamp(1 - (visit.leaveAt - run.phaseT) / VISIT_EASE, 0, 1)) : 0;
       tgt.dist = fitR(c.r) * lerp(VISIT_DIST, 1.0, out);
     }
-    // Hold the angle through the leap; circle once it has landed.
+    // Low and side-on through the leap; once landed, rise into a slow circle round it.
     const flown = tr ? tr.crouch + tr.air : 0;
-    tgt.yaw = visit.yaw0 + visit.spin * VISIT_TURN * Math.max(0, run.phaseT - flown);
-    tgt.pitch = lerp(visit.pitch0, 0.42 + 0.16 * Math.sin(run.phaseT * 0.5), smooth(clamp(run.phaseT / 2.5, 0, 1)));
+    const since = Math.max(0, run.phaseT - flown);
+    tgt.yaw = visit.yaw0 + visit.spin * VISIT_TURN * since;
+    const airPitch = lerp(visit.pitch0, 0.18, smooth(clamp(run.phaseT / 1.2, 0, 1)));
+    tgt.pitch = lerp(airPitch, 0.42 + 0.16 * Math.sin(since * 0.5), smooth(clamp(since / 2, 0, 1)));
     return tgt;
   }
 
@@ -931,6 +933,16 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const nx = visitQueue[0];
     const next = nx ? { x: nx.cx, y: nx.cy, z: nx.cz } : legEnd(run.active);
     const cam = run.camera;
+    // Watch the leap side-on (whichever side is nearer the current view, turning at most 1.1 rad).
+    const sp = run.spider;
+    const leapYaw = Math.atan2(sideFacing(c, sp).x - sp.x, sideFacing(c, sp).z - sp.z);
+    let airYaw = cam.yaw;
+    let bestTurn = Infinity;
+    for (const side of [PI / 2, -PI / 2]) {
+      const d = Math.atan2(Math.sin(leapYaw + side - cam.yaw), Math.cos(leapYaw + side - cam.yaw));
+      if (Math.abs(d) < Math.abs(bestTurn)) bestTurn = d;
+    }
+    airYaw = cam.yaw + clamp(bestTurn, -1.1, 1.1);
     visit = {
       c,
       land: sideFacing(c, run.spider),
@@ -938,11 +950,11 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       crawl: false,
       t0: 0,
       leaveAt: 0,
-      yaw0: cam.yaw,
+      yaw0: airYaw,
       pitch0: cam.pitch,
       spin: 0,
     };
-    visit.spin = visitSpin(c, visit.land, Math.abs(cam.v?.yaw || 0) > 0.01 ? Math.sign(cam.v.yaw) : 1);
+    visit.spin = visitSpin(c, visit.land, airYaw, Math.abs(cam.v?.yaw || 0) > 0.01 ? Math.sign(cam.v.yaw) : 1);
     run.visit = { cluster: c.index };
     run.spiderGoal = { ...visit.land };
     travelTo(run.spiderGoal, `x${c.index}`);
@@ -952,7 +964,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
    * Which way to circle a visited ball (preferring the way the camera already
    * turns) so the camera stays clear of every section ball; 0 if neither is.
    */
-  function visitSpin(c, land, prefer) {
+  function visitSpin(c, land, yaw0, prefer) {
     const fit = fitR(c.r);
     const pos = [0, 0, 0];
     let best = 0;
@@ -960,7 +972,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     for (const spin of [prefer, -prefer]) {
       let cost = spin === prefer ? 0 : 0.2;
       for (let k = 0; k <= 10; k++) {
-        const yaw = run.camera.yaw + spin * VISIT_TURN * (k / 10) * (VISIT_CRAWL + 2);
+        const yaw = yaw0 + spin * VISIT_TURN * (k / 10) * (VISIT_CRAWL + 2);
         orbitDir(yaw, 0.42, pos);
         const x = lerp(c.cx, land.x, 0.8) + pos[0] * fit * VISIT_DIST;
         const y = lerp(c.cy, land.y, 0.8) + pos[1] * fit * VISIT_DIST;

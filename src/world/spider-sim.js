@@ -700,7 +700,8 @@ export class Spider {
     this.midAir = this.mode === 'jump' && this.launched;
     this.mode = 'jump';
     this.jumps++;
-    this.abseil = this.jumps === 1 || tr.crouch < 0.02;
+    // Only a travel with no crouch is an abseil; every other one is a real leap.
+    this.abseil = tr.crouch < 0.02;
     this.launched = false;
     this.crouchAnchored = false;
     this.speed = 0;
