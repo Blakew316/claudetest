@@ -110,6 +110,8 @@ export function clearDistance(x, y, z, d, dist, clusters, k = 0.9, min = 0, ref 
   let m = 0;
   for (const c of clusters) {
     if (m >= spans.length) break;
+    // Extra balls (no words, dim scenery) never block: the camera flies through them.
+    if (c.extra) continue;
     const R = c.r * k;
     const ox = x - c.cx;
     const oy = y - c.cy;
@@ -163,6 +165,7 @@ export function shotCost(x, y, z, d, dist, clusters, skip = []) {
   const py = y + d[1] * dist;
   const pz = z + d[2] * dist;
   for (const c of clusters) {
+    if (c.extra) continue; // dim scenery: flown through, never in the way
     // Camera inside a ball: it would be pushed out, losing the framing.
     const inside = Math.hypot(px - c.cx, py - c.cy, pz - c.cz) / (c.r * 0.95);
     if (inside < 1) cost += 1.6 * (1 - inside) + 0.6;

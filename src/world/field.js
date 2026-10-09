@@ -367,10 +367,10 @@ export function buildWorld(analysis, seed) {
 
   // A few more balls with no words, to make the whole ecosystem bigger.
   const xrand = fork(seed, 'extras');
-  const xr = Array.from({ length: Math.max(3, Math.round(sections.length * 0.6)) }, () => clusterRadius(range(xrand, 14, 40)));
+  const xr = Array.from({ length: Math.max(4, Math.round(sections.length * 1.15)) }, () => clusterRadius(range(xrand, 12, 44)));
   placeExtras(centers, radii, xr, xrand).forEach(([cx, cy, cz], k) => {
     const r = xr[k];
-    const g = makeBall(fork(seed, `extra:${k}`), r, Math.round(particleCount(range(xrand, 14, 40)) * 0.6));
+    const g = makeBall(fork(seed, `extra:${k}`), r, Math.round(particleCount(range(xrand, 12, 44)) * 0.5));
     for (let q = 0; q < g.pos.length; q += 3) {
       g.pos[q] += cx;
       g.pos[q + 1] += cy;

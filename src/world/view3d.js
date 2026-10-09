@@ -399,10 +399,10 @@ export function createView3D(canvas) {
     root.add(new THREE.Points(pointsGeo(spos, () => (rnd() < 0.05 ? 0.9 : 0.15 + 0.35 * rnd()), shot), sky));
     // Other universes: small cluster balls far out in every direction, hazy with distance.
     const far = mulberry32(98765);
-    for (let k = 0; k < 16; k++) {
+    for (let k = 0; k < 28; k++) {
       const u = far() * 1.6 - 0.8;
-      const th = (k / 16) * Math.PI * 2 + far() * 0.35;
-      const rr = b.radius * (2.3 + 2.2 * far());
+      const th = (k / 28) * Math.PI * 2 + far() * 0.3;
+      const rr = b.radius * (1.9 + 2.8 * far());
       const sq = Math.sqrt(1 - u * u);
       const g = makeBall(far, 45 + 90 * far(), Math.round(1400 + 1800 * far()));
       for (let i = 0; i < g.pos.length; i += 3) {

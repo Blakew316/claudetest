@@ -48,8 +48,8 @@ const TURN_U = 0.12; // the leap's camera turn finishes this far into the readin
 // While the spider crawls through a ball the camera comes in close and keeps
 // revolving round it (rising and dipping once), so the stardust slides past in
 // depth; it eases back out to the keyed wide view before the leap.
-const ORBIT_U = [0.12, 0.88]; // reading-progress window of the close orbit
-const ORBIT_RATE = 0.17; // rad/s round the spider
+const ORBIT_U = [0.08, 0.92]; // reading-progress window of the close orbit
+const ORBIT_RATE = 0.2; // rad/s round the spider
 const ORBIT_DIST = 0.58; // of the ball's fit distance
 const PI = Math.PI;
 
@@ -226,16 +226,16 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         makeKey(0.16, 0.34, estDist * 0.97, Ye + s * 0.07, Pe),
         makeKey(0.5, 0.88, 0.7 * fit, Ye + s * 0.24, lerp(Pe, Pa, 0.2)),
         makeKey(0.84, 0.8, 0.85 * fit, Ya, Pa),
-        makeKey(1, 0.5, 1.18 * fit, Ya + s * 0.12, lerp(Pa, Pe, 0.35)),
+        makeKey(1, 0.5, 0.95 * fit, Ya + s * 0.12, lerp(Pa, Pe, 0.35)),
       ];
     if (recipe === 1)
       // A slow wide orbit to the new elevation first, then push in from there.
       return [
         E,
         makeKey(0.12, 0.34, estDist * 0.97, Ye + s * 0.06, Pe),
-        makeKey(0.46, 0.55, 1.12 * fit, Ya, Pa),
+        makeKey(0.46, 0.55, 0.92 * fit, Ya, Pa),
         makeKey(0.8, 0.88, 0.7 * fit, Ya + s * 0.16, Pa),
-        makeKey(1, 0.5, 1.15 * fit, Ya + s * 0.26, lerp(Pa, Pe, 0.3)),
+        makeKey(1, 0.5, 0.95 * fit, Ya + s * 0.26, lerp(Pa, Pe, 0.3)),
       ];
     // Drift in close, rise or sink round it, then hang back a little.
     return [
@@ -243,7 +243,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       makeKey(0.3, 0.86, 0.72 * fit, Ye + s * 0.3, Pe),
       makeKey(0.62, 0.84, 0.8 * fit, Ya, Pa),
       makeKey(0.84, 0.72, 0.92 * fit, Ya + s * 0.18, lerp(Pa, Pe, 0.25)),
-      makeKey(1, 0.5, 1.15 * fit, Ya + s * 0.28, lerp(Pa, Pe, 0.4)),
+      makeKey(1, 0.5, 0.95 * fit, Ya + s * 0.28, lerp(Pa, Pe, 0.4)),
     ];
   }
 
@@ -338,7 +338,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // way the arc swings, how far, to which elevation) and keep the one with
     // the clearest view of the spider all the way through, preferring to keep
     // turning the way the camera already is.
-    const estDist = 1.45 * fit;
+    const estDist = 1.0 * fit;
     const recipe = (lastRecipe + 1 + Math.floor(planRand() * 2)) % 3; // never the same twice running
     lastRecipe = recipe;
     const base = yawRef + turn * range(planRand, 0.1, 0.25);
@@ -443,8 +443,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run.silk.push({ x: spider.p[0], y: spider.p[1], z: spider.p[2], s: 0, t: 0 });
     scoreTick = 0;
 
-    // The opening: far out on the whole nebula from high up, then a long glide
-    // in past the neighbouring balls toward the first one.
+    // The opening: already close on the first ball, looking down past the
+    // spider, then a slow glide round and in to the first reading view.
     const fitB = fitDistance(B.radius, aspect(), 50, 0.92);
     run.camera = { x: B.x, y: B.y, z: B.z, dist: fitB * 2.1, yaw: planRand() * PI * 2, pitch: 0.98 };
     intro = null;
@@ -454,15 +454,15 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       const p = plans[0];
       const E = p.E;
       const turn = planRand() < 0.5 ? -1 : 1;
-      const y0 = E.yaw - turn * 1.3;
-      run.camera.yaw = y0;
+      const y0 = E.yaw - turn * 0.9;
       const tEnd = BOOT + INTRO_AIR + LAND + INTRO_HOLD * 0.6;
       intro = [
-        makeKey(0, 0, fitB * 2.1, y0, 0.98, 0),
-        makeKey(tEnd * 0.4, 0.12, fitB * 1.25, lerp(y0, E.yaw, 0.45), 0.7, 0.55),
-        makeKey(tEnd * 0.78, 0.38, p.fit * 1.75, lerp(y0, E.yaw, 0.88), lerp(0.7, E.pitch, 0.7), 1),
+        makeKey(0, 0.55, p.fit * 1.3, y0, 0.85, 1),
+        makeKey(tEnd * 0.5, 0.6, p.fit * 1.0, lerp(y0, E.yaw, 0.55), lerp(0.85, E.pitch, 0.5), 1),
         { ...E, t: tEnd },
       ];
+      const s0 = run.spider;
+      run.camera = { x: lerp(c0.cx, s0.x, 0.55), y: lerp(c0.cy, s0.y, 0.55), z: lerp(c0.cz, s0.z, 0.55), dist: p.fit * 1.3, yaw: y0, pitch: 0.85 };
     }
   }
 
@@ -550,11 +550,12 @@ export function createDirector(analysis, world, getStage, seed = 1) {
 
   /** Weight of the close orbit at orbit progress v (0..1): eases in and out. */
   function orbitWeight(v) {
-    return smooth(clamp(v / 0.2, 0, 1)) * (1 - smooth(clamp((v - 0.8) / 0.2, 0, 1)));
+    return smooth(clamp(v / 0.25, 0, 1)) * (1 - smooth(clamp((v - 0.75) / 0.25, 0, 1)));
   }
 
   /** Close-orbit target for section i at reading progress u, written over a keyed target t. */
   function applyOrbit(t, i, u, spin, rate, T, sp, fit, near = ORBIT_DIST) {
+    if (!near) return t;
     const c = clusters[i];
     const v = clamp((u - ORBIT_U[0]) / (ORBIT_U[1] - ORBIT_U[0]), 0, 1);
     const ow = orbitWeight(v);
@@ -563,7 +564,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     t.z = lerp(t.z, lerp(c.cz, sp.z, 0.9), ow);
     t.dist = lerp(t.dist, fit * near, ow);
     t.yaw += spin * rate * T * (ORBIT_U[1] - ORBIT_U[0]) * smooth(v);
-    t.pitch = clamp(t.pitch + ow * 0.22 * Math.sin(2 * PI * v), -0.5, 1.25);
+    t.pitch = clamp(t.pitch + ow * 0.3 * Math.sin(2 * PI * v), -0.5, 1.25);
     return t;
   }
 
@@ -600,7 +601,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
           const z = probe.z + pos[2] * probe.dist;
           for (const o of clusters) {
             const d = Math.hypot(x - o.cx, y - o.cy, z - o.cz);
-            if (o !== c && d < o.r * 0.95) cost += 1;
+            if (o !== c && !o.extra && d < o.r * 0.95) cost += 1;
             else if (o === c && d < o.r * 0.6) cost += 0.5;
           }
         }
@@ -610,7 +611,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         }
       }
     }
-    if (bestCost >= 2) best.orbitRate = 0; // boxed in: keep to the keyed moves
+    if (bestCost >= 2) best.orbitNear = 0; // boxed in: no close orbit, keep to the keyed moves
     return best;
   }
 
