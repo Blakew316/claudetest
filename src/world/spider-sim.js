@@ -51,7 +51,8 @@ const CRUISE = 42; // walking speed, sim units/s (21 in the world at SCALE 0.5)
 const MAX_TURN = 0.7; // rad/s
 const MAX_TILT = 1.05;
 const MAX_TILT_AIR = 0.9;
-const LAND_TIME = 0.4;
+const LAND_TIME = 0.6; // touchdown: compress, rebound once, settle
+const PUSH_TIME = 0.1; // the rear legs stay planted this long after launch, extending as they push off
 const WAVE = 1 / 8; // gait phase lag between neighbouring legs on a side
 const FOOT_GAP = 7; // two feet never closer than this
 const TURN_ARM = 28; // turning in place advances the gait as if walking this radius
@@ -168,6 +169,8 @@ export class Spider {
     this.jumps = 0;
     this.launched = false;
     this.abseil = false;
+    this.abKick = 0; // abdomen swing from launch and landing (rad, + is down), a damped spring
+    this.abKickV = 0;
     this.airU = 0;
     this.speed = 0;
     this.speedV = 0;
@@ -338,7 +341,7 @@ export class Spider {
     let ang;
     if (this.mode !== 'jump') ang = this.hangPose(leg);
     else if (this.abseil) ang = lerp3(this.hangPose(leg), this.catchPose(leg), smooth(0.62, 0.9, this.airU));
-    else ang = lerp3(this.trailPose(leg), this.catchPose(leg), smooth(0.72, 0.96, this.airU));
+    else ang = lerp3(this.trailPose(leg), this.catchPose(leg), smooth(0.58, 0.9, this.airU));
     // Leaving the web, each leg swings from where its foot was into the flight pose.
     leg.airT += dt;
     if (leg.launchAng) ang = lerp3(leg.launchAng, ang, ease(clamp(leg.airT / 0.4, 0, 1)));
@@ -372,6 +375,14 @@ export class Spider {
 
   /** Body-frame foot springs toward its pose: smooth, critically damped, carried along with the body. */
   followPose(leg, dt) {
+    if (leg.holdT > 0) {
+      // Still pushing off: the foot stays on its star while the body leaves, the leg extending.
+      leg.holdT -= dt;
+      leg.rel = this.toLocal(leg.foot);
+      leg.relV = [0, 0, 0];
+      leg.airT = 0;
+      return;
+    }
     const target = leg.mode === 'feel' ? this.feelTarget(leg, dt) : this.airTarget(leg, dt);
     const k = leg.mode === 'feel' ? 70 : 45;
     const c = 2 * Math.sqrt(k);
@@ -555,7 +566,7 @@ export class Spider {
     const blend = dt > 0 ? 1 - Math.exp(-28 * dt) : 1;
     const airyK = dt > 0 ? 1 - Math.exp(-8 * dt) : 1;
     // In flight the feet stream back off the ends of the legs, until they reach to catch.
-    const drag = this.mode === 'jump' && this.launched && !this.abseil ? 0.55 * (1 - smooth(0.72, 0.96, this.airU)) : 0;
+    const drag = this.mode === 'jump' && this.launched && !this.abseil ? 0.55 * (1 - smooth(0.58, 0.9, this.airU)) : 0;
     for (const leg of this.legs) {
       const { hip } = this.legFrame(leg);
       leg.hip = hip;
@@ -651,7 +662,11 @@ export class Spider {
     const Sa = norm(cross(this.aF, this.U));
     const breathe = Math.sin(this.time * 2.1);
     this.breath = 1 + 0.03 * breathe;
-    let aD = rotate(this.aF, Sa, 0.02 * breathe * (this.walking ? 0.5 : 1));
+    // Inertia: launch and landing swing the abdomen down; it overshoots a little and settles.
+    const KA = 70;
+    this.abKickV += (-KA * this.abKick - 2 * 0.45 * Math.sqrt(KA) * this.abKickV) * dt;
+    this.abKick = clamp(this.abKick + this.abKickV * dt, -0.3, 0.38);
+    let aD = rotate(this.aF, Sa, 0.02 * breathe * (this.walking ? 0.5 : 1) + this.abKick);
     this.dipT += dt;
     const t = this.dipT;
     this.dip = t < 0.16 ? ease(t / 0.16) : t < 0.3 ? 1 : 1 - smooth(0.3, 0.75, t);
@@ -728,9 +743,13 @@ export class Spider {
     if (T < crouch) {
       this.behaviour = 'crouch';
       const k = ease(T / crouch);
-      this.p = add(tr.from, this.hU, -8 * k);
+      // Wind-up: sink deep, rock back over the rear legs, nose up a touch, and
+      // a last quiver of tension just before the spring lets go.
+      const quiver = Math.sin(T * 70) * 0.3 * smooth(0.7, 1, T / crouch);
+      this.p = add(tr.from, this.hU, -(10 * k + quiver));
       this.orient(flat, dt, 2.5, MAX_TILT, 0.35); // most of the turn happens in the air, feet free
-      this.poseT.pitch = 0.1 * k;
+      this.poseT.pitch = 0.16 * k;
+      this.poseT.shiftF = -3.2 * k;
       if (!this.crouchAnchored && T > crouch * 0.4) {
         this.crouchAnchored = true;
         this.anchor(run);
@@ -746,6 +765,10 @@ export class Spider {
       const push = scale([dot(v0, this.F), dot(v0, this.U), dot(v0, this.S)], -0.12);
       for (const leg of this.legs) if (leg.mode !== 'air') this.release(leg, push);
       this.spreadLaunch();
+      // Push-off: the rear legs keep their grip a moment and extend behind the body.
+      if (!this.abseil) for (const leg of this.legs) if (leg.k >= 5) leg.holdT = PUSH_TIME * (0.8 + 0.08 * (leg.k - 5));
+      // The abdomen lags the launch and swings down.
+      if (!this.abseil) this.abKickV += 3.2;
     }
     const u = Math.min(1, (T - crouch) / tr.air);
     this.airU = u;
@@ -760,6 +783,8 @@ export class Spider {
       this.orient(add(scale(flat, Math.cos(pitch)), UP, Math.sin(pitch)), dt, 2.5, MAX_TILT_AIR);
     } else {
       this.behaviour = 'air';
+      // A slight roll and correction in the air, as the dragline steadies it.
+      this.poseT.roll = 0.07 * Math.sin(u * Math.PI * 2 + 0.6) * (1 - u);
       const h = u * 0.6 + ease(u) * 0.4;
       this.p = add(lerp3(this.launchAt, tr.to, h), UP, tr.apex * 4 * u * (1 - u));
       const vel = norm([tr.to[0] - this.launchAt[0], tr.to[1] - this.launchAt[1] + tr.apex * 4 * (1 - 2 * u), tr.to[2] - this.launchAt[2]]);
@@ -798,6 +823,12 @@ export class Spider {
     if (s > 110) vi = scale(vi, 110 / s);
     this.landOff = [0, 0, 0];
     this.landV = vi;
+    // The impact: the nose dips, the body compresses, the abdomen swings on.
+    const hit = clamp(s / 110, 0.4, 1);
+    this.poseT = zeroPose();
+    this.poseV.pitch -= 1.5 * hit;
+    this.poseV.lower += 16 * hit;
+    this.abKickV += 4.2 * hit;
     // Front legs touch first, then the rest in a quick ripple.
     const order = [];
     for (let k = 0; k < LEG_COUNT / 2; k++) for (const side of [-1, 1]) order.push(this.legs[(side < 0 ? 0 : LEG_COUNT / 2) + k]);
@@ -818,7 +849,10 @@ export class Spider {
       this.landV[j] += (-K * this.landOff[j] - C * this.landV[j]) * dt;
       this.landOff[j] += this.landV[j] * dt;
     }
-    this.p = add(add(tr.to, this.landOff), this.hU, -(this.abseil ? 2.5 : 4) * Math.sin(Math.PI * k));
+    // Compress, rebound once, settle (a damped oscillation peaking near the first sixth).
+    const A = this.abseil ? 2.5 : 5.5;
+    const dip = (A * Math.exp(-3.4 * k) * Math.sin(Math.PI * 2.1 * k)) / 0.5;
+    this.p = add(add(tr.to, this.landOff), this.hU, -dip);
     this.orient([this.hF[0], 0, this.hF[2]], dt, 3);
     if (k >= 1) {
       this.mode = 'crawl';
