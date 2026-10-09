@@ -39,7 +39,7 @@ const SILK_MAX = 520 * SILK_SUB + 24;
 const HAIRS = 60; // setae per leg: spines on femur and tibia, a dense scopula under the foot
 const LR = 1.18; // leg thickness: eight sturdy legs
 const LEG_SEGS = 9; // coxa, femur (two, bowed), patella, tibia, metatarsus, tarsus, two claws
-const LIMBS = LEG_COUNT * LEG_SEGS + 1 + 2 + 6; // legs, pedicel, fangs, palps
+const LIMBS = LEG_COUNT * LEG_SEGS + 1 + 4 + 6 + 6; // legs, pedicel, chelicerae (base + fang), palps, spinnerets
 const JOINTS = LEG_COUNT * 6;
 
 const add = (a, b, s = 1) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
@@ -51,6 +51,61 @@ const norm = (a) => {
   const l = Math.hypot(a[0], a[1], a[2]) || 1;
   return [a[0] / l, a[1] / l, a[2] / l];
 };
+
+const smoothR = (e0, e1, x) => {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+
+/**
+ * Body shapes, as deformations of the unit sphere (x forward, y up, z side).
+ * Cephalothorax: flat underneath, raised over the eye region, sloping down
+ * behind, narrowing toward the face.
+ */
+function cephShape(x, y, z) {
+  const zs = 1 - 0.2 * smoothR(0.15, 1, x) + 0.05 * smoothR(0, -0.9, x);
+  const ys = y > 0 ? 1 + 0.16 * smoothR(0.05, 0.75, x) - 0.18 * smoothR(-0.1, -0.95, x) : 0.72;
+  return [x, y * ys, z * zs];
+}
+
+/** Abdomen: egg-shaped, tapering to the spinnerets and a little to the pedicel, with a dorsal hump. */
+function abdShape(x, y, z) {
+  const t = 1 - 0.34 * smoothR(-0.2, -1, x) - 0.14 * smoothR(0.6, 1, x);
+  return [x, y * t * (y > 0 ? 1.08 : 0.9), z * t];
+}
+
+/** Apply a shape to a geometry's vertices (and its normals, for meshes). */
+function shapeGeometry(g, fn) {
+  const pos = g.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const [x, y, z] = fn(pos.getX(i), pos.getY(i), pos.getZ(i));
+    pos.setXYZ(i, x, y, z);
+  }
+  pos.needsUpdate = true;
+  if (g.attributes.normal) g.computeVertexNormals();
+  return g;
+}
+
+/** Fine setae over the back and sides of a body part, leaning backward. */
+function bodyHairs(n, fn, seed) {
+  let s = seed;
+  const r = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  const v = [];
+  for (let i = 0, guard = 0; i < n && guard < n * 4; guard++) {
+    const u = r() * 2 - 1;
+    const th = r() * Math.PI * 2;
+    const sq = Math.sqrt(1 - u * u);
+    if (u < -0.3) continue; // not underneath
+    const b = fn(sq * Math.cos(th), u, sq * Math.sin(th));
+    const l = Math.hypot(b[0], b[1], b[2]) || 1;
+    const len = 0.06 + 0.08 * r();
+    v.push(b[0] * 1.01, b[1] * 1.01, b[2] * 1.01, b[0] + (b[0] / l - 0.7) * len, b[1] + (b[1] / l) * len, b[2] + (b[2] / l) * len);
+    i++;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+  return g;
+}
 
 /** Latitude/longitude wireframe of a unit sphere, as line segments. */
 function latLong(lat, lon, seg = 32) {
@@ -120,6 +175,19 @@ function chevrons() {
     }
   }
   for (let k = 0; k < 8; k++) seg(surf(0.75 - k * 0.12, 0), surf(0.75 - (k + 1) * 0.12, 0));
+  // Sigilla: four pairs of small dimples where the muscles attach.
+  for (let i = 0; i < 4; i++) {
+    for (const sg of [-1, 1]) {
+      const cx = 0.48 - i * 0.24;
+      const cz = sg * (0.2 - i * 0.03);
+      const rr = 0.045 - i * 0.006;
+      for (let k = 0; k < 10; k++) {
+        const a = (k / 10) * Math.PI * 2;
+        const b = ((k + 1) / 10) * Math.PI * 2;
+        seg(surf(cx + Math.cos(a) * rr, cz + Math.sin(a) * rr), surf(cx + Math.cos(b) * rr, cz + Math.sin(b) * rr));
+      }
+    }
+  }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
   return g;
@@ -484,23 +552,27 @@ export function createView3D(canvas) {
     root.add(words);
 
     // Spider: real geometry throughout.
-    const sphere = new THREE.SphereGeometry(1, 40, 24);
+    const hairMat = new THREE.LineBasicMaterial({ color: '#9fffe0', transparent: true, opacity: 0.45 });
+    const patMat = new THREE.LineBasicMaterial({ color: '#c9fff0', transparent: true, opacity: 0.85 });
     const skin = fresnel(0x020b0a, '#7dffd6');
     const rimMat = new THREE.MeshBasicMaterial({ color: SPIDER, side: THREE.BackSide });
     const wireMat = new THREE.LineBasicMaterial({ color: SPIDER, transparent: true, opacity: 0.42 });
-    const part = (lat, lon, pattern) => {
+    // Each body part: a shaped glassy shell, its rim, a fine surface grid, its pattern and a coat of setae.
+    const part = (lat, lon, pattern, shape, hairs, seed) => {
       const grp = new THREE.Group();
       grp.matrixAutoUpdate = false;
-      const rim = new THREE.Mesh(sphere, rimMat);
+      const shell = shapeGeometry(new THREE.SphereGeometry(1, 48, 32), shape);
+      const rim = new THREE.Mesh(shell, rimMat);
       rim.scale.setScalar(1.045);
-      const wire = new THREE.LineSegments(latLong(lat, lon), wireMat);
+      const wire = new THREE.LineSegments(shapeGeometry(latLong(lat, lon), shape), wireMat);
       wire.scale.setScalar(1.006);
-      grp.add(new THREE.Mesh(sphere, skin), rim, wire);
-      if (pattern) grp.add(new THREE.LineSegments(pattern(), new THREE.LineBasicMaterial({ color: '#c9fff0', transparent: true, opacity: 0.85 })));
+      grp.add(new THREE.Mesh(shell, skin), rim, wire);
+      grp.add(new THREE.LineSegments(shapeGeometry(pattern(), shape), patMat));
+      grp.add(new THREE.LineSegments(bodyHairs(hairs, shape, seed), hairMat));
       return grp;
     };
-    const abdomen = part(14, 28, chevrons);
-    const ceph = part(8, 16, striae);
+    const abdomen = part(14, 28, chevrons, abdShape, 260, 4242);
+    const ceph = part(8, 16, striae, cephShape, 110, 777);
     // Tapered limb segments (base radius 1, tip radius 0.6, spanning y 0..1) and ball joints.
     const limbGeo = new THREE.CylinderGeometry(0.6, 1, 1, 10, 1);
     limbGeo.translate(0, 0.5, 0);
@@ -511,9 +583,12 @@ export function createView3D(canvas) {
     limbs.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     joints.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
     const hairs = fatSegments(LEG_COUNT * HAIRS, SPIDER, 0.6, 0.55);
-    // Eyes: the two big anterior median eyes, and six smaller ones.
-    const eyes = new THREE.Points(dynamicGeometry(2), new THREE.PointsMaterial({ color: '#f2fffb', size: 3.4, sizeAttenuation: false, fog: false }));
-    const eyesSmall = new THREE.Points(dynamicGeometry(6), new THREE.PointsMaterial({ color: '#cfeee6', size: 1.8, sizeAttenuation: false, fog: false }));
+    // Eyes: eight glossy domes (two big anterior medians, six smaller), each with a catch-light.
+    const eyeBalls = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 14, 10), fresnel(0x010404, '#dcfff6', 6), 8);
+    eyeBalls.frustumCulled = false;
+    eyeBalls.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    const eyes = new THREE.Points(dynamicGeometry(2), new THREE.PointsMaterial({ color: '#ffffff', size: 2.2, sizeAttenuation: false, fog: false }));
+    const eyesSmall = new THREE.Points(dynamicGeometry(6), new THREE.PointsMaterial({ color: '#e8fff9', size: 1.3, sizeAttenuation: false, fog: false }));
     const spinnerets = new THREE.Points(dynamicGeometry(3), new THREE.PointsMaterial({ color: SPIDER, size: 2, sizeAttenuation: false }));
     // The heart: a long pulsing vessel along the top of the abdomen, seen through the glassy body.
     const core = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12), new THREE.MeshBasicMaterial({ color: FLAG, depthTest: false, fog: false, transparent: true, opacity: 0.9 }));
@@ -525,10 +600,10 @@ export function createView3D(canvas) {
     );
     tentacles.renderOrder = 15;
     const silk = new THREE.Line(dynamicGeometry(SILK_MAX, 3, 4), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }));
-    root.add(silk, tentacles, limbs, joints, hairs, spinnerets, abdomen, ceph, eyes, eyesSmall, core);
+    root.add(silk, tentacles, limbs, joints, hairs, spinnerets, abdomen, ceph, eyeBalls, eyes, eyesSmall, core);
 
     const fat = [hairs];
-    W = { root, clusters, streams, words, wcol, wordKey: '', world, abdomen, ceph, limbs, joints, hairs, eyes, eyesSmall, spinnerets, core, tentacles, silk, fat, hairBuf: new Float32Array(LEG_COUNT * HAIRS * 6) };
+    W = { root, clusters, streams, words, wcol, wordKey: '', world, abdomen, ceph, limbs, joints, hairs, eyeBalls, eyes, eyesSmall, spinnerets, core, tentacles, silk, fat, hairBuf: new Float32Array(LEG_COUNT * HAIRS * 6) };
     for (const l of fat) l.material.resolution.set(size.w, size.h);
   }
 
@@ -715,9 +790,13 @@ export function createView3D(canvas) {
     limb(li++, add(cc, F, -CEPH.RX * 0.8), add(ab.c, ab.F, ABDOMEN.RX * 0.88), 1.7 * SS);
     // Fangs (chelicerae) and two jointed palps at the face.
     const face = spider.face();
+    // Chelicerae: a stout base, and a curved fang folding in under it, flexing a little.
     for (const sg of [-1, 1]) {
-      const base = add(add(face, S, sg * 2.4 * SS), U, -1.5 * SS);
-      limb(li++, base, add(add(base, F, 4 * SS), U, -5 * SS), 1.5 * SS);
+      const base = add(add(face, S, sg * 2.2 * SS), U, -1.0 * SS);
+      const tipC = add(add(base, F, 2.4 * SS), U, -3.4 * SS);
+      const flex = 0.25 + 0.2 * Math.sin(spider.time * 2.3 + (sg > 0 ? 0.9 : 0));
+      limb(li++, base, tipC, 1.8 * SS);
+      limb(li++, tipC, add(add(add(tipC, S, -sg * (1.3 + flex) * SS), U, -1.0 * SS), F, 0.5 * SS), 0.42 * SS);
     }
     for (const sg of [-1, 1]) {
       const tap = spider.palpTap ? spider.palpTap[sg > 0 ? 1 : 0] : Math.sin(spider.time * 3.1 + (sg > 0 ? 1.4 : 0)) * 0.35;
@@ -729,17 +808,34 @@ export function createView3D(canvas) {
       limb(li++, p1, p2, 0.95 * SS);
       limb(li++, p2, p3, 0.75 * SS);
     }
+    // Spinnerets: three pairs of short finger-like spigots at the tip of the abdomen.
+    const spinTip = spider.spinneret();
+    for (let q = 0; q < 3; q++) {
+      for (const sg of [-1, 1]) {
+        const b0 = add(add(spinTip, ab.S, sg * (0.5 + 0.45 * q) * SS), ab.U, (-0.6 - 0.5 * q) * SS);
+        limb(li++, b0, add(add(add(b0, ab.F, -(1.6 - 0.3 * q) * SS), ab.S, sg * 0.5 * SS), ab.U, -0.4 * SS), (0.55 - 0.1 * q) * SS);
+      }
+    }
     W.limbs.instanceMatrix.needsUpdate = true;
     W.joints.instanceMatrix.needsUpdate = true;
     writeSegments(W.hairs, hb);
 
     // Eight eyes in two rows on the front of the cephalothorax: two big anterior median eyes.
     const eyeAt = (sx, up) => add(add(add(face, S, sx * SS), U, (up - 2.5) * SS), F, -1.5 * SS);
+    const glint = (p, r) => add(add(p, F, r * 0.55), U, r * 0.45);
     const ep = W.eyes.geometry.attributes.position.array;
-    ep.set(eyeAt(-1.5, 4.0), 0);
-    ep.set(eyeAt(1.5, 4.0), 3);
     const es = W.eyesSmall.geometry.attributes.position.array;
-    [[-3.6, 3.4], [3.6, 3.4], [-2.4, 5.8], [2.4, 5.8], [-4.6, 4.9], [4.6, 4.9]].forEach(([sx, up], k) => es.set(eyeAt(sx, up), k * 3));
+    const eyeDefs = [[-1.5, 4.0, 0.95], [1.5, 4.0, 0.95], [-3.6, 3.4, 0.55], [3.6, 3.4, 0.55], [-2.4, 5.8, 0.45], [2.4, 5.8, 0.45], [-4.6, 4.9, 0.5], [4.6, 4.9, 0.5]];
+    eyeDefs.forEach(([sx, up, er], k) => {
+      const pe = eyeAt(sx, up);
+      const r = er * SS;
+      mat4.makeScale(r, r, r);
+      mat4.setPosition(pe[0], pe[1], pe[2]);
+      W.eyeBalls.setMatrixAt(k, mat4);
+      if (k < 2) ep.set(glint(pe, r), k * 3);
+      else es.set(glint(pe, r), (k - 2) * 3);
+    });
+    W.eyeBalls.instanceMatrix.needsUpdate = true;
     for (const e of [W.eyes, W.eyesSmall]) {
       e.geometry.attributes.position.needsUpdate = true;
       e.geometry.computeBoundingSphere();
