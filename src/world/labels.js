@@ -215,7 +215,8 @@ export function drawSpiderOverlay(ctx, world, run, view, analysis) {
   ctx.stroke();
   const sec = analysis.sections[run.active];
   if (sec && run.phase !== 'ship') {
-    view.project(run.spider.x, run.spider.y, run.spider.z, ringPos);
+    const [x, y, z] = view.spider ?? [run.spider.x, run.spider.y, run.spider.z];
+    view.project(x, y, z, ringPos);
     if (ringPos.vis) {
       ctx.font = LABEL_FONT;
       ctx.textBaseline = 'middle';

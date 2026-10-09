@@ -618,9 +618,7 @@ export function createView3D(canvas) {
     return out;
   }
 
-  function placeCamera(run, focus) {
-    const c = run.camera;
-    const t = run.t;
+  function placeCamera(run, focus, c, t) {
     // A slow handheld drift so the view breathes even when the shot is still.
     const hy = 0.006 * Math.sin(t * 0.37) + 0.004 * Math.sin(t * 0.83 + 1.3);
     const hp = 0.004 * Math.sin(t * 0.49 + 0.7) + 0.003 * Math.sin(t * 0.97);
@@ -665,10 +663,12 @@ export function createView3D(canvas) {
    * @param {import('../core/contracts.js').Analysis} analysis
    * @param {import('./spider.js').Spider} spider
    * @param {number} dt real seconds since last frame (for crossfades)
+   * @param {{camera:object, t:number}} [between] camera and clock as drawn between two sim steps
    */
-  function render(run, analysis, spider, dt) {
+  function render(run, analysis, spider, dt, between = null) {
     if (!W) return;
-    placeCamera(run, spider.b);
+    const t = between ? between.t : run.t;
+    placeCamera(run, spider.b, between ? between.camera : run.camera, t);
     shared.uLight.value.set(...spider.b);
     const ship = run.phase === 'ship';
     const fade = 1 - Math.exp(-4 * dt);
@@ -866,7 +866,7 @@ export function createView3D(canvas) {
       const ctl = add([(o0[0] + tx) / 2, (o0[1] + ty) / 2, (o0[2] + tz) / 2], U, bow);
       const n = Math.min(TENTACLE_DOTS - 1, Math.max(2, Math.floor(L / 6)));
       const m = Math.floor(n * tn.p);
-      const wt = run.t * 7 + tn.wordId;
+      const wt = t * 7 + tn.wordId;
       for (let i = 0; i <= m && dots < MAX_TENTACLES * TENTACLE_DOTS; i++) {
         const u = i / n;
         const v = 1 - u;
@@ -917,7 +917,7 @@ export function createView3D(canvas) {
         strand([a.x, a.y, a.z], [c.x, c.y, c.z], c.s, 0.1 + 0.62 * (i / nA) ** 0.7, SILK_SUB, 0);
       }
       const last = anchors[nA - 1];
-      strand([last.x, last.y, last.z], spin, run.silkSection, 0.85, 20, Math.sin(run.t * 1.3) * 3);
+      strand([last.x, last.y, last.z], spin, run.silkSection, 0.85, 20, Math.sin(t * 1.3) * 3);
     }
     W.silk.geometry.setDrawRange(0, vi);
     W.silk.geometry.attributes.position.needsUpdate = true;

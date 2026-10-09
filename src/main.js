@@ -38,6 +38,12 @@ let hud;
 let speed = 1;
 let paused = false;
 let acc = 0;
+// The camera and clock one step back, so frames between 60 Hz steps are drawn
+// in between (see Spider.at); `fresh` after a jump in time draws the latest step as is.
+const camPrev = { x: 0, y: 0, z: 0, dist: 1, yaw: 0, pitch: 0 };
+const camDrawn = { ...camPrev };
+let tPrev = 0;
+let fresh = true;
 let lastFrame = performance.now();
 let dragging = null;
 
@@ -77,7 +83,7 @@ function start(promptText, name) {
   world = buildWorld(analysis, seed);
   director = createDirector(analysis, world, () => stage, seed);
   view3d?.setWorld(world, analysis);
-  acc = 0;
+  resync();
   hud.reset(analysis);
   save(analysis.fileName);
   if (reducedMotion) {
@@ -87,11 +93,23 @@ function start(promptText, name) {
   render(10, true);
 }
 
+/** Start drawing from the director's current state (after a restart or seek). */
+function resync() {
+  acc = 0;
+  fresh = true;
+}
+
 function render(dt, force = false) {
   const run = director.run;
   if (view3d) {
-    view3d.render(run, analysis, director.spider, dt);
-    const view = { width: stage.width, height: stage.height, dpr: stage.dpr, project: view3d.project, camDist: run.camera.dist };
+    const k = fresh ? 1 : Math.min(1, acc / SIM_DT);
+    const c = run.camera;
+    const turn = c.yaw - camPrev.yaw;
+    camDrawn.yaw = camPrev.yaw + (turn - 2 * Math.PI * Math.round(turn / (2 * Math.PI))) * k;
+    for (const f of ['x', 'y', 'z', 'dist', 'pitch']) camDrawn[f] = camPrev[f] + (c[f] - camPrev[f]) * k;
+    const spider = director.spider.at(k);
+    view3d.render(run, analysis, spider, dt, { camera: camDrawn, t: tPrev + (run.t - tPrev) * k });
+    const view = { width: stage.width, height: stage.height, dpr: stage.dpr, project: view3d.project, camDist: camDrawn.dist, spider: spider.p };
     octx.setTransform(1, 0, 0, 1, 0, 0);
     octx.clearRect(0, 0, overlay.width, overlay.height);
     drawLabels(octx, world, run, view, analysis);
@@ -107,8 +125,11 @@ function frame(now) {
     acc += dt * speed;
     let guard = 0;
     while (acc >= SIM_DT && guard++ < 40) {
+      Object.assign(camPrev, director.run.camera);
+      tPrev = director.run.t;
       director.step();
       acc -= SIM_DT;
+      fresh = false;
     }
   }
   // Released drag eases the view back to the director's camera.
@@ -129,13 +150,13 @@ hud = createHud(parsePrompt('', {}), {
   onReplay: () => {
     document.getElementById('btn-play-crawl').hidden = true;
     director.reset();
-    acc = 0;
+    resync();
   },
   onSpeed: (n) => (speed = n),
   onSeekSection: (i) => {
     document.getElementById('btn-play-crawl').hidden = true;
     director.seekSection(i);
-    acc = 0;
+    resync();
     render(10, true);
   },
   onSubmitPrompt: (t, name) => start(t, name),
@@ -145,7 +166,7 @@ hud = createHud(parsePrompt('', {}), {
 document.getElementById('btn-play-crawl').addEventListener('click', (e) => {
   e.currentTarget.hidden = true;
   director.reset();
-  acc = 0;
+  resync();
 });
 
 // Drag to orbit the scene.
@@ -181,6 +202,7 @@ requestAnimationFrame(frame);
 window.crawler = {
   seek(t) {
     director.seek(t);
+    resync();
     render(10, true);
   },
   play: () => (paused = false),
