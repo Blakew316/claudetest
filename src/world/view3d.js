@@ -155,6 +155,8 @@ function depthPoints(shared, { size, max, drift, dof }) {
       varying float vA;
       varying float vBlur;
       varying float vHot;
+      varying float vTemp;
+      varying float vGlint;
       void main() {
         vec3 p = position + uDrift * vec3(
           sin(uTime * 0.21 + phase * 6.2831),
@@ -181,6 +183,11 @@ function depthPoints(shared, { size, max, drift, dof }) {
         vA = bright * tw * energy * lit * clear * exp(-fz * fz);
         vBlur = clamp(blur, 0.0, 1.0);
         vHot = hot;
+        // Star temperature from the per-star phase: most near the section hue,
+        // some warmer or cooler, a rare few amber or blue-white giants.
+        vTemp = fract(phase * 13.73) * 2.0 - 1.0;
+        // Only the brightest, sharpest, large-enough stars get a glint.
+        vGlint = smoothstep(0.85, 1.0, bright) * (1.0 - clamp(blur, 0.0, 1.0)) * smoothstep(3.0, 7.0, gl_PointSize);
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
@@ -188,14 +195,23 @@ function depthPoints(shared, { size, max, drift, dof }) {
       varying float vA;
       varying float vBlur;
       varying float vHot;
+      varying float vTemp;
+      varying float vGlint;
       void main() {
-        float d = length(gl_PointCoord - 0.5);
+        vec2 q = gl_PointCoord - 0.5;
+        float d = length(q);
         if (d > 0.5) discard;
         float sharp = smoothstep(0.5, 0.06, d);
         float disc = smoothstep(0.5, 0.4, d) * (0.55 + 0.45 * smoothstep(0.15, 0.45, d));
         // Hot stars burn toward white at the core of the cluster.
         vec3 c = mix(uColor, vec3(1.0, 0.97, 0.92), vHot * 0.5) * (1.0 - vHot * 0.25);
-        gl_FragColor = vec4(c * vA * mix(sharp, disc, vBlur), 1.0);
+        float t = abs(vTemp);
+        vec3 tint = vTemp > 0.0 ? vec3(1.0, 0.8, 0.58) : vec3(0.74, 0.86, 1.0);
+        c *= mix(vec3(1.0), tint, t * t * 0.45);
+        c = mix(c, vTemp > 0.0 ? vec3(1.0, 0.74, 0.4) : vec3(0.78, 0.88, 1.0), smoothstep(0.94, 1.0, t) * 0.55);
+        // A tiny four-point diffraction glint on the brightest stars (inside the point, never a halo).
+        float glint = (exp(-abs(q.x) * 34.0) * exp(-abs(q.y) * 3.2) + exp(-abs(q.y) * 34.0) * exp(-abs(q.x) * 3.2)) * vGlint;
+        gl_FragColor = vec4(c * vA * (mix(sharp, disc, vBlur) + glint * 0.55), 1.0);
       }`,
     transparent: true,
     depthWrite: false,
