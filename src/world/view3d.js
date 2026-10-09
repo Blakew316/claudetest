@@ -36,7 +36,8 @@ export const FOV = 50;
 const TENTACLE_DOTS = 200;
 const SILK_SUB = 5;
 const SILK_MAX = 520 * SILK_SUB + 24;
-const HAIRS = 44; // setae per leg: spines on femur and tibia, a dense scopula under the foot
+const HAIRS = 60; // setae per leg: spines on femur and tibia, a dense scopula under the foot
+const LR = 1.18; // leg thickness: eight sturdy legs
 const LEG_SEGS = 9; // coxa, femur (two, bowed), patella, tibia, metatarsus, tarsus, two claws
 const LIMBS = LEG_COUNT * LEG_SEGS + 1 + 2 + 6; // legs, pedicel, fangs, palps
 const JOINTS = LEG_COUNT * 6;
@@ -661,31 +662,31 @@ export function createView3D(canvas) {
       const fl = len3(sub(knee, hip));
       const out = norm(sub(hip, cc));
       const fmid = add(add(lerp3(hip, knee, 0.5), U, fl * 0.07), out, fl * 0.04);
-      limb(li++, coxa0, hip, 2.4 * SS);
-      limb(li++, hip, fmid, 2.05 * SS);
-      limb(li++, fmid, knee, 1.75 * SS);
-      limb(li++, knee, pat, 1.55 * SS);
-      limb(li++, pat, tib, 1.36 * SS);
-      limb(li++, tib, ankle, 0.98 * SS);
-      limb(li++, ankle, tip, 0.66 * SS);
+      limb(li++, coxa0, hip, 2.4 * LR * SS);
+      limb(li++, hip, fmid, 2.05 * LR * SS);
+      limb(li++, fmid, knee, 1.75 * LR * SS);
+      limb(li++, knee, pat, 1.55 * LR * SS);
+      limb(li++, pat, tib, 1.36 * LR * SS);
+      limb(li++, tib, ankle, 0.98 * LR * SS);
+      limb(li++, ankle, tip, 0.66 * LR * SS);
       const td = norm(sub(tip, ankle));
       const side = norm(cross(td, U));
       for (const sg of [-1, 1]) limb(li++, tip, add(add(add(tip, td, 1.2 * SS), side, sg * 0.55 * SS), U, -0.7 * SS), 0.26 * SS);
       let ji = i * 6;
-      joint(ji++, hip, 2.25 * SS);
-      joint(ji++, knee, 1.85 * SS);
-      joint(ji++, pat, 1.5 * SS);
-      joint(ji++, tib, 1.18 * SS);
-      joint(ji++, ankle, 0.92 * SS);
-      joint(ji++, tip, 0.55 * SS);
+      joint(ji++, hip, 2.25 * LR * SS);
+      joint(ji++, knee, 1.85 * LR * SS);
+      joint(ji++, pat, 1.5 * LR * SS);
+      joint(ji++, tib, 1.18 * LR * SS);
+      joint(ji++, ankle, 0.92 * LR * SS);
+      joint(ji++, tip, 0.55 * LR * SS);
       // Setae along femur, patella-tibia and metatarsus; every 7th a long, stiffer spine.
       // [from, to, radius, count, kind]: setae with a few spines, then the
       // scopula: a dense pad of short hairs under the metatarsus and tarsus.
       const groups = [
-        [hip, knee, 1.95 * SS, 12, 0],
-        [knee, tib, 1.45 * SS, 14, 0],
-        [tib, ankle, 1.0 * SS, 10, 1],
-        [ankle, tip, 0.7 * SS, 8, 1],
+        [hip, knee, 1.95 * LR * SS, 16, 0],
+        [knee, tib, 1.45 * LR * SS, 18, 0],
+        [tib, ankle, 1.0 * LR * SS, 14, 1],
+        [ankle, tip, 0.7 * LR * SS, 12, 1],
       ];
       let k = 0;
       for (const [a, c, rad, count, kind] of groups) {

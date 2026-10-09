@@ -85,7 +85,7 @@ export const LINK_KINDS = /** @type {const} */ (['owner', 'approval', 'claim', '
 /** Maximum simultaneous tentacles (the "TENTACLES 22" readout). */
 export const MAX_TENTACLES = 22;
 /** Leg count (the "LEGS 16" readout). */
-export const LEG_COUNT = 16;
+export const LEG_COUNT = 8; // a real spider: four pairs
 /** Fixed simulation step. The sim is deterministic at this step. */
 export const SIM_DT = 1 / 60;
 

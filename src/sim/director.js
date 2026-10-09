@@ -91,7 +91,7 @@ export function crawlerProgram(fileName) {
   return [
     '# crawler.py · reads a prompt',
     `graph = load("${fileName}")`,
-    'spider = Crawler(legs=16, tentacles=22)',
+    'spider = Crawler(legs=8, tentacles=22)',
     '',
     'for section in graph.sections:',
     '    spider.walk_to(section)',

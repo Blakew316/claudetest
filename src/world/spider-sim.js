@@ -46,18 +46,18 @@ export const CEPH = { RX: 11, RY: 9.5, RZ: 7, OFF: 9 };
 const SILK_CAP = 500;
 const SILK_EVERY = 40;
 const CELL = 30;
-const STRIDE = 12.5; // world units of body travel per gait cycle
+const STRIDE = 28; // sim units of body travel per gait cycle: about half a leg length, as a real spider strides
 const CRUISE = 52; // walking speed, sim units/s (26 in the world at SCALE 0.5)
 const MAX_TURN = 0.7; // rad/s
 const MAX_TILT = 1.05;
 const MAX_TILT_AIR = 0.9;
 const LAND_TIME = 0.6; // touchdown: compress, rebound once, settle
 const PUSH_TIME = 0.1; // the rear legs stay planted this long after launch, extending as they push off
-const WAVE = 1 / 8; // gait phase lag between neighbouring legs on a side
+const WAVE = 0.53; // gait phase lag between neighbouring legs on a side: an alternating tetrapod (L1 R2 L3 R4 / R1 L2 R3 L4) with a slight ripple
 const FOOT_GAP = 7; // two feet never closer than this
 const TURN_ARM = 28; // turning in place advances the gait as if walking this radius
 const TAP_TIME = 0.46;
-const LEG_SCALE = [1.18, 1.1, 0.98, 0.92, 0.9, 0.97, 1.06, 1.15]; // front pair .. rear pair, per side
+const LEG_SCALE = [1.24, 1.08, 0.94, 1.16]; // legs I..IV: I and IV longest, III shortest, as in a real spider
 const UP = [0, 1, 0];
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -213,7 +213,7 @@ export class Spider {
     for (const side of [-1, 1]) {
       for (let k = 0; k < perSide; k++) {
         const u = k / (perSide - 1); // 0 front .. 1 rear
-        const reach = 50 * LEG_SCALE[k % LEG_SCALE.length] * range(rand, 0.96, 1.04);
+        const reach = 60 * LEG_SCALE[k % LEG_SCALE.length] * range(rand, 0.96, 1.04);
         this.legs.push({
           side,
           k,
@@ -309,7 +309,7 @@ export class Spider {
    * between its neighbours (and the rear pair clear of the abdomen).
    */
   trailPose(leg) {
-    const u = leg.k / 7;
+    const u = leg.k / (LEG_COUNT / 2 - 1);
     const t = this.time;
     const a0 = Math.abs(leg.restAng);
     return [
@@ -769,7 +769,7 @@ export class Spider {
       for (const leg of this.legs) if (leg.mode !== 'air') this.release(leg, push);
       this.spreadLaunch();
       // Push-off: the rear legs keep their grip a moment and extend behind the body.
-      if (!this.abseil) for (const leg of this.legs) if (leg.k >= 5) leg.holdT = PUSH_TIME * (0.8 + 0.08 * (leg.k - 5));
+      if (!this.abseil) for (const leg of this.legs) if (leg.k >= 2) leg.holdT = PUSH_TIME * (0.8 + 0.2 * (leg.k - 2)); // legs III and IV drive the jump
       // The abdomen lags the launch and swings down.
       if (!this.abseil) this.abKickV += 3.2;
     }
@@ -1085,7 +1085,7 @@ export class Spider {
       const ahead = lead >= 0 && lead < LEG_COUNT / 2 ? this.legs[(leg.side < 0 ? 0 : LEG_COUNT / 2) + lead] : null;
       const critical = stretch > 0.96 || above || this.footAz(leg) > 2.6; // never let a rear foot drag under the abdomen
       const blocked = ahead && ahead.mode === 'step' && ahead.step < 0.6 && !critical;
-      if (leg.due && !blocked && stepping < 11) {
+      if (leg.due && !blocked && stepping < 5) {
         const [lo, hi] = this.window(leg);
         const target = locomoting ? this.stepTarget(rest, cycle, swing, leg) : rest;
         const gaitAmp = Math.min(1, this.loco / CRUISE);
