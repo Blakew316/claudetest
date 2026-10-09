@@ -899,11 +899,11 @@ export function createView3D(canvas) {
       sc[vi * 4 + 3] = a;
       vi++;
     };
-    const strand = (a, b2, s, alpha, subs, swayAmp) => {
+    const strand = (a, b2, s, alpha, subs, swayAmp, sagK = 0.06) => {
       const L = Math.hypot(b2[0] - a[0], b2[1] - a[1], b2[2] - a[2]);
       for (let k = 1; k <= subs; k++) {
         const u = k / subs;
-        const sag = Math.sin(Math.PI * u) * L * 0.06;
+        const sag = Math.sin(Math.PI * u) * L * sagK;
         const sw = Math.sin(Math.PI * u) * swayAmp;
         pushV(a[0] + (b2[0] - a[0]) * u + sw, a[1] + (b2[1] - a[1]) * u - sag, a[2] + (b2[2] - a[2]) * u + sw * 0.6, s, alpha);
       }
@@ -917,7 +917,9 @@ export function createView3D(canvas) {
         strand([a.x, a.y, a.z], [c.x, c.y, c.z], c.s, 0.1 + 0.62 * (i / nA) ** 0.7, SILK_SUB, 0);
       }
       const last = anchors[nA - 1];
-      strand([last.x, last.y, last.z], spin, run.silkSection, 0.85, 20, Math.sin(t * 1.3) * 3);
+      // The live dragline: slack and swaying at rest, pulled near straight by a leap.
+      const taut = spider.taut || 0;
+      strand([last.x, last.y, last.z], spin, run.silkSection, 0.85, 20, Math.sin(t * 1.3) * 3 * (1 - taut), 0.06 * (1 - 0.8 * taut));
     }
     W.silk.geometry.setDrawRange(0, vi);
     W.silk.geometry.attributes.position.needsUpdate = true;

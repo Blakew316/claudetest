@@ -52,7 +52,7 @@ const JOINTS = ['hip', 'knee', 'ankle', 'tip', 'foot'];
 
 /** What the renderer reads, at world scale (cC/fC/sC: cephalothorax centre, face, spinneret; a*: abdomen frame). */
 function pose(legs) {
-  const o = { time: 0, palpTap: [0, 0], legs: Array.from({ length: legs }, () => Object.fromEntries(JOINTS.map((j) => [j, [0, 0, 0]]))) };
+  const o = { time: 0, taut: 0, palpTap: [0, 0], legs: Array.from({ length: legs }, () => Object.fromEntries(JOINTS.map((j) => [j, [0, 0, 0]]))) };
   for (const k of [...POINTS, ...AXES]) o[k] = [0, 0, 0];
   return o;
 }
@@ -79,6 +79,7 @@ export class Spider {
     this.sim = new SpiderSim(up(p), seed, simWorld(world));
     this.simRun = { t: 0, silkSection: 0, travel: null, spiderGoal: { x: 0, y: 0, z: 0 }, spider: { arrived: false }, silk: [] };
     this.lastTravel = null;
+    this.taut = 0; // the dragline pulled taut by a leap, eased so it never snaps slack
     this.p = [0, 0, 0];
     this.b = [0, 0, 0];
     this.legs = this.sim.legs.map(() => ({ hip: [0, 0, 0], knee: [0, 0, 0], ankle: [0, 0, 0], tip: [0, 0, 0], foot: [0, 0, 0] }));
@@ -113,6 +114,8 @@ export class Spider {
     r.silk.length = 0;
     [this.prev, this.cur] = [this.cur, this.prev];
     this.sim.update(dt, r);
+    const flying = this.sim.mode === 'jump' && this.sim.launched && !this.sim.abseil;
+    this.taut += ((flying ? 1 : 0) - this.taut) * (1 - Math.exp(-(flying ? 8 : 2.5) * dt));
     const s = r.spider;
     run.spider.x = s.x * SCALE;
     run.spider.y = s.y * SCALE;
@@ -171,6 +174,7 @@ export class Spider {
     copy(a.U, o.aU);
     copy(a.S, o.aS);
     o.time = m.time;
+    o.taut = this.taut;
     o.palpTap[0] = m.palpTap[0];
     o.palpTap[1] = m.palpTap[1];
     m.legs.forEach((l, i) => {
@@ -191,6 +195,7 @@ export class Spider {
     for (const k of POINTS) mix(a[k], c[k], alpha, d[k]);
     for (const k of AXES) unit(mix(a[k], c[k], alpha, d[k]));
     d.time = a.time + (c.time - a.time) * alpha;
+    d.taut = a.taut + (c.taut - a.taut) * alpha;
     d.palpTap[0] = a.palpTap[0] + (c.palpTap[0] - a.palpTap[0]) * alpha;
     d.palpTap[1] = a.palpTap[1] + (c.palpTap[1] - a.palpTap[1]) * alpha;
     d.legs.forEach((l, i) => {

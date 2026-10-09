@@ -828,7 +828,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const to = [goal.x, goal.y, goal.z];
     const L = Math.hypot(to[0] - from[0], to[1] - from[1], to[2] - from[2]) || 1;
     const first = run.silk.length <= 1 && run.counts.read === 0;
-    const crouch = first ? 0 : range(cadence, 0.4, 0.55);
+    // A jumping spider turns to face its target before it leaps: time for that
+    // quick pivot, from how far round it has to turn.
+    const hF = spider.sim.hF;
+    const turn = Math.atan2(to[2] - from[2], to[0] - from[0]) - Math.atan2(hF[2], hF[0]);
+    const off = Math.abs(Math.atan2(Math.sin(turn), Math.cos(turn)));
+    const aim = first || Math.hypot(to[0] - from[0], to[2] - from[2]) < 2 || off < 0.25 ? 0 : 0.2 + (0.4 * off) / Math.PI;
+    const crouch = first ? 0 : aim + range(cadence, 0.4, 0.55);
     const air = first ? INTRO_AIR : airTime(L);
     run.travel = {
       id: `${id}:${run.t.toFixed(3)}`,
@@ -836,6 +842,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       to,
       t0: run.t,
       crouch,
+      aim,
       air,
       apex: first ? 16 : Math.max(60, L * range(cadence, 0.3, 0.4)),
       dur: crouch + air + LAND,

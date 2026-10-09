@@ -319,6 +319,16 @@ export class Spider {
     ];
   }
 
+  /** Aiming before a leap: the forelegs raised and held out toward the target. */
+  aimPose(leg) {
+    return [Math.abs(leg.restAng) * 0.7, 0.35 + Math.sin(this.time * 2.6 + leg.phase) * 0.03, 0.85];
+  }
+
+  /** In flight, legs I and II reach ahead toward the landing. */
+  reachPose(leg) {
+    return [Math.abs(leg.restAng) * 0.75, 0.2 - 0.25 * leg.k + Math.sin(this.time * 3.3 + leg.phase) * 0.03, 0.92];
+  }
+
   /** Reaching to catch: spread forward and down, each leg toward its own foothold. */
   catchPose(leg) {
     return [Math.abs(leg.restAng) * 0.92, -0.55 + Math.sin(this.time * 3 + leg.phase) * 0.03, 0.92];
@@ -340,7 +350,11 @@ export class Spider {
   airTarget(leg, dt) {
     let ang;
     if (this.mode !== 'jump') ang = this.hangPose(leg);
+    else if (!this.launched) ang = this.aimPose(leg);
     else if (this.abseil) ang = lerp3(this.hangPose(leg), this.catchPose(leg), smooth(0.62, 0.9, this.airU));
+    // A jumping spider flies forelegs first: I and II reach ahead the whole way,
+    // III and IV, having driven the jump, stream behind and swing forward to land.
+    else if (leg.k < 2) ang = lerp3(this.reachPose(leg), this.catchPose(leg), smooth(0.6, 0.9, this.airU));
     else ang = lerp3(this.trailPose(leg), this.catchPose(leg), smooth(0.58, 0.9, this.airU));
     // Leaving the web, each leg swings from where its foot was into the flight pose.
     leg.airT += dt;
@@ -376,11 +390,14 @@ export class Spider {
   /** Body-frame foot springs toward its pose: smooth, critically damped, carried along with the body. */
   followPose(leg, dt) {
     if (leg.holdT > 0) {
-      // Still pushing off: the foot stays on its star while the body leaves, the leg extending.
+      // Still pushing off: the foot stays on its star while the body leaves, the
+      // leg extending, until it is straight; then it swings into flight from there.
       leg.holdT -= dt;
       leg.rel = this.toLocal(leg.foot);
       leg.relV = [0, 0, 0];
       leg.airT = 0;
+      leg.launchAng = this.anglesOf(leg, leg.rel);
+      if (len(sub(leg.foot, leg.hip)) > (leg.femur + leg.tibia + leg.tarsus) * 0.96) leg.holdT = 0;
       return;
     }
     const target = leg.mode === 'feel' ? this.feelTarget(leg, dt) : this.airTarget(leg, dt);
@@ -733,24 +750,37 @@ export class Spider {
   }
 
   /**
-   * Crouch, launch, fly a floaty ballistic arc, land. Horizontal travel is
-   * linear in time and height parabolic, like a real jump; a lowered
+   * Aim, crouch, launch, fly a floaty ballistic arc, land. Like a real
+   * jumping spider it first pivots to face the target squarely, then sinks
+   * with its forelegs raised, and leaps straight: no turning in the air.
+   * Horizontal travel is linear in time and height parabolic; a lowered
    * gravity (high apex, long airtime) makes it float. The abseil instead
    * eases down the dragline, swinging a little.
    */
   jump(dt, run, tr) {
     const crouch = this.midAir ? 0 : tr.crouch;
+    const aim = this.midAir ? 0 : Math.min(tr.aim || 0, crouch * 0.7);
     const T = run.t - tr.t0;
     let flat = [tr.to[0] - tr.from[0], 0, tr.to[2] - tr.from[2]];
-    flat = len(flat) > 1e-3 ? norm(flat) : norm([this.hF[0], 0, this.hF[2]]);
+    flat = Math.hypot(flat[0], flat[2]) > 4 ? norm(flat) : norm([this.hF[0], 0, this.hF[2]]);
+    if (T < aim) {
+      // Aim: a quick pivot on the spot, feet stepping round, fast enough to be square-on in time.
+      this.behaviour = 'aim';
+      this.p = [...tr.from];
+      const off = Math.abs(wrap(Math.atan2(flat[2], flat[0]) - this.yaw));
+      this.orient(flat, dt, 9, MAX_TILT, Math.max(1.2, (1.5 * off) / Math.max(0.08, aim - T)));
+      return;
+    }
     if (T < crouch) {
       this.behaviour = 'crouch';
-      const k = ease(T / crouch);
+      const k = ease((T - aim) / (crouch - aim));
       // Wind-up: sink deep, rock back over the rear legs, nose up a touch, and
       // a last quiver of tension just before the spring lets go.
-      const quiver = Math.sin(T * 70) * 0.3 * smooth(0.7, 1, T / crouch);
+      const quiver = Math.sin(T * 70) * 0.3 * smooth(0.7, 1, (T - aim) / (crouch - aim));
       this.p = add(tr.from, this.hU, -(10 * k + quiver));
-      this.orient(flat, dt, 2.5, MAX_TILT, 0.35); // most of the turn happens in the air, feet free
+      this.orient(flat, dt, 6, MAX_TILT, 1.2); // settles any last few degrees of the aim
+      // The forelegs come up and point at the target.
+      if (!this.abseil) for (const leg of this.legs) if (leg.k === 0 && leg.mode === 'plant') this.release(leg);
       this.poseT.pitch = 0.16 * k;
       this.poseT.shiftF = -3.2 * k;
       if (!this.crouchAnchored && T > crouch * 0.4) {
@@ -764,7 +794,7 @@ export class Spider {
       this.launchAt = [...this.p];
       this.poseT = zeroPose();
       if (!this.crouchAnchored && !this.abseil) this.anchor(run);
-      const v0 = add(scale(sub(tr.to, this.launchAt), 0.6 / tr.air), UP, this.abseil ? 0 : (4 * tr.apex) / tr.air);
+      const v0 = add(scale(sub(tr.to, this.launchAt), 1 / tr.air), UP, this.abseil ? 0 : (4 * tr.apex) / tr.air);
       const push = scale([dot(v0, this.F), dot(v0, this.U), dot(v0, this.S)], -0.12);
       for (const leg of this.legs) if (leg.mode !== 'air') this.release(leg, push);
       this.spreadLaunch();
@@ -788,12 +818,16 @@ export class Spider {
       this.behaviour = 'air';
       // A slight roll and correction in the air, as the dragline steadies it.
       this.poseT.roll = 0.07 * Math.sin(u * Math.PI * 2 + 0.6) * (1 - u);
-      const h = u * 0.6 + ease(u) * 0.4;
-      this.p = add(lerp3(this.launchAt, tr.to, h), UP, tr.apex * 4 * u * (1 - u));
-      const vel = norm([tr.to[0] - this.launchAt[0], tr.to[1] - this.launchAt[1] + tr.apex * 4 * (1 - 2 * u), tr.to[2] - this.launchAt[2]]);
-      // Level out a little for the catch.
-      const level = smooth(0.7, 1, u) * 0.6;
-      this.orient(lerp3(vel, norm([vel[0], 0, vel[2]]), level), dt, 4.5, MAX_TILT_AIR);
+      // A true ballistic arc: steady speed across, height a parabola.
+      this.p = add(lerp3(this.launchAt, tr.to, u), UP, tr.apex * 4 * u * (1 - u));
+      // The dragline steadies the body, so it stays near level rather than tracking
+      // its path like an arrow: nose a little up off the push, a little down to land
+      // front feet first, and no turning (there is nothing to turn against).
+      const across = Math.hypot(tr.to[0] - this.launchAt[0], tr.to[2] - this.launchAt[2]) || 1;
+      const climb = Math.atan2(tr.to[1] - this.launchAt[1] + tr.apex * 4 * (1 - 2 * u), across);
+      const land = smooth(0.6, 0.85, u);
+      const pitch = clamp(climb * 0.3, -0.3, 0.3) * (1 - land) - 0.16 * land * (1 - smooth(0.93, 1, u));
+      this.orient(add(scale(flat, Math.cos(pitch)), UP, Math.sin(pitch)), dt, 4, MAX_TILT_AIR, 0.6);
     }
     if (u >= 1) this.touchDown(run, tr);
   }
