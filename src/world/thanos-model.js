@@ -18,8 +18,9 @@ import GLB from '../../assets/thanos/thanos.glb';
 /**
  * Parse the model and hand it over when ready, its bones by name.
  * @param {(m:{scene:THREE.Object3D, bones:Object<string, THREE.Bone>}) => void} onReady
+ * @param {THREE.Texture} [envMap] what his armour reflects (the space Iron Man's suit reflects)
  */
-export function loadThanos(onReady) {
+export function loadThanos(onReady, envMap = null) {
   const buf = GLB.buffer.slice(GLB.byteOffset, GLB.byteOffset + GLB.byteLength);
   new GLTFLoader().setMeshoptDecoder(MeshoptDecoder).parse(
     buf,
@@ -30,6 +31,10 @@ export function loadThanos(onReady) {
         if (o.isMesh) {
           o.frustumCulled = false; // skinned: its bounds move with the pose
           const m = o.material;
+          if (m && envMap) {
+            m.envMap = envMap;
+            m.envMapIntensity = 1.3;
+          }
           if (m && /Gauntlet/.test(m.name)) {
             // The Infinity Gauntlet: gold metal, its stones lit.
             m.metalness = 0.85;

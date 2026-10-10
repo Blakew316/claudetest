@@ -43,7 +43,7 @@
 
 import * as THREE from 'three';
 import { createRepulsors } from './repulsor.js';
-import { JOINT, POSE, MODEL_HEIGHT, loadModel, suitLights } from './ironman-model.js';
+import { JOINT, POSE, MODEL_HEIGHT, loadModel, spaceEnvironment, suitLights } from './ironman-model.js';
 import { LAND_TIME } from './spider-sim.js';
 import { loadThanos } from './thanos-model.js';
 
@@ -54,7 +54,7 @@ const THANOS_H = 63.8;
 const THANOS_X = 1.0;
 const THANOS_SIZE = 1.12;
 // The Power Stone's purple, for his gauntlet's blasts.
-const POWER_STONE = { sheath: [0.78, 0.26, 1.0], edge: [0.45, 0.06, 0.9], light: 0xd28cff };
+const POWER_STONE = { sheath: [0.78, 0.26, 1.0], edge: [0.45, 0.06, 0.9], light: 0xd28cff, size: 1.7 }; // (heavier than a repulsor)
 const K = HEIGHT / MODEL_HEIGHT; // world units per model unit (feet at y = 0)
 const U = HEIGHT / 2.02; // a body-proportional unit for the few absolute lengths below (tuned on a body 2.02 tall)
 const UP = new THREE.Vector3(0, 1, 0);
@@ -578,7 +578,7 @@ export function createIronMan(renderer, opts = {}) {
       rig.add(t);
       rig.updateMatrixWorld(true);
       model = rigThanos(m);
-    });
+    }, renderer ? spaceEnvironment(renderer) : null);
   } else {
     loadModel(renderer, (m) => {
       rig.add(m.scene);
@@ -2849,7 +2849,7 @@ export function createIronMan(renderer, opts = {}) {
     fxIn.time = spider.time;
     fxIn.camera = camera;
     fxIn.halfH = halfH;
-    fxIn.unit = U / 22.8;
+    fxIn.unit = (U / 22.8) * (thanos ? POWER_STONE.size : 1);
     fxIn.scale = scale;
     const jets = 1 - smooth(0, 0.06, landT); // (cut as his boots meet the ground)
     fxIn.thrust = Math.max(air, fly, 0.8 * smooth(0, 0.35, JW.push)) * jets; // (lit as he pushes off: they lift him)

@@ -110,8 +110,10 @@ void main() {
   gl_FragColor = vec4(col, 1.0);
 }`;
 
-/** The environment as a PMREM texture (see ENV_FRAG). */
-function spaceEnvironment(renderer) {
+/** The environment as a PMREM texture (see ENV_FRAG); made once, shared by every figure that reflects it. */
+let spaceEnv = null;
+export function spaceEnvironment(renderer) {
+  if (spaceEnv) return spaceEnv;
   const rt = new THREE.WebGLRenderTarget(ENV_W, ENV_W / 2, { type: THREE.HalfFloatType, depthBuffer: false });
   const quad = new THREE.Mesh(
     new THREE.PlaneGeometry(2, 2),
@@ -130,6 +132,7 @@ function spaceEnvironment(renderer) {
   rt.dispose();
   quad.geometry.dispose();
   quad.material.dispose();
+  spaceEnv = tex;
   return tex;
 }
 
