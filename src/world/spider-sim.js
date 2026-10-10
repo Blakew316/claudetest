@@ -696,6 +696,7 @@ export class Spider {
 
     if (this.mode === 'jump') this.jump(dt, run, tr);
     else if (this.mode === 'land') this.land(dt, run, tr);
+    else if (run.pin) this.pinned(run.pin);
     else this.crawl(dt, run);
 
     for (let i = 0; i < 3; i++) this.v[i] = (this.p[i] - prev[i]) / dt;
@@ -1154,6 +1155,21 @@ export class Spider {
     // Mostly along the body, a little straight to the goal so it never orbits it (fighting: straight to it).
     const dir = fight ? n : norm(add(scale(this.hF, 0.75), n, 0.25));
     this.p = add(this.p, dir, this.speed * dt);
+  }
+
+  /**
+   * Held where it is put (run.pin: x, z, yaw), as a fighter played by motion capture is: carried along the
+   * clip's own path, facing the way the clip has him; its own walking stops.
+   */
+  pinned(pin) {
+    this.p = [pin.x, this.p[1], pin.z];
+    this.yaw = pin.yaw;
+    this.yawV = this.yawA = 0;
+    this.pitch = this.pitchV = this.pitchA = 0;
+    this.heading();
+    this.walking = false;
+    this.speed = this.speedV = this.speedT = 0;
+    this.goalN = null;
   }
 
   /** Standing still: weight shifts now and then, the front pair rise to feel the air and come down before it moves on. */

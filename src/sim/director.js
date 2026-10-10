@@ -46,6 +46,7 @@ import { computeScore } from '../analyze/score.js';
 import { clearDistance, fitDistance, followCamera, orbitDir, sampleKeys, smoothDamp } from '../world/camera.js';
 import { fork, range } from '../core/rng.js';
 import { Spider } from '../world/spider.js';
+import { createFight } from './fight.js';
 import { labelLife } from '../world/labels.js';
 import { LAND_TIME } from '../world/spider-sim.js';
 
@@ -69,7 +70,7 @@ const ANSWER = [0.4, 1.0]; // ... opening up this long after the volley does
 const FIGHT_SIDE = [0.7, 1.45]; // the lens films them from across the line between them, this far round from it (rad) beyond Thanos (narrow screen, wide)
 const FOE_FRAME = 0.45; // the camera frames a point this far from Iron Man toward Thanos...
 const FOE_IN = 0.8; // ... back far enough that both stay within this much of the half-frame...
-const FOE_BACK = 1.7; // ... but never more than this much further back than the shot would be
+const FOE_BACK = 2.1; // ... but never more than this much further back than the shot would be
 const FOE_EASE = 1.2; // ... easing onto (and off) the two of them over about this long (s); not while filming a leap
 const INTRO_AIR = 7.5; // the opening fly-in, while the spider wakes and walks on the first ball
 const INTRO_HOLD = 1.0; // breath on the first ball before reading starts
@@ -104,7 +105,7 @@ const WAY = 0.2; // a waypoint every this much of the stroll (radii): a few stri
 const SLOPE = 0.2; // rise over run at most: he walks, he does not climb
 const ROAM_REACH = 0.1; // the goal moves on to the next waypoint once it is this close (radii)
 const ZOOM_MAX = 1.0; // camera zoom rate cap, log distance per second (~1.7% a frame)
-const EDGE = 0.75; // his middle never further out than this of the half-frame (see guard)
+const EDGE = 0.75; // his middle never further out than this of the half-frame, across or up and down (see guard)
 const YAW_JERK = 2000; // the most the lens may be swung sideways by a change in its turn (world units/s², at its distance)
 // How fast the view may circle him (rad/s): gently while he reads and walks (a view that keeps swinging
 // round makes people queasy), quicker through a leap, where it swings onto the landing.
@@ -260,6 +261,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   let run;
   let spider;
   let foe = null; // Thanos (see stepFoe)
+  let fight = null; // the fight between them, in motion-captured clips (see sim/fight.js)
   let cursor; // next word id to reach in the active section
   let readAcc;
   let recent; // read timestamps for words/second
@@ -1569,9 +1571,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
    */
   function duelFrame(t, dt) {
     const on = foe && (foe.state === 'here' || foe.state === 'coming') && !(hc.leap && !hc.leap.done) ? 1 : 0;
-    [hc.duel, hc.duelV] = smoothDamp(hc.duel || 0, on, hc.duelV || 0, FOE_EASE / 2, dt);
-    // (Taking off, the shot is his alone at once: the lens's own springs ease it over.)
-    if (hc.leap && !hc.leap.done) hc.duel = hc.duelV = 0;
+    // (Taking off, the shot is quickly his alone.)
+    [hc.duel, hc.duelV] = smoothDamp(hc.duel || 0, on, hc.duelV || 0, hc.leap && !hc.leap.done ? FOE_EASE / 5 : FOE_EASE / 2, dt);
     const k = clamp(hc.duel, 0, 1);
     if (k < 1e-4) return;
     const F = run.foe;
@@ -1617,7 +1618,12 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         need = Math.max(need, along + (across + 14) / room, him ? d0 + along : 0);
       }
     }
-    if (need > d0) t.dist = lerp(d0, Math.min(need, FOE_BACK * d0), k);
+    if (need > d0) {
+      t.dist = lerp(d0, Math.min(need, FOE_BACK * d0), k);
+      // (Never back into a ball's nucleus to fit them.)
+      orbitDir(t.yaw, t.pitch, dir);
+      t.dist = Math.max(d0, Math.min(t.dist, clearDistance(t.x, t.y, t.z, dir, t.dist, clusters, NUCLEUS, 0, t.dist)));
+    }
   }
 
   /** Backstops: the lens never comes nearer him than MIN_GAP, nor into a nucleus (eased out, so it can't fight the springs). */
@@ -1635,22 +1641,25 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       const far = -b + Math.sqrt(disc);
       if (cam.dist > near && cam.dist < far) cam.dist = far;
     }
-    const safe = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, NUCLEUS, 0, cam.dist);
-    if (safe !== cam.dist) cam.dist += (safe - cam.dist) * (1 - Math.exp(-4 * dt));
-    // And he never drifts out of the frame's edge (a turn held at its cap can leave him there): the lens
+    // He never drifts out of the frame's edge (a turn held at its cap can leave him there): the lens
     // eases where it looks toward him once he is past EDGE of the half-frame.
     E[0] = cam.x + cam.dist * dir[0];
     E[1] = cam.y + cam.dist * dir[1];
     E[2] = cam.z + cam.dist * dir[2];
     lookBasis(E, [cam.x, cam.y, cam.z]);
     const sc = onScreen(E, H[0], H[1], H[2], aspect());
-    const over = Math.abs(sc.x) - EDGE;
+    const far = Math.max(Math.abs(sc.x), Math.abs(sc.y));
+    const over = far - EDGE;
     if (sc.z > 0 && over > 0) {
-      const k = clamp(over / Math.abs(sc.x), 0, 1) * (1 - Math.exp(-8 * dt));
+      const k = clamp(over / far, 0, 1) * (1 - Math.exp(-14 * dt));
       cam.x += (H[0] - cam.x) * k;
       cam.y += (H[1] - cam.y) * k;
       cam.z += (H[2] - cam.z) * k;
     }
+    // (And, last, the lens out of any nucleus.)
+    // (With a margin, so it is already easing clear as a fast move nears one.)
+    const safe = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, NUCLEUS * 1.3, 0, cam.dist);
+    if (safe !== cam.dist) cam.dist += (safe - cam.dist) * (1 - Math.exp(-4 * dt));
   }
 
   function stepCamera(dt) {
@@ -1776,6 +1785,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   function resetFoe() {
     run.faceAt = null;
     run.fight = false;
+    run.pin = null;
+    fight = createFight(seed);
+    run.duel = fight.state; // (the fight's clips and bolts, for the view: see sim/fight.js)
     run.foe = { on: false, state: 'gone', x: 0, y: 0, z: 0, heading: 0, portal: null, fire: [] };
     if (!DUEL || !n) {
       foe = null;
@@ -1849,6 +1861,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     foe.state = 'leaving';
     foe.go = run.t + PORTAL_OPEN * 0.7;
     run.foe.fire.length = 0;
+    fight.end(run.t);
+    run.pin = fr0().pin = null;
+  }
+
+  /** Thanos's own run (his walker's). */
+  function fr0() {
+    return foe.run;
   }
 
   /** Where he is along the portal's way through, past its plane (world units). */
@@ -1931,41 +1950,22 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       fr.faceAt = null;
       if (throughPortal() > PORTAL_IN) {
         foe.state = 'here';
-        foe.nextX = run.t + range(foe.rand, 0.6, 1.4); // (he opens fire soon after he is through)
         closePortal();
+        const s = run.spider;
+        fight.begin(run.t, { x: s.x, z: s.z, yaw: Math.atan2(F.z - s.z, F.x - s.x) }, { x: F.x, z: F.z, yaw: Math.atan2(s.z - F.z, s.x - F.x) }, standOff());
       }
     } else {
-      // Circling him at a fighting distance, pressing in and backing off, his face to him; firing, he plants.
-      const firing = F.fire.some((w) => w.by === 'foe' && run.t >= w.t0 - 0.6);
-      if (firing) {
-        hold();
-        fr.tentacles = F.fire;
-      } else {
-        if (run.t >= foe.turnAt) {
-          foe.side = -foe.side;
-          foe.turnAt = run.t + range(foe.rand, FOE_TURN[0], FOE_TURN[1]);
-        }
-        const a = Math.atan2(me[2] - s.z, me[0] - s.x) + foe.side * FOE_CIRCLE * 1.5;
-        const R = standOff() * (1 + FOE_SWAY * Math.sin(0.37 * run.t + 1.3));
-        g.x = s.x + Math.cos(a) * R;
+      // The fight (sim/fight.js) carries him along his clips; between them, if it has him walk in, he walks.
+      fr.pin = fight.pin('foe');
+      if (!fr.pin) {
+        const w = fight.walkGoal();
+        g.x = w.x;
         g.y = s.y;
-        g.z = s.z + Math.sin(a) * R;
-      }
-      // Exchanges of fire, both on the ground.
-      if (run.t >= foe.nextX && !heroAway() && (run.phase === 'read' || run.phase === 'walk' || run.phase === 'visit')) {
-        const r = foe.rand;
-        const vol = range(r, FOE_FIRE[0], FOE_FIRE[1]);
-        const ans = range(r, HERO_FIRE[0], HERO_FIRE[1]);
-        const gap = range(r, ANSWER[0], ANSWER[1]);
-        const foeFirst = r() < 0.65;
-        const [a, b] = foeFirst ? ['foe', 'hero'] : ['hero', 'foe'];
-        const [da, db] = foeFirst ? [vol, ans] : [ans, vol];
-        const t = run.t + 0.9; // (scheduled a moment ahead, so each squares up to the other first)
-        F.fire.push({ by: a, id: foe.nextId--, t0: t, t1: t + da });
-        F.fire.push({ by: b, id: foe.nextId--, t0: t + gap, t1: t + gap + db });
-        foe.nextX = t + Math.max(da, gap + db) + range(r, EXCHANGE[0], EXCHANGE[1]);
+        g.z = w.z;
+        if (foe.spider.sim.intentT > 0.3) foe.spider.sim.intentT = 0; // (off at once)
       }
     }
+    if (foe.state !== 'here') fr.pin = null;
     fr.t = run.t;
     fr.spider.arrived = false;
     foe.spider.update(dt, fr);
@@ -1975,6 +1975,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     F.y = fr.spider.y;
     F.z = fr.spider.z;
     F.heading = fr.spider.heading;
+    if (foe.state === 'here') fight.at('foe', F.x, F.z, F.heading);
   }
 
   function enterShip() {
@@ -2069,6 +2070,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return range(cadence, 1.6, 3.0) / rate;
   }
 
+  /** The active section's words are all read (or none is being read): the fight should wind down. */
+  function wordsDone() {
+    if (run.phase !== 'read') return run.phase !== 'walk' && run.phase !== 'visit';
+    const sec = analysis.sections[run.active];
+    return !sec || cursor >= sec.start + sec.count;
+  }
+
   function stepRead(dt) {
     const sec = analysis.sections[run.active];
     const end = sec.start + sec.count;
@@ -2103,7 +2111,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run.spiderGoal = { x: goal.x, y: goal.y, z: goal.z };
     const T = plans[run.active].T;
     // Leave once the words are read and the shot has eased back out.
-    if (cursor >= end && run.tentacles.length === 0 && run.phaseT >= T - 0.25) {
+    // (Fighting, not until he is standing free: nothing coming, no clip still playing.)
+    if (cursor >= end && run.tentacles.length === 0 && run.phaseT >= T - 0.25 && (!fight || !fight.state.on || fight.calm(run.t))) {
       run.status[run.active] = 'done';
       visitQueue = visits[run.active].slice();
       nextLeg();
@@ -2177,9 +2186,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     }
 
     stepTentacles(dt);
-    // Answering Thanos's fire, he stands his ground (squaring up to him: see stepFoe).
-    if (foe && foe.state === 'here' && run.foe.fire.some((w) => w.by === 'hero' && run.t >= w.t0 - 0.9)) run.spiderGoal = { x: run.spider.x, y: run.spider.y, z: run.spider.z };
+    // The fight: its clips carry him (his walker pinned along them) while Thanos is here.
+    if (foe) {
+      fight.step(run.t, dt, wordsDone());
+      run.pin = fight.pin('hero');
+    }
     spider.update(dt, run);
+    if (fight && fight.state.on) fight.at('hero', run.spider.x, run.spider.z, run.spider.heading);
     if (foe) stepFoe(dt);
 
     while (recent.length && run.t - recent[0] > 1) recent.shift();

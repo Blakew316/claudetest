@@ -80,6 +80,7 @@ export class Spider {
     this.sim = new SpiderSim(up(p), seed, simWorld(world), yaw);
     this.simRun = { t: 0, silkSection: 0, travel: null, spiderGoal: { x: 0, y: 0, z: 0 }, spider: { arrived: false }, silk: [], tentacles: null, faceAt: null };
     this.faceAt = { x: 0, z: 0 };
+    this.pin = { x: 0, z: 0, yaw: 0 };
     this.lastTravel = null;
     this.taut = 0; // the dragline pulled taut by a leap, eased so it never snaps slack
     this.hit = 0; // a landing's impact (0..1) and the time since, for the camera's jolt
@@ -117,6 +118,13 @@ export class Spider {
     r.spider.arrived = run.spider.arrived;
     r.tentacles = run.tentacles; // (firing, it walks slower)
     r.fight = !!run.fight; // (fighting, it keeps its face to whoever it is squaring up to: see faceAt)
+    // Played by motion capture: held where the director puts it.
+    if (run.pin) {
+      this.pin.x = run.pin.x * K;
+      this.pin.z = run.pin.z * K;
+      this.pin.yaw = run.pin.yaw;
+      r.pin = this.pin;
+    } else r.pin = null;
     // Whoever it is squaring up to, standing.
     if (run.faceAt) {
       this.faceAt.x = run.faceAt.x * K;

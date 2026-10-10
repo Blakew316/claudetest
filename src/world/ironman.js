@@ -46,6 +46,8 @@ import { createRepulsors } from './repulsor.js';
 import { JOINT, POSE, MODEL_HEIGHT, loadModel, spaceEnvironment, suitLights } from './ironman-model.js';
 import { LAND_TIME } from './spider-sim.js';
 import { loadThanos } from './thanos-model.js';
+import { BONES as MOCAP_BONES, pose as mocapPose, sample as mocapSample } from './mocap.js';
+import { pathAt as mocapPath } from './mocap-path.js';
 
 const HEIGHT = 46; // world units: he reads at the distances the camera keeps from the crawler
 // Thanos, on the same driver rig (see rigThanos): his model is THANOS_H units tall, centred THANOS_X off its
@@ -160,6 +162,8 @@ const HIT_STUN = [0.25, 0.8];
 const GLANCE = 0.4;
 const GLANCE_GAP = 1.2;
 const GUN_LEAD = 0.3;
+// Motion capture: the firing arm turned onto its target by at most AIM_FIX rad as a clip thrusts it out.
+const AIM_FIX = 0.6;
 
 /*
  * The thumb. The model's rest thumb juts out of the palm, which reads as stuck on, so it is posed in the
@@ -2043,8 +2047,14 @@ export function createIronMan(renderer, opts = {}) {
    * @param {{at:number[], id:number, p:number}[]} targets words his palms are firing at, and how far each ray has reached
    * @param {number} halfH half the drawing buffer's height (px), for sprite sizes
    */
-  function update(spider, frameDt, camera, targets = [], halfH = 450, foe = null) {
-    st.foe = foe;
+  /**
+   * @param {object} [fight] fighting: { foe: [x,y,z] his opponent's chest (eyes, chest and guard on him), acts:
+   *   [{clip, t, loop, mirror, w}] the motion-captured clips he is playing (t s in, weights summing to at most 1),
+   *   aim: {hand, at, w} the hand a clip is thrusting out and where to (the arm is turned onto it by w),
+   *   shots: bolts he fires (see repulsor.js) }
+   */
+  function update(spider, frameDt, camera, targets = [], halfH = 450, fight = null) {
+    st.foe = fight ? fight.foe : null;
     // A jump in time (a seek) lands every spring and replants the feet; otherwise steps are capped.
     const jumped = frameDt > 0.3;
     const dt = clamp(frameDt, 0, 0.1);
@@ -2914,6 +2924,9 @@ export function createIronMan(renderer, opts = {}) {
       thumbW[n].flat = att;
     }
 
+    // Motion capture over all of that while he fights (see applyMocap).
+    if (fight && fight.acts && fight.acts.length) applyMocap(fight, Ks, lam);
+
     // The model follows the rig; upright in the air, the artist's hover pose blends in.
     const hover = clamp(ez.hover.to(air * (1 - att), sdt), 0, 1) * (1 - LW.on);
     if (model) {
@@ -2947,6 +2960,7 @@ export function createIronMan(renderer, opts = {}) {
     // Each palm fires only at the word its arm is on, and only once it is pointing there.
     for (const t of targets) if (t.side && !(tgt[t.side] === t && aimOn[t.side])) t.side = null;
     fxIn.targets = targets;
+    fxIn.shots = fight && fight.shots ? fight.shots : null;
     const out = repulsors.update(fxIn);
     // A blast kicks that arm (fast) and pushes through the shoulder and torso (slower); the
     // repulsors light up his own armour.
@@ -2961,6 +2975,83 @@ export function createIronMan(renderer, opts = {}) {
     repulsorLight.intensity = 40 * Math.min(2, out.light);
     repulsorLight.position.copy(head).multiplyScalar(0.2 * U);
     return out.hits;
+  }
+
+  /* ---- motion capture ---- */
+  // The driver bones the clips pose, in the clips' order (world/mocap-clips.js BONES).
+  const MB = MOCAP_BONES.map((n) => {
+    const L = sk.limbs[n.slice(-1)];
+    const part = n.slice(0, -1);
+    if (n === 'pelvis') return sk.root;
+    if (n === 'spine' || n === 'chest' || n === 'neck') return sk[n];
+    return { clav: L.clav, sh: L.sh, el: L.el, wr: L.wr, fing: L.knuckles, hip: L.hip, knee: L.knee, ankle: L.ankle, toe: L.toe }[part];
+  });
+  const MB_ARM = MOCAP_BONES.map((n) => (/^(clav|sh|el|wr|fing)[LR]$/.test(n) ? n.slice(-1) : null));
+  const mo = { cur: mocapPose(), mix: mocapPose(), path: [0, 0], pathMix: [0, 0], q: new THREE.Quaternion(), q2: new THREE.Quaternion(), v: new THREE.Vector3(), w: new THREE.Vector3() };
+
+  /**
+   * The clips he is playing, over the procedural pose: blended between themselves by their weights (a
+   * crossfade), then over the rig by their total; the arms left to the procedural aim (a word) while the
+   * clip is his fighting idle. The hips go where the clip has them, less the path his walker is already
+   * carried along (see mocap-path.js); his feet stand on the ground under him. Then the firing arm is turned
+   * onto its target as the clip thrusts it out (fight.aim).
+   */
+  function applyMocap(fight, Ks, lam) {
+    let acc = 0;
+    let idle = 0;
+    for (const a of fight.acts) {
+      if (!(a.w > 0)) continue;
+      mocapSample(a.clip, a.t, a.loop, a.mirror, mo.cur);
+      mocapPath(a.clip, a.t, a.loop, a.mirror, mo.path);
+      acc += a.w;
+      const k = a.w / acc;
+      if (a.clip === 'Fighting Idle') idle += a.w;
+      for (let b = 0; b < MB.length; b++) {
+        mo.q.fromArray(mo.mix.q, b * 4).slerp(mo.q2.fromArray(mo.cur.q, b * 4), k).toArray(mo.mix.q, b * 4);
+      }
+      for (let i = 0; i < 3; i++) mo.mix.hips[i] += (mo.cur.hips[i] - mo.mix.hips[i]) * k;
+      mo.pathMix[0] += (mo.path[0] - mo.pathMix[0]) * k;
+      mo.pathMix[1] += (mo.path[1] - mo.pathMix[1]) * k;
+    }
+    const W = Math.min(1, acc);
+    if (W <= 1e-3) return;
+    idle /= acc;
+    for (let b = 0; b < MB.length; b++) {
+      const side = MB_ARM[b];
+      // (Idling, an arm up on a word stays the procedural aim's.)
+      const m = side ? W * (1 - idle * clamp(ez.aim[side].x * 1.5, 0, 1)) : W;
+      MB[b].quaternion.slerp(mo.q.fromArray(mo.mix.q, b * 4), m);
+    }
+    // Hips (model units) where the clip has them, less the path the walker is carried along.
+    const hx = J.pelvis[0] + mo.mix.hips[0] - mo.pathMix[0];
+    const hy = J.pelvis[1] + mo.mix.hips[1];
+    const hz = J.pelvis[2] + mo.mix.hips[2] - mo.pathMix[1];
+    sk.root.position.x += (hx - sk.root.position.x) * W;
+    sk.root.position.y += (hy - sk.root.position.y) * W;
+    sk.root.position.z += (hz - sk.root.position.z) * W;
+    // (His origin at the pelvis's rest height over the ground: the clip's hips do the rest.)
+    group.position.y += (st.gy + J.pelvis[1] * Ks - group.position.y) * W;
+    group.updateMatrixWorld(true);
+    // The thrust onto the target: the upper arm swung so the hand points at it (at most AIM_FIX rad).
+    const A = fight.aim;
+    if (A && A.w > 1e-3) {
+      const gA = sk.limbs[A.hand];
+      gA.sh.getWorldPosition(mo.v);
+      gA.wr.getWorldPosition(mo.w);
+      const cur = mo.w.sub(mo.v).normalize();
+      const want = mo.v.set(A.at[0], A.at[1], A.at[2]).sub(gA.sh.getWorldPosition(new THREE.Vector3())).normalize();
+      const ang = Math.min(AIM_FIX, Math.acos(clamp(cur.dot(want), -1, 1))) * A.w;
+      if (ang > 1e-4) {
+        const axis = cur.clone().cross(want).normalize();
+        // World rotation onto the shoulder, as a local one.
+        mo.q.setFromAxisAngle(axis, ang);
+        gA.sh.parent.getWorldQuaternion(mo.q2);
+        const wq = mo.q2.clone().multiply(gA.sh.quaternion);
+        wq.premultiply(mo.q);
+        gA.sh.quaternion.copy(mo.q2.invert().multiply(wq));
+        group.updateMatrixWorld(true);
+      }
+    }
   }
 
   /**

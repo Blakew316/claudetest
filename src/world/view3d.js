@@ -33,17 +33,12 @@ import { LEG_COUNT, MAX_TENTACLES } from '../core/contracts.js';
 import { ABDOMEN, CEPH, SCALE as SS } from './spider.js';
 import { createIronMan } from './ironman.js';
 import { createPortal } from './portal.js';
+import { FADE as DUEL_FADE } from '../sim/fight.js';
 import { setSuitSurroundings, suitFrame, suitQuality } from './ironman-model.js';
 
 /** Who crawls the clusters: 'ironman' (the suit, hovering and flying) or 'spider'. */
 const AVATAR = 'ironman';
-// The duel: through a volley, beats of MISS_BEAT s; MISS_SHARE of them the aim is off and the blasts go
-// wide by MISS_BY (world units) round him, high (near misses: a flinch, not a hit). A blast arrives about
-// MISS_FLIGHT s after it was fired, in the beat it was fired in.
-const MISS_BEAT = 0.9;
-const MISS_SHARE = 0.4;
-const MISS_BY = 16;
-const MISS_FLIGHT = 0.2;
+const smooth01 = (x) => (x <= 0 ? 0 : x >= 1 ? 1 : x * x * (3 - 2 * x));
 
 export const FOV = 50;
 const FOG_NEAR = 480; // the haze never thickens past what a shot this far out would have
@@ -516,6 +511,8 @@ export function createView3D(canvas) {
   const portal = foeHero ? createPortal() : null;
   const foeClip = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1e9);
   const foeView = { clipped: false, last: null };
+  // Each one's fight input, reused every frame (see fightFor).
+  const fightView = { hero: { foe: null, acts: [], shots: [], aim: null }, foe: { foe: null, acts: [], shots: [], aim: null } };
   if (foeHero) {
     foeHero.group.visible = foeHero.fx.visible = false;
     scene.add(foeHero.group, foeHero.fx, portal.mesh);
@@ -953,31 +950,15 @@ export function createView3D(canvas) {
       surroundings(spider, dt);
       if (suitFrame(dt)) resize(size.w, size.h, renderer.getPixelRatio());
       const halfH = (size.h * renderer.getPixelRatio()) / 2;
-      // The duel: each fires at the other through the windows the director opens (ids < 0).
+      // The fight (sim/fight.js): each plays his motion-captured clips, fires the bolts the director schedules
+      // at the other, and keeps his eyes on him.
       const F = run.foe;
       const foeOn = !!(foeHero && foe && F && F.on);
-      const foeTargets = [];
-      if (foeOn) {
-        for (const w of F.fire) {
-          if (t < w.t0) continue;
-          const tg = { at: w.by === 'hero' ? foeHero.chest() : hero.chest(), id: w.id, p: Math.min(1, (t - w.t0) / 0.25) };
-          // Not every blast finds him: now and then through a volley the aim is off and they go wide.
-          const miss = wide(w.id, t);
-          if (miss) {
-            tg.at[0] += miss[0];
-            tg.at[1] += miss[1];
-            tg.at[2] += miss[2];
-          }
-          (w.by === 'hero' ? targets : foeTargets).push(tg);
-        }
-      }
-      // (Each keeps his eyes on the other while they fight.)
       const fighting = foeOn && (F.state === 'here' || F.state === 'coming');
-      const struck = hero.update(spider, dt, camera, targets, halfH, fighting ? foeHero.chest() : null);
-      if (foeOn) {
-        for (const id of struck) if (id < 0) foeHero.hit(dirTo(hero.chest(), foeHero.chest()), wide(id, t - MISS_FLIGHT) ? 0.15 : 0.85);
-        drawFoe(foe, dt, foeTargets, halfH, F.portal, fighting, t);
-      } else if (foeHero) foeHero.group.visible = foeHero.fx.visible = false;
+      const D = run.duel;
+      hero.update(spider, dt, camera, targets, halfH, foeHero && (fighting || D?.hero.prev) ? fightFor(D, 'hero', t, fighting ? foeHero.chest() : null) : null);
+      if (foeOn) drawFoe(foe, dt, halfH, F.portal, fighting, t, D);
+      else if (foeHero) foeHero.group.visible = foeHero.fx.visible = false;
       if (portal) portal.update(F && F.portal, t);
       // His repulsor flashes light the dust round them.
       const flashes = hero.fx.userData.flashes || [];
@@ -1290,33 +1271,40 @@ export function createView3D(canvas) {
     sil.on = n > 0;
   }
 
-  /** Unit vector from a to b (arrays), as an array. */
-  function dirTo(a, b) {
-    const x = b[0] - a[0];
-    const y = b[1] - a[1];
-    const z = b[2] - a[2];
-    const l = Math.hypot(x, y, z) || 1;
-    return [x / l, y / l, z / l];
-  }
-
-  /** Thanos for a frame: clipped at his portal, firing at Iron Man, and Iron Man struck by what lands. */
   /**
-   * Whether a volley's aim is off at time t (a near miss: the offset it goes wide by, world units), else null.
-   * In beats of MISS_BEAT s, MISS_SHARE of them wide; the same for a given volley and time, so the blasts
-   * fired in a wide beat and the flinch (not a hit) when they arrive agree.
+   * What one of them gets from the fight this frame (see ironman.js update): his opponent's chest, the clips he
+   * plays (the current easing in over the last, FADE s), his firing arm turned onto the other as a clip thrusts
+   * it out, and the bolts he fires (from the hand, at the other's chest, or wide of him).
    */
-  function wide(id, t) {
-    const beat = Math.floor(t / MISS_BEAT);
-    const h = (x) => {
-      const s = Math.sin(x * 12.9898 + id * 78.233) * 43758.5453;
-      return s - Math.floor(s);
-    };
-    if (h(beat) > MISS_SHARE) return null;
-    const a = 2 * Math.PI * h(beat + 0.37);
-    return [Math.cos(a) * MISS_BY, 10 + 8 * h(beat + 0.71), Math.sin(a) * MISS_BY];
+  function fightFor(D, k, t, foeChest) {
+    const fz = fightView[k];
+    fz.foe = foeChest;
+    fz.acts.length = 0;
+    fz.shots.length = 0;
+    fz.aim = null;
+    if (!D) return fz;
+    const side = D[k];
+    const cur = side.cur;
+    const wc = cur && cur.clip ? smooth01((t - cur.t0) / DUEL_FADE) : 0;
+    if (side.prev && side.prev.clip && wc < 1) {
+      const fadeOut = cur && cur.clip ? 1 - wc : 1 - smooth01((t - cur.t0) / DUEL_FADE);
+      if (fadeOut > 1e-3) fz.acts.push({ clip: side.prev.clip, t: t - side.prev.t0, loop: side.prev.loop, mirror: side.prev.mirror, w: fadeOut });
+    }
+    if (cur && cur.clip && wc > 0) fz.acts.push({ clip: cur.clip, t: t - cur.t0, loop: cur.loop, mirror: cur.mirror, w: wc });
+    const victim = k === 'hero' ? 'foe' : 'hero';
+    const at = victim === 'hero' ? hero.chest() : foeHero.chest();
+    for (const b of D.bolts) {
+      if (b.by !== k || t < b.tFire - 0.4) continue;
+      fz.shots.push({ id: b.id, hand: b.hand, at, tFire: b.tFire, tHit: b.tHit, power: b.power, miss: b.miss });
+      // The arm on its way out for this one: turned onto him (the clip has it thrust roughly his way).
+      const u = t - b.tFire;
+      const w = smooth01((u + 0.4) / 0.3) * (1 - smooth01((u - 0.05) / 0.3));
+      if (w > (fz.aim ? fz.aim.w : 0)) fz.aim = { hand: b.hand, at, w };
+    }
+    return fz;
   }
 
-  function drawFoe(foe, dt, targets, halfH, P, fighting, t) {
+  function drawFoe(foe, dt, halfH, P, fighting, t, D) {
     // (His materials take the clipping plane once his model has loaded.)
     if (!foeView.clipped) {
       foeHero.group.traverse((o) => {
@@ -1333,8 +1321,7 @@ export function createView3D(canvas) {
     const jump = foe !== foeView.last || !foeHero.group.visible;
     foeView.last = foe;
     foeHero.group.visible = foeHero.fx.visible = true;
-    const struck = foeHero.update(foe, jump ? 1 : dt, camera, targets, halfH, fighting ? hero.chest() : null);
-    for (const id of struck) if (id < 0) hero.hit(dirTo(foeHero.chest(), hero.chest()), wide(id, t - MISS_FLIGHT) ? 0.2 : 1);
+    foeHero.update(foe, jump ? 1 : dt, camera, [], halfH, fighting || D?.foe.prev ? fightFor(D, 'foe', t, fighting ? hero.chest() : null) : null);
   }
 
   return { resize, setWorld, render, project, orbit, camera, hero, foe: foeHero, silhouette: sil };

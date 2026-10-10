@@ -13,7 +13,7 @@ const out = await build({
   minify: true,
   format: 'iife',
   target: 'es2020',
-  loader: { '.glb': 'binary', '.webp': 'dataurl' }, // the hero's model and textures, inlined
+  loader: { '.glb': 'binary', '.bin': 'binary', '.webp': 'dataurl' }, // the models, their motion-captured clips and textures, inlined
   write: false,
 });
 const js = out.outputFiles[0].text.replace(/<\/script/gi, '<\\/script');

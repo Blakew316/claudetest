@@ -159,9 +159,11 @@ for (const [W, H, least] of [
         const m = median(reading);
         assert.ok(m > least && m < 0.6, `median share ${m.toFixed(2)}`);
       }
-      // Fighting, the two-shot has them both: each a little smaller, still big enough to read.
+      // Fighting, the two-shot has them both, full figure (thrown down, getting up, Thanos walking in on him):
+      // each smaller, on a narrow screen markedly (it frames them nearer along the line between them), still
+      // big enough to read.
       const mf = median(fighting);
-      assert.ok(mf > 0.75 * least && mf < 0.6, `median share fighting ${mf.toFixed(2)}`);
+      assert.ok(mf > 0.6 * least && mf < 0.6, `median share fighting ${mf.toFixed(2)}`);
     });
 
     test('fighting, they face each other and Thanos stays in the frame with him', () => {
