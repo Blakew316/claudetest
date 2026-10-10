@@ -230,14 +230,18 @@ const LAND_DROP = 0.35;
 const LAND_DROP_V = 0.0014;
 const KNEEL_LEAD = 0.12; // the kneeling knee down this far ahead of its hip (the thigh near upright: a right angle at the knee)
 const KNEEL_SIT = 0.05; // the pelvis sat back this far
-const KNEEL_FRONT = 0.32; // the front ankle this far ahead of its hip (beside the kneeling knee)
+const KNEEL_FRONT = 0.32; // the front ankle this far ahead of its hip (beside the kneeling knee) ...
+const KNEEL_WIDE = 0.04; // ... and at least this far out to its side, the knee opening outward
 const KNEEL_ROLL = 1.45; // the rear foot up on its bent toes (rad)
 const KNEE_PAD = 0.07; // the kneeling knee's joint this far above the ground (mesh units)
-const KNEEL_PITCH = [0.45, 0.7, 0.55]; // pelvis, spine and chest folded forward (rad), the head down by the front knee ...
+// The trunk folded forward (pelvis, spine, chest; rad) only as far as puts the fist on the ground, the
+// head bowed a little further: his front stays to the ground ahead of him (the camera sees him from in
+// front), not hunched over it ...
+const KNEEL_PITCH = [0.35, 0.5, 0.45];
 const KNEEL_TURN = 0.15; // ... the trunk turned to the fist, and bent down toward it (rad)
-const KNEEL_BEND = 0.25;
-const FIST_DROP = 0.25; // ... and the fist's shoulder dropped and brought forward (rad)
-const FIST_REACH = 0.95; // the fist's arm this straight (share of its reach)
+const KNEEL_BEND = 0.45;
+const FIST_DROP = 0.5; // ... and the fist's shoulder dropped and brought forward (rad)
+const FIST_REACH = 0.97; // the fist's arm this straight (share of its reach)
 const FIST_H = 0.2; // its wrist this high over the ground the curled fingers are on (mesh units)
 const BLOW = 0.03; // seconds over which a blow (a blast's kick) is delivered
 const AIM_W = 13; // how quickly an arm sweeps onto a new word (rad/s, critically damped: ~0.3 s)
@@ -697,8 +701,9 @@ export function createIronMan(renderer) {
     const yaw = Math.atan2(heading.x, heading.z);
     // (The feet as they are drawn, reaching down: the legs settle from there.)
     for (const n of SIDES) sk.limbs[n].ankle.getWorldPosition(b3).toArray(landFrom[n]);
-    // The kneel, provisionally (the pelvis about a thigh over the kneeling knee).
-    group.position.set(spider.p[0], ld.ground + (L1 + KNEE_PAD - HIP_UP) * Ks, spider.p[2]).addScaledVector(ld.h, -KNEEL_SIT * lam);
+    // The kneel, provisionally (the pelvis a slanting thigh over the kneeling knee).
+    const kneeOff = (KNEEL_LEAD * lam) / Ks;
+    group.position.set(spider.p[0], ld.ground + (Math.sqrt(L1 * L1 - kneeOff * kneeOff) + KNEE_PAD - HIP_UP) * Ks, spider.p[2]).addScaledVector(ld.h, -KNEEL_SIT * lam);
     sk.root.rotation.set(0, 0, 0);
     sk.spine.rotation.set(0, 0, 0);
     sk.chest.rotation.set(0, 0, 0);
@@ -732,7 +737,7 @@ export function createIronMan(renderer) {
     sk.limbs.L.hip.getWorldPosition(hipW);
     const [ax, , az] = landFrom.L;
     const lead = clamp((ax - hipW.x) * ld.h.x + (az - hipW.z) * ld.h.z, 0.6 * KNEEL_FRONT * lam, 1.3 * KNEEL_FRONT * lam);
-    const wide = clamp((ax - hipW.x) * ld.l.x + (az - hipW.z) * ld.l.z, -0.02 * lam, 0.1 * lam);
+    const wide = clamp((ax - hipW.x) * ld.l.x + (az - hipW.z) * ld.l.z, KNEEL_WIDE * lam, (KNEEL_WIDE + 0.1) * lam);
     fL.pos.set(hipW.x, ld.ground, hipW.z).addScaledVector(ld.h, lead).addScaledVector(ld.l, wide);
     fL.rho = fL.rhoHi = fL.toe = 0;
     for (const n of SIDES) {
@@ -1860,7 +1865,7 @@ export function createIronMan(renderer) {
           f.rho = f.rhoHi = KNEEL_ROLL * LW.roll;
           f.toe = Math.min(f.rho, TOE_MAX);
           f.pole.copy(ld.h);
-        } else f.pole.copy(ld.h).addScaledVector(UP, 1.5).normalize(); // (the front knee up by the chest)
+        } else f.pole.copy(ld.h).addScaledVector(UP, 1.5).addScaledVector(ld.l, 0.8).normalize(); // (the front knee up and open, beside the chest)
         f.poleW = 1 - LW.rise;
         poseStance(f, Ks);
       }
@@ -2149,7 +2154,7 @@ export function createIronMan(renderer) {
     q.copy(sk.root.quaternion).multiply(sk.spine.quaternion).multiply(sk.chest.quaternion);
     // (Landing, the head goes down with the trunk and bows further, then comes up first as he rises.)
     q.slerp(q2.identity(), 0.15 + 0.6 * LW.head).invert();
-    q2.setFromEuler(euler.set(neckP - 0.2 * fold - 0.75 * att + 0.35 * LW.head, neckY * (1 - LW.head), 0, 'YXZ'));
+    q2.setFromEuler(euler.set(neckP - 0.2 * fold - 0.75 * att + 0.2 * LW.head, neckY * (1 - LW.head), 0, 'YXZ'));
     sk.neck.quaternion.copy(q).multiply(q2);
     euler.order = 'XYZ';
 
