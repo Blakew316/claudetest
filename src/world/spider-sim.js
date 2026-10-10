@@ -862,10 +862,8 @@ export class Spider {
     const crouch = this.midAir ? 0 : tr.crouch;
     const aim = this.midAir ? 0 : Math.min(tr.aim || 0, crouch * 0.7);
     const T = run.t - tr.t0;
-    // (For whoever is drawn on it: how long the wind-up is, how much of it is the turn to face the
-    // target, and how long until the launch.)
+    // (For whoever is drawn on it: how long the wind-up is, and how long until the launch.)
     this.crouchDur = crouch;
-    this.aimDur = aim;
     this.launchIn = this.launched ? -1 : crouch - T;
     let flat = [tr.to[0] - tr.from[0], 0, tr.to[2] - tr.from[2]];
     flat = Math.hypot(flat[0], flat[2]) > 4 ? norm(flat) : norm([this.hF[0], 0, this.hF[2]]);
