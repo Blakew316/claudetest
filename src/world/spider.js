@@ -52,7 +52,7 @@ const JOINTS = ['hip', 'knee', 'ankle', 'tip', 'foot'];
 
 /** What the renderer reads, at world scale (cC/fC/sC: cephalothorax centre, face, spinneret; a*: abdomen frame). */
 function pose(legs) {
-  const o = { time: 0, taut: 0, jolt: 0, air: 0, crouch: 0, airU: 0, landT: -1, palpTap: [0, 0], legs: Array.from({ length: legs }, () => Object.fromEntries(JOINTS.map((j) => [j, [0, 0, 0]]))) };
+  const o = { time: 0, taut: 0, jolt: 0, air: 0, crouch: 0, crouchDur: 0, launchIn: -1, launchV: [0, 0, 0], airU: 0, landT: -1, palpTap: [0, 0], legs: Array.from({ length: legs }, () => Object.fromEntries(JOINTS.map((j) => [j, [0, 0, 0]]))) };
   for (const k of [...POINTS, ...AXES]) o[k] = [0, 0, 0];
   return o;
 }
@@ -187,6 +187,9 @@ export class Spider {
     o.crouch = m.mode === 'jump' && !m.launched ? 1 : 0; // aiming and winding up a leap
     o.airU = m.mode === 'jump' && m.launched ? m.airU || 0 : 0; // how far through the flight
     o.landT = m.mode === 'land' ? m.landT : -1; // seconds since touchdown, while it lands
+    o.launchIn = m.mode === 'jump' && !m.launched ? Math.max(0, m.launchIn) : -1; // seconds until it leaps, while it winds up
+    o.crouchDur = m.mode === 'jump' ? m.crouchDur || 0 : 0; // ... out of a wind-up this long
+    if (m.launchV) down(m.launchV, o.launchV); // ... and the way the flight heads off
     o.taut = this.taut;
     o.jolt = -this.hit * Math.exp(-7 * this.hitAge) * Math.sin(38 * this.hitAge);
     o.palpTap[0] = m.palpTap[0];
@@ -215,6 +218,9 @@ export class Spider {
     // (Between steps the time since touchdown runs on with the clock; the step that touches down
     // touched down at its own start.)
     d.landT = c.landT < 0 ? -1 : Math.max(0, c.landT - (1 - alpha) * (c.time - a.time));
+    d.launchIn = c.launchIn < 0 ? -1 : c.launchIn + (1 - alpha) * (c.time - a.time);
+    d.crouchDur = c.crouchDur;
+    copy(c.launchV, d.launchV);
     d.taut = a.taut + (c.taut - a.taut) * alpha;
     d.jolt = a.jolt + (c.jolt - a.jolt) * alpha;
     d.palpTap[0] = a.palpTap[0] + (c.palpTap[0] - a.palpTap[0]) * alpha;
