@@ -46,7 +46,7 @@ const HIGHLIGHT_CAP = 3;
 /*
  * The environment the armour reflects, drawn on the GPU into an equirect: deep space with faint nebulae and
  * stars, lit like a studio (a big warm softbox over the camera's left shoulder, a hard strip on its right for
- * the long highlights down the plates, a soft top light), cyan and blue-white rim strips behind him, and the warm
+ * the long highlights down the plates, a soft top light), cyan and blue-white rim strips behind him, and the
  * glow of the stardust under his feet. Its frame: +z toward the camera, +x the camera's right; the materials
  * turn it with the camera (see suitLights().place).
  */
@@ -82,8 +82,8 @@ void main() {
   float n1 = fbm(d * 2.3 + 4.1), n2 = fbm(d * 3.1 - 2.7);
   col += vec3(0.30, 0.16, 0.62) * 0.10 * smoothstep(0.45, 0.85, n1);
   col += vec3(0.10, 0.42, 0.62) * 0.08 * smoothstep(0.5, 0.9, n2);
-  // The stardust underfoot: a warm glow from below.
-  col += vec3(1.0, 0.62, 0.40) * 0.16 * smoothstep(0.0, -0.75, d.y) * (0.6 + 0.8 * n2);
+  // The stardust underfoot (periwinkle and white, like the clusters he walks on): a glow from below.
+  col += vec3(0.72, 0.70, 1.0) * 0.18 * smoothstep(0.0, -0.75, d.y) * (0.6 + 0.8 * n2);
   // Stars, soft and a texel or two across (so their reflections are points, not squares).
   vec3 g = d * 180.0;
   vec3 cell = floor(g);
@@ -316,7 +316,7 @@ const SHADOW_HALF = 32; // the shadow camera's half extent (he is 46 tall, his p
 export function suitLights(renderer, target) {
   if (renderer) {
     renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.shadowMap.type = THREE.PCFShadowMap; // (PCF honours the radius below: a soft-edged key)
   }
   const group = new THREE.Group();
   const fill = new THREE.HemisphereLight(0x9fb4ff, 0x2a1a12, 0.35);
@@ -332,7 +332,7 @@ export function suitLights(renderer, target) {
   key.shadow.mapSize.set(2048, 2048);
   key.shadow.bias = -0.0004;
   key.shadow.normalBias = 0.06;
-  key.shadow.radius = 2.5;
+  key.shadow.radius = 3;
   for (const l of [key, rimC, rimB]) l.target = target;
   group.add(fill, key, rimC, rimB);
   const f = new THREE.Vector3();
