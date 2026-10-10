@@ -638,7 +638,6 @@ export function createIronMan(renderer) {
    * The leap's parts in time (into JW).
    * @param {number} tl seconds until the launch (< 0: not winding up)
    * @param {number} dur the whole wind-up (s)
-   * @param {number} aim the first of it the crawler spends turning to face the leap (s)
    * @param {number} tA seconds since the launch (< 0: not just launched)
    * @param {boolean} ready his feet are down and turned his way: the dip may begin
    * @param {number[]} launchV the way the flight heads off (world units/s)
@@ -646,7 +645,7 @@ export function createIronMan(renderer) {
    * @param {number} lam leg length (world)
    * @param {boolean} jumped a jump in time (a seek): the dip as if begun on time
    */
-  function jumpWeights(tl, dur, aim, tA, ready, launchV, rise, lam, jumped) {
+  function jumpWeights(tl, dur, tA, ready, launchV, rise, lam, jumped) {
     if (tl >= 0) {
       // The dip begins once he has stepped round to face his way and his feet are coming under him (or
       // there is no more time to wait), as deep as the time left lets a body drop on its legs (min-jerk:
@@ -1895,7 +1894,7 @@ export function createIronMan(renderer) {
     // (The dip waits for his feet: turned near enough his way, and down, or the last step coming down:
     // he lowers into it, as people do into the step before a jump.)
     const feetSet = !!st.feet && st.turnErr < 0.45 && SIDES.every((n) => !st.feet[n].swing || st.feet[n].swing.u > 0.55);
-    jumpWeights(winding ? spider.launchIn : wound ? Math.max(0, st.tlLast - tk.t - dt) : -1, spider.crouchDur || 0, spider.aimDur || 0, wound ? tk.t : -1, feetSet, spider.launchV, spider.launchRise ?? spider.launchV[1], LEG * K * scale, jumped);
+    jumpWeights(winding ? spider.launchIn : wound ? Math.max(0, st.tlLast - tk.t - dt) : -1, spider.crouchDur || 0, wound ? tk.t : -1, feetSet, spider.launchV, spider.launchRise ?? spider.launchV[1], LEG * K * scale, jumped);
     const g = clamp(Math.max(air, fly), 0, 1) * (1 - LW.on); // off the ground
     // Flight attitude: he leaves upright on his thrusters, pitches into the flight as it gets under way
     // (as soon as he is moving fast: not gliding along upright), holds it, and swings back upright to
