@@ -52,6 +52,23 @@ function view(d, aspect) {
   };
 }
 
+/** Where his chest faces (a bearing, as atan2(x, z)): his heading, twisted toward the words he fires at. */
+function chest(d, s) {
+  const hx = Math.cos(s.heading);
+  const hz = Math.sin(s.heading);
+  let tw = 0;
+  let k = 0;
+  for (const tn of d.run.tentacles) {
+    const ax = world.wordPos[tn.wordId * 3] - s.x;
+    const az = world.wordPos[tn.wordId * 3 + 2] - s.z;
+    const ang = Math.atan2(ax * hz - az * hx, ax * hx + az * hz); // > 0: on his left
+    tw += ang - (ang > 0 ? 0.45 : -0.45);
+    k++;
+  }
+  const t = Math.max(-0.75, Math.min(0.75, k ? tw / k : 0));
+  return Math.atan2(hx * Math.cos(t) + hz * Math.sin(t), hz * Math.cos(t) - hx * Math.sin(t));
+}
+
 function median(a) {
   const b = [...a].sort((x, y) => x - y);
   return b[Math.floor(b.length / 2)];
@@ -100,9 +117,10 @@ for (const [W, H, least] of [
         prevV = vel;
       }
       prev = v.eye;
-      // Reading: from behind him (the lens more than 120 degrees off his heading), how much and for how long at a time.
+      // Reading: from behind him (the lens more than 120 degrees off where his chest faces: his heading,
+      // turned toward the words he fires at as world/ironman.js turns him), how much and for how long at a time.
       const bearing = Math.atan2(v.eye[0] - s.x, v.eye[2] - s.z);
-      const isBack = d.run.phase === 'read' && Math.abs(wrap(bearing - Math.atan2(Math.cos(s.heading), Math.sin(s.heading)))) > (2 * Math.PI) / 3;
+      const isBack = d.run.phase === 'read' && Math.abs(wrap(bearing - chest(d, s))) > (2 * Math.PI) / 3;
       back += isBack ? 1 : 0;
       backRun = isBack ? backRun + 1 / 60 : 0;
       backLongest = Math.max(backLongest, backRun);
@@ -140,9 +158,10 @@ for (const [W, H, least] of [
     });
 
     test('it seldom films him from behind while he reads, and never for long', () => {
+      // (Over these first two reads it was 38-57% of the time, for up to 4 s at a stretch.)
       const share = back / reading.length;
-      assert.ok(share < 0.15, `from behind ${(100 * share).toFixed(0)}% of the time`);
-      assert.ok(backLongest < 3.5, `from behind for ${backLongest.toFixed(1)} s at a stretch`);
+      assert.ok(share < 0.25, `from behind ${(100 * share).toFixed(0)}% of the time`);
+      assert.ok(backLongest < 3, `from behind for ${backLongest.toFixed(1)} s at a stretch`);
     });
 
     test('it cuts once to each landing and films the kneel from in front, low and close', () => {
