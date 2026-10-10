@@ -52,7 +52,7 @@ const JOINTS = ['hip', 'knee', 'ankle', 'tip', 'foot'];
 
 /** What the renderer reads, at world scale (cC/fC/sC: cephalothorax centre, face, spinneret; a*: abdomen frame). */
 function pose(legs) {
-  const o = { time: 0, taut: 0, jolt: 0, air: 0, crouch: 0, crouchDur: 0, launchIn: -1, launchV: [0, 0, 0], airU: 0, landT: -1, palpTap: [0, 0], legs: Array.from({ length: legs }, () => Object.fromEntries(JOINTS.map((j) => [j, [0, 0, 0]]))) };
+  const o = { time: 0, taut: 0, jolt: 0, air: 0, crouch: 0, crouchDur: 0, aimDur: 0, launchIn: -1, launchV: [0, 0, 0], launchA: [0, 0, 0], launchRise: 0, airU: 0, airDur: 0, landAt: [0, 0, 0], landT: -1, palpTap: [0, 0], legs: Array.from({ length: legs }, () => Object.fromEntries(JOINTS.map((j) => [j, [0, 0, 0]]))) };
   for (const k of [...POINTS, ...AXES]) o[k] = [0, 0, 0];
   return o;
 }
@@ -189,7 +189,14 @@ export class Spider {
     o.landT = m.mode === 'land' ? m.landT : -1; // seconds since touchdown, while it lands
     o.launchIn = m.mode === 'jump' && !m.launched ? Math.max(0, m.launchIn) : -1; // seconds until it leaps, while it winds up
     o.crouchDur = m.mode === 'jump' ? m.crouchDur || 0 : 0; // ... out of a wind-up this long
-    if (m.launchV) down(m.launchV, o.launchV); // ... and the way the flight heads off
+    o.aimDur = m.mode === 'jump' ? m.aimDur || 0 : 0; // ... the first of it turning to face the way it will go
+    if (m.launchV) down(m.launchV, o.launchV); // ... and the way the flight heads off (an estimate until the launch)
+    o.launchRise = (m.launchRise || 0) * SCALE; // ... and how fast it climbs over its first moments
+    if (m.launchA) down(m.launchA, o.launchA); // ... and how it curves away as it leaves
+    // The leap's flight time and where it comes down (world units), from its start to the end of the landing.
+    const tr = this.lastTravel;
+    o.airDur = tr && (m.mode === 'jump' || m.mode === 'land') ? tr.air : 0;
+    if (tr && (m.mode === 'jump' || m.mode === 'land')) copy(tr.to, o.landAt);
     o.taut = this.taut;
     o.jolt = -this.hit * Math.exp(-7 * this.hitAge) * Math.sin(38 * this.hitAge);
     o.palpTap[0] = m.palpTap[0];
@@ -220,7 +227,12 @@ export class Spider {
     d.landT = c.landT < 0 ? -1 : Math.max(0, c.landT - (1 - alpha) * (c.time - a.time));
     d.launchIn = c.launchIn < 0 ? -1 : c.launchIn + (1 - alpha) * (c.time - a.time);
     d.crouchDur = c.crouchDur;
+    d.aimDur = c.aimDur;
+    d.launchRise = c.launchRise;
+    d.airDur = c.airDur;
     copy(c.launchV, d.launchV);
+    copy(c.launchA, d.launchA);
+    copy(c.landAt, d.landAt);
     d.taut = a.taut + (c.taut - a.taut) * alpha;
     d.jolt = a.jolt + (c.jolt - a.jolt) * alpha;
     d.palpTap[0] = a.palpTap[0] + (c.palpTap[0] - a.palpTap[0]) * alpha;
