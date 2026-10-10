@@ -267,6 +267,8 @@ function depthPoints(shared, { size, max, drift, dof, stellar = 1, spikes = 0, g
       attribute float hot;
       uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDrift, uDof, uGain, uLightR, uLightGain, uFogK, uClear, uStellar, uSpikes, uGiants;
       uniform vec3 uLight;
+      uniform vec4 uFlashP[2]; // repulsor flashes (muzzle, impact): where, and the radius they light
+      uniform vec2 uFlashK; // ... and how much brighter they make the stars there
       uniform vec3 uColor;
       varying vec3 vC;
       varying float vSize;
@@ -303,6 +305,11 @@ function depthPoints(shared, { size, max, drift, dof, stellar = 1, spikes = 0, g
         float prox = pow(min(rpx, 1.0), 1.3) * (1.0 + 0.5 * log2(max(rpx, 1.0)));
         float dl = distance(p, uLight);
         float lit = uGain + uLightGain * exp(-dl * dl / (uLightR * uLightR));
+        // A repulsor's flash lights the dust round it for a frame or two.
+        vec3 f0 = p - uFlashP[0].xyz;
+        vec3 f1 = p - uFlashP[1].xyz;
+        float flash = uFlashK.x * exp(-dot(f0, f0) / (uFlashP[0].w * uFlashP[0].w)) + uFlashK.y * exp(-dot(f1, f1) / (uFlashP[1].w * uFlashP[1].w));
+        lit += flash;
         float fz = uFog * depth * uFogK;
         // Clear the stars between the camera and the spider so it always reads,
         // however dense the cluster it is crawling through.
@@ -350,6 +357,8 @@ function depthPoints(shared, { size, max, drift, dof, stellar = 1, spikes = 0, g
         // Faint stars lean to the section hue so the ball keeps its colour; resolved ones show their own.
         float w = uStellar * mix(0.2, 0.72, smoothstep(0.45, 1.6, F));
         vC = mix(uColor, star, w) * peak;
+        // ... in its own cyan-white.
+        vC = mix(vC, vec3(0.62, 0.85, 1.0) * dot(vC, LUMA) * 1.2, clamp(0.25 * flash, 0.0, 0.45));
         gl_PointSize = S;
         gl_Position = projectionMatrix * mv;
       }`,
@@ -482,6 +491,8 @@ export function createView3D(canvas) {
     uLightR: { value: 210 },
     uLightGain: { value: 0.55 },
     uClear: { value: 80 * SS },
+    uFlashP: { value: [new THREE.Vector4(0, 0, 0, 1), new THREE.Vector4(0, 0, 0, 1)] },
+    uFlashK: { value: new THREE.Vector2() },
   };
   const mat4 = new THREE.Matrix4();
   const quat = new THREE.Quaternion();
@@ -839,6 +850,13 @@ export function createView3D(canvas) {
       const wpos = W.world.wordPos;
       const targets = run.tentacles.map((tn) => ({ at: [wpos[tn.wordId * 3], wpos[tn.wordId * 3 + 1], wpos[tn.wordId * 3 + 2]], id: tn.wordId, p: tn.p }));
       hero.update(spider, dt, camera, targets, (size.h * renderer.getPixelRatio()) / 2);
+      // His repulsor flashes light the dust round them.
+      const flashes = hero.fx.userData.flashes || [];
+      for (let i = 0; i < 2 && i < flashes.length; i++) {
+        const f = flashes[i];
+        shared.uFlashP.value[i].set(f.p.x, f.p.y, f.p.z, f.r);
+        shared.uFlashK.value.setComponent(i, f.k);
+      }
       from = hero.chest();
       U = hero.up();
     } else {
