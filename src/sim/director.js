@@ -59,8 +59,8 @@ const TAIL = 1.5; // last reach + hold + retract after the final word
 const GAP = 1.04; // mean gap between reaches, in units of 1/rate (see nextGap)
 const RATE_CAP = 11; // reaches per second at most; denser sections read a phrase per reach
 const RUN_BUDGET = 420; // seconds: even a 1500-word, 12-section prompt finishes under ~7 min
-const MIN_READ = 14;
-const MAX_READ = 32;
+const MIN_READ = 9;
+const MAX_READ = 20;
 const LOG_CAP = 40;
 // Between sections the spider also leaps through the extra (no-word) balls:
 // it lands inside, on the side facing where it came from, and crosses toward
@@ -75,13 +75,18 @@ const ROAM_SPEED = 13; // world units/s it averages over a read, pauses included
 // dense half of its stars), circling its heart but out of the blinding nucleus.
 const LAND_IN = 0.24; // lands this far out from the middle, toward the section's first words
 const EXIT_IN = 0.26; // leaves from this far out, on the side facing where it leaps next
-const RING = [0.15, 0.28]; // strolls round the middle this far out (radii)
+const BOW_MAX = 0.12; // a read's stroll bows at most this far off the line across the ball (radii)
+const IN_BALL = 0.45; // ... and never strays further than this from the middle (radii)
 const VISIT_IN = 0.3; // crosses the extra balls this far in
 const REST_IN = 0.32; // and rests this far in for the finale
 const WAY = 0.2; // a waypoint every this much of the stroll (radii): a few strides apart
 const SLOPE = 0.2; // rise over run at most: he walks, he does not climb
 const ROAM_REACH = 0.1; // the goal moves on to the next waypoint once it is this close (radii)
 const ZOOM_MAX = 1.0; // camera zoom rate cap, log distance per second (~1.7% a frame)
+// How fast the view may circle him (rad/s): gently while he reads and walks (a view that keeps swinging
+// round makes people queasy), quicker through a leap, where it swings onto the landing.
+const YAW_MAX_READ = 0.25;
+const YAW_MAX_AIR = 1.1;
 
 // The hero camera. Iron Man (world/ironman.js) stands HERO_H tall with his feet
 // about 10 below the crawler's body point, so his middle is HERO_MID above it
@@ -140,15 +145,17 @@ const AHEAD_N = Math.round(AHEAD / AHEAD_DT) + 1;
 const AHEAD_BINS = 32; // ...over this many angles round him...
 const AHEAD_EVERY = 0.75; // ...again this often...
 const AHEAD_LOOK = 1.1; // ...and the camera aims this far along it (its springs lag about that much)
-const AZ_RATE = 0.6; // rad/s: the two-shot circles him no faster than this
-const MOVE_W = 0.2; // what moving round him costs the look-ahead, per AHEAD_BINS step (so it moves seldom, and not far)
+const AZ_RATE = 0.2; // rad/s: the two-shot circles him no faster than this (faster reads as dizzying)...
+const AZ_RATE_BACK = 0.45; // ...unless it has been on his back for BACK_FREE: then it may come round this fast
+const BACK_FREE = 2;
+const MOVE_W = 0.35; // what moving round him costs the look-ahead, per AHEAD_BINS step (so it moves seldom, and not far)
 const TRAVEL_W = 0.5; // ...and a re-plan, per rad
-const TRACK = 0.75; // walking, the two-shot turns round with him this much of the way he turns (see stepShot)
-const SHOT_TURN = 0.5; // s: the two-shot's angle round him eases onto its plan this fast (a move takes 1-1.5 s)
+const TRACK = 0.6; // walking, the two-shot turns round with him this much of the way he turns (see stepShot)
+const SHOT_TURN = 0.65; // s: the two-shot's angle round him eases onto its plan this fast (a move takes 1.5-2 s)
 // Holds: once a move settles the two-shot stays put for at least HOLD_MIN, unless keeping it would cost
 // KEEP_HELD more than the best shot (it is losing him or his words); afterwards KEEP more.
-const HOLD_MIN = 4;
-const KEEP_HELD = 0.7;
+const HOLD_MIN = 7;
+const KEEP_HELD = 1.0;
 const KEEP = 0.25;
 const HOLD_V = 0.04; // rad/s: settled
 const REVERSE_T = 4; // s after a move during which going back the other way costs REVERSE_W
@@ -184,7 +191,7 @@ const ss = (a, b, x) => smooth(clamp((x - a) / (b - a), 0, 1));
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 /** Planned read time for a section (s): longer sections linger, within limits. */
-const readSeconds = (count) => (count ? clamp(9 + 2.4 * Math.sqrt(count), MIN_READ, MAX_READ) : 2.5);
+const readSeconds = (count) => (count ? clamp(7 + 1.5 * Math.sqrt(count), MIN_READ, MAX_READ) : 2.5);
 /** Floaty, unhurried leaps; long gaps take longer and arc higher. */
 const airTime = (L) => clamp(1.7 + L / 380, 2.0, 3.6);
 
@@ -375,11 +382,11 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   }
 
   /**
-   * Each read is a stroll round the heart of its ball: from where it lands,
-   * curving round the middle (whichever way round suits the read's length and
-   * carries on the way it came in, swinging in or out a little), level but for
-   * a gentle rise or fall, to the side facing where it goes next. No sharp
-   * turns and nothing steep: he walks it.
+   * Each read is a stroll across the heart of its ball: one gentle curve from
+   * where it lands to the side facing where it goes next, bowed only as far as
+   * the read wants walking (he stands and fires the rest), level but for a
+   * gentle rise or fall. (It used to circle the middle at a few strides' radius:
+   * he turned ~30 degrees a second the whole read, and the camera turned with him.)
    */
   function planRoutes() {
     return analysis.sections.map((sec, i) => {
@@ -388,41 +395,56 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       const start = landing(i);
       const nx = visits[i][0];
       const exit = toward(c, nx ? { x: nx.cx, y: nx.cy, z: nx.cz } : legEnd(i), EXIT_IN);
-      const want = ROAM_SPEED * readT[i] * 0.8;
-      const lo = RING[0] * c.r;
-      const hi = RING[1] * c.r;
-      // Round the middle, seen from above: where it lands and where it leaves.
-      const a0 = Math.atan2(start.z - c.cz, start.x - c.cx);
-      const a1 = Math.atan2(exit.z - c.cz, exit.x - c.cx);
-      const rs = clamp(Math.hypot(start.x - c.cx, start.z - c.cz), lo, hi);
-      const re = clamp(Math.hypot(exit.x - c.cx, exit.z - c.cz), lo, hi);
-      // The way it was leaping as it came in, from the previous ball.
+      const want = ROAM_SPEED * readT[i] * 0.65; // the rest of the read he stands and fires
+      // The way it was leaping as it came in, from the previous ball: the curve bows that way, so he
+      // carries on round rather than doubling back.
       const from = i > 0 ? visits[i - 1][visits[i - 1].length - 1] || clusters[i - 1] : null;
       const inX = from ? start.x - from.cx : 0;
       const inZ = from ? start.z - from.cz : 0;
-      const inL = Math.hypot(inX, inZ) || 1;
-      const short = wrap(a1 - a0);
-      let best = null;
-      for (const sweep of [short, short - (short < 0 ? -1 : 1) * 2 * PI]) {
-        // Swing in or out so the way round is about as long as the read wants.
-        const mid = (rs + re) / 2;
-        const bulge = clamp(((want / Math.max(0.2, Math.abs(sweep)) - mid) * PI) / 2, lo - mid, hi - mid);
-        const len = Math.abs(sweep) * (mid + (2 / PI) * bulge);
-        // How well setting off round this way carries on from the leap in (1: straight on).
-        const along = ((sweep < 0 ? -1 : 1) * (Math.cos(a0) * inZ - Math.sin(a0) * inX)) / inL;
-        // Too short leaves him standing about; too long only means he leaves from partway round.
-        const cost = (1.5 * Math.max(0, want - len) + 0.4 * Math.max(0, len - want)) / want + 0.1 * (1 - along) + 0.05 * rand();
-        if (!best || cost < best.cost) best = { sweep, bulge, len, cost };
+      const chord = Math.hypot(exit.x - start.x, exit.z - start.z) || 1;
+      let px = -(exit.z - start.z) / chord;
+      let pz = (exit.x - start.x) / chord;
+      if (px * inX + pz * inZ < 0 || (!from && rand() < 0.5)) {
+        px = -px;
+        pz = -pz;
       }
-      const K = Math.max(2, Math.round(best.len / (WAY * c.r)));
+      // A quadratic bend whose middle stands BOW_MAX radii off the chord at most...
+      const bow = clamp(Math.sqrt(Math.max(0, (want / 2) ** 2 - (chord / 2) ** 2)), 0, BOW_MAX * c.r);
+      let qx = (start.x + exit.x) / 2 + 2 * px * bow;
+      let qz = (start.z + exit.z) / 2 + 2 * pz * bow;
+      // ...or, after a leap, one that sets off the way he landed and curves round to where he leaves: no
+      // pivot on the spot after landing (the camera turned with every such pivot). Kept inside the ball.
+      const inL = Math.hypot(inX, inZ);
+      if (inL > 1e-6) {
+        const k = Math.max(0.5 * chord, 0.25 * c.r);
+        qx = start.x + (inX / inL) * k;
+        qz = start.z + (inZ / inL) * k;
+        const r = Math.hypot(qx - c.cx, qz - c.cz);
+        if (r > IN_BALL * c.r) {
+          qx = c.cx + ((qx - c.cx) * IN_BALL * c.r) / r;
+          qz = c.cz + ((qz - c.cz) * IN_BALL * c.r) / r;
+        }
+      }
+      const at = (f, o) => {
+        o.x = (1 - f) * (1 - f) * start.x + 2 * (1 - f) * f * qx + f * f * exit.x;
+        o.z = (1 - f) * (1 - f) * start.z + 2 * (1 - f) * f * qz + f * f * exit.z;
+        return o;
+      };
+      let len = 0;
+      const p0 = { x: start.x, z: start.z };
+      const p1 = { x: 0, z: 0 };
+      for (let k = 1; k <= 16; k++) {
+        at(k / 16, p1);
+        len += Math.hypot(p1.x - p0.x, p1.z - p0.z);
+        p0.x = p1.x;
+        p0.z = p1.z;
+      }
+      const K = Math.max(2, Math.round(len / (WAY * c.r)));
       const ph = rand() * PI * 2;
       const route = [start];
       for (let k = 1; k < K; k++) {
         const f = k / K;
-        const a = a0 + best.sweep * f;
-        const rr = clamp(lerp(rs, re, f) + best.bulge * Math.sin(PI * f) + c.r * 0.025 * Math.sin(3 * PI * f + ph), lo, hi);
-        const x = c.cx + Math.cos(a) * rr;
-        const z = c.cz + Math.sin(a) * rr;
+        const { x, z } = at(f, {});
         // Level, drifting gently toward the exit's height, never steeper than SLOPE.
         const prev = route[route.length - 1];
         const run = Math.hypot(x - prev.x, z - prev.z);
@@ -1004,7 +1026,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const NS = NB * NE;
     const S = Math.round(AHEAD / AHEAD_DT) + 1;
     const binW = (2 * PI) / NB;
-    const kmax = Math.max(1, Math.round((AZ_RATE * AHEAD_DT) / binW));
+    const kmax = Math.max(1, Math.round((azRate() * AHEAD_DT) / binW));
     const D = shotDist(SIZE_MEDIUM);
     const az0 = hc.shot.az;
     const keepAtt = hc.att;
@@ -1249,7 +1271,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       for (let k = 0; k < hc.path.n; k++) hc.path.az[k] += turn;
     }
     [s.az, s.vAz] = smoothDamp(s.az, s.az + wrap(p.az - s.az), s.vAz, SHOT_TURN, dt);
-    s.vAz = clamp(s.vAz, -AZ_RATE, AZ_RATE);
+    s.vAz = clamp(s.vAz, -azRate(), azRate());
     [s.el, s.vEl] = smoothDamp(s.el, p.el, s.vEl, 0.9, dt);
     [s.lD, s.vD] = smoothDamp(s.lD, Math.log(p.D), s.vD, 0.7, dt);
     [s.sx, s.vSx] = smoothDamp(s.sx, p.sx, s.vSx, 0.8, dt);
@@ -1259,6 +1281,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const behind = (dir[0] * C[0] + dir[2] * C[1]) / (Math.hypot(dir[0], dir[2]) || 1) < Math.cos(1.9);
     hc.backT = behind ? hc.backT + dt : Math.max(0, hc.backT - 2 * dt);
   }
+
+  /** How fast the two-shot may circle him now (rad/s): calmly, but briskly off his back. */
+  const azRate = () => (hc.backT > BACK_FREE ? AZ_RATE_BACK : AZ_RATE);
 
   /** The two-shot as it has eased so far, as a camera target. */
   function twoShotRig(out) {
@@ -1533,6 +1558,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     if (L && tr && L.id === tr.id && L.touch < 0 && run.t > tr.t0 + tr.crouch + 0.05 && spider.sim.mode !== 'jump') touchdown(L);
     stepAirborne(dt);
     const d0 = run.camera.dist;
+    const y0 = run.camera.yaw;
     const t = cameraTarget(dt);
     // The look-at runs ahead along his (smoothed) velocity by as much as the follow lags.
     const s = run.spider;
@@ -1562,6 +1588,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       if (Math.abs(step) > ZOOM_MAX * dt) {
         cam.dist = d0 * Math.exp(Math.sign(step) * ZOOM_MAX * dt);
         if (cam.v) cam.v.dist = clamp(cam.v.dist, -ZOOM_MAX, ZOOM_MAX);
+      }
+      // Nor circle him faster than the phase allows (see YAW_MAX_READ).
+      const yawMax = hc.leap && !hc.leap.done ? YAW_MAX_AIR : hc.backT > BACK_FREE ? AZ_RATE_BACK : YAW_MAX_READ;
+      const turned = wrap(cam.yaw - y0);
+      if (Math.abs(turned) > yawMax * dt) {
+        cam.yaw = y0 + Math.sign(turned) * yawMax * dt;
+        if (cam.v) cam.v.yaw = clamp(cam.v.yaw, -yawMax, yawMax);
       }
       // The bank (see leapRig), eased in and out.
       [cam.roll, hc.vRoll] = smoothDamp(cam.roll, hc.rollT, hc.vRoll, 0.5, dt);

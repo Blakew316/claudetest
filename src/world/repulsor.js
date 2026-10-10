@@ -42,7 +42,7 @@ const GLOWS = 192; // palm, flash, impact, ember and wisp glows
 const DISCS = 48; // muzzle ripples and impact shells
 const SHOTS = 24; // blasts alive at once (both hands)
 
-const PERIOD = 1.15; // seconds between one hand's blasts (jittered to 0.9-1.4 s); the other hand fires halfway between
+const PERIOD = 0.85; // seconds between one hand's blasts (jittered to 0.65-1.05 s); the other hand fires halfway between
 const JITTER = 0.22; // of a period
 const CHARGE = 0.3; // seconds the palm takes to come up to white-hot before a blast
 const SHOT_LIFE = 1.4; // seconds a blast's effects last (the last embers)

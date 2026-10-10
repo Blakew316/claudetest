@@ -1094,7 +1094,7 @@ export class Spider {
     } else {
       this.pauseT += dt;
       if (this.intentT <= 0 && !this.shuffle) {
-        if (dist > 14) this.beginWalk(range(this.rand, 1.1, 2.4) * (dist > 150 ? 1.7 : 1));
+        if (dist > 14) this.beginWalk(range(this.rand, 2.2, 4) * (dist > 150 ? 1.5 : 1));
         else this.beginPause(range(this.rand, 1.0, 2.2));
       }
     }
@@ -1111,7 +1111,8 @@ export class Spider {
     this.speedT += (target - this.speedT) * (1 - Math.exp(-10 * dt));
     this.speedV += ((this.speedT - this.speed) * 36 - this.speedV * 12) * dt;
     this.speed = Math.max(0, this.speed + this.speedV * dt);
-    const wander = Math.sin(this.time * 0.9 + this.meander) * 0.32 + Math.sin(this.time * 2.1 + this.meander * 2) * 0.12;
+    // (A person walks a steady line: only a slight sway off it, not the spider's weave.)
+    const wander = Math.sin(this.time * 0.9 + this.meander) * 0.07 + Math.sin(this.time * 2.1 + this.meander * 2) * 0.025;
     // It steers as it walks: setting off it leans into the turn, slowing to a halt it straightens
     // out with its speed (not all at once), and right by the goal it stops steering so it never circles it.
     const moving = Math.min(1, this.speed / CRUISE);
