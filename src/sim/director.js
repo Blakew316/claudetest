@@ -121,11 +121,11 @@ const LAND_HOLD = LAND_TIME - KNEEL_RISE; // s after touchdown that he holds the
 const LAND_BLEND = 2.2; // once he is up, the landing shot hands back to the two-shot over this long
 // Mid-flight the camera cuts to the landing: a locked-off view, low and almost straight in front of where he
 // will land, that he flies down into; it pushes in through the kneel and tilts up with him as he rises.
-const CUT_U = 0.55; // share of the flight flown when it cuts
+const CUT_U = 0.6; // share of the flight flown when it cuts
 const LAND_AZ = 0.38; // rad off straight in front of him
 const LAND_EL = -0.3; // rad below his kneeling middle: near his boots, looking up
-const SIZE_KNEEL = 0.5; // the kneeling hero fills this much of the view height as he lands...
-const SIZE_KNEEL_IN = 0.58; // ...pushing in to this through the hold
+const SIZE_KNEEL = 0.44; // the kneeling hero fills this much of the view height as he lands...
+const SIZE_KNEEL_IN = 0.5; // ...pushing in to this through the hold
 const SIZE_RISE = 0.62; // standing, as he rises (the lens holds its place and tilts up with him)
 const SHOT_Y_KNEEL = -0.04; // where the kneeling hero's middle sits on screen (NDC)
 const LAND_LOOK = 0.4; // at the cut it looks this far from him toward where he lands
@@ -167,6 +167,7 @@ const TIGHT_EVERY = 10;
 const TIGHT_HOLD = 2.2;
 const REVEAL_EVERY = 4;
 const REVEAL_HOLD = 1.6;
+const BEAT_GAP = 2.5; // s at the full figure between one beat and the next
 const MIN_GAP = 40; // the lens never comes nearer his middle than this
 const NUCLEUS = 0.2; // ...nor into a ball's blinding nucleus (radii)
 const PRE_LEAP = 2.0; // s over which it drifts round toward the takeoff view once the last words go
@@ -1098,7 +1099,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       b.kind = '';
       b.at = run.t; // back out: a deliberate move too
     }
-    if (run.phase !== 'read' || hc.pre > 0) return;
+    if (run.phase !== 'read' || hc.pre > 0 || run.t - b.at < BEAT_GAP) return;
     const s = hc.sched;
     for (let j = 0; j < s.length; j += 6) {
       const go = s[j + 3]; // s until it goes
@@ -1408,13 +1409,14 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     A[0] = G[0] + dir[0] * D;
     A[1] = G[1] + dir[1] * D;
     A[2] = G[2] + dir[2] * D;
-    // Looking between him and where he will land, and more and more at the spot as he nears it (so it
-    // pans little: he comes down into the frame); at him again as he rises.
-    const g = down ? 1 : ss(CUT_U, 0.9, u);
-    const w = down ? 1 - ss(LAND_HOLD - 0.2, LAND_HOLD + 0.3, ts) : lerp(LAND_LOOK, 1, g);
-    for (let i = 0; i < 3; i++) P[i] = lerp(H[i], G[i], w);
-    aimFrom(A, P, 0, lerp(SHOT_Y_KNEEL * g, shotY(D), rise), out);
-    return setEase(out, 0.16, 0.16, 0);
+    // Looking between him and where he will touch down (his middle there), and more and more at that as he
+    // nears it, so it pans little: he comes down into the frame. Once down, at him (see heroPoint: he
+    // drops into the kneel, holds it, rises).
+    const w = down ? 0 : lerp(LAND_LOOK, 1, ss(CUT_U, 0.9, u));
+    for (let i = 0; i < 3; i++) P[i] = lerp(H[i], tr.to[i], w);
+    const sy = down ? lerp(SHOT_Y_KNEEL * ss(0, 0.3, ts), shotY(D), rise) : 0;
+    aimFrom(A, P, 0, sy, out);
+    return setEase(out, 0.22, 0.22, 0);
   }
 
   /**

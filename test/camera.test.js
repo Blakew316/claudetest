@@ -149,7 +149,7 @@ for (const [W, H, least] of [
       assert.ok(landings >= 3, `${landings} landings`);
       assert.equal(cuts, landings);
       const med = (k) => median(kneel.map((r) => r[k]));
-      assert.ok(med(0) > 0.35 && med(0) < 0.7, `kneeling he fills ${med(0).toFixed(2)} of the view height`);
+      assert.ok(med(0) > 0.3 && med(0) < 0.7, `kneeling he fills ${med(0).toFixed(2)} of the view height`);
       assert.ok(med(1) < 0.7, `the lens is ${((med(1) * 180) / Math.PI).toFixed(0)} degrees off his front`);
       assert.ok(med(2) < 0, 'the lens looks up at him');
     });
