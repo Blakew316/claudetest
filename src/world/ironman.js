@@ -87,6 +87,42 @@ const KNUCKLES = KNUCKLE_AT.dot(HAND_ALONG);
 // on an A-pose this much lower, so the rig adds the difference.
 const ARM_REST_FIX = 1.007 - Math.atan2(J.shoulder[1] - J.wrist[1], J.wrist[0] - J.shoulder[0]);
 
+/*
+ * The thumb. The model's rest thumb juts out of the palm, which reads as stuck on, so it is posed in the
+ * hand's own frame: each segment's direction (metacarpal, proximal, distal) as parts along the fingers,
+ * across toward the thumb side, and out of the palm's face (the left hand's frame, mirrored for the right).
+ */
+const THUMB = {
+  relax: [[0.85, 0.3, 0.45], [0.92, 0.0, 0.4], [0.85, -0.22, 0.48]], // resting against the curled index
+  open: [[0.68, 0.7, 0.1], [0.8, 0.6, 0.02], [0.9, 0.44, -0.06]], // spread in the palm's plane, to fire
+  flat: [[0.88, 0.44, 0.18], [0.95, 0.26, 0.12], [0.97, 0.14, 0.1]], // laid along the index, in flight
+};
+
+/** Per hand and pose, each thumb bone's turn from rest in the model's frame (cumulative down the chain). */
+function thumbPoses() {
+  const out = {};
+  for (const n of ['L', 'R']) {
+    const m = n === 'L' ? 1 : -1; // mirror x for the right hand
+    const mir = (v) => new THREE.Vector3(v.x * m, v.y, v.z);
+    const [A, C, N] = [mir(HAND_ALONG), mir(HAND_ACROSS), mir(PALM_N)];
+    const t = [1, 2, 3].map((k) => V(JOINT[`DEF-thumb0${k}${n}`]));
+    const rest = [t[1].clone().sub(t[0]).normalize(), t[2].clone().sub(t[1]).normalize()];
+    rest.push(rest[1]); // the tip carries on from the last joint (straight at rest)
+    out[n] = {};
+    for (const [pose, dirs] of Object.entries(THUMB)) {
+      let acc = new THREE.Quaternion();
+      out[n][pose] = dirs.map(([a, c, f], k) => {
+        const d = new THREE.Vector3().addScaledVector(A, a).addScaledVector(C, c).addScaledVector(N, f).normalize();
+        const from = rest[k].clone().applyQuaternion(acc);
+        acc = new THREE.Quaternion().setFromUnitVectors(from, d).multiply(acc);
+        return acc.clone();
+      });
+    }
+  }
+  return out;
+}
+const THUMB_Q = thumbPoses();
+
 /* Gait. Times in seconds, lengths in leg lengths (LEG), angles in radians. */
 const DS = 0.1; // each double support, as a share of the stride cycle
 const SS = 0.5 - DS; // each single support (the other foot swinging)
@@ -788,6 +824,8 @@ export function createIronMan(renderer) {
 
   const PQ = new Map(); // rig bone -> its orientation in model space (the rig's rest pose is unrotated)
   const fingerCurl = { L: 0.4, R: 0.4 };
+  const thumbW = { L: { open: 0, flat: 0 }, R: { open: 0, flat: 0 } }; // the thumb's pose: relaxed, then spread to fire, then flat in flight
+  const qT = new THREE.Quaternion();
   const qc = new THREE.Quaternion();
   const XAX = new THREE.Vector3(1, 0, 0);
   const pelvisRest = V(J.pelvis);
@@ -824,6 +862,8 @@ export function createIronMan(renderer) {
       const e = { bone: b, parent, restQ, q: new THREE.Quaternion(), drv: drv[b.name] || sk.limbs[side].wr, side };
       // The finger joints past the knuckle curl further on their own (the rig bends only the knuckle).
       e.distal = /^DEF-f_.*0[23][LR]$/.test(b.name);
+      const th = /^DEF-thumb0([123])[LR]$/.exec(b.name);
+      e.thumb = th ? ['relax', 'open', 'flat'].map((p) => THUMB_Q[side][p][th[1] - 1]) : null;
       byBone.set(b, e);
       order.push(e);
     });
@@ -848,7 +888,12 @@ export function createIronMan(renderer) {
   function drive(md, hover) {
     rigQuats();
     for (const e of md.order) {
-      e.q.copy(PQ.get(e.drv)).multiply(e.restQ);
+      e.q.copy(PQ.get(e.drv));
+      if (e.thumb) {
+        const w = thumbW[e.side];
+        e.q.multiply(qT.copy(e.thumb[0]).slerp(e.thumb[1], w.open).slerp(e.thumb[2], w.flat));
+      }
+      e.q.multiply(e.restQ);
       if (e.parent) e.bone.quaternion.copy(e.parent.q).invert().multiply(e.q);
       else e.bone.quaternion.copy(e.q);
       if (e.distal) e.bone.quaternion.multiply(qc.setFromAxisAngle(XAX, 0.8 * fingerCurl[e.side]));
@@ -858,7 +903,7 @@ export function createIronMan(renderer) {
       const pose = POSE['Fly Pose'];
       for (const e of md.order) {
         const vq = pose[e.bone.name];
-        if (!vq) continue;
+        if (!vq || e.thumb) continue; // the artist's thumb is the rest one, jutting out
         e.bone.quaternion.slerp(qc.set(vq[0], vq[1], vq[2], vq[3]), 0.9 * hover);
         if (e.bone === md.root) e.bone.position.lerp(a3.set(vq[4], vq[5], vq[6]), 0.9 * hover);
       }
@@ -1282,6 +1327,8 @@ export function createIronMan(renderer) {
       const curl = (0.42 * (1 - a) - 0.14 * a - 0.18 * rec * a + 0.14 * guard) * (1 - att) + 0.04 * att;
       gA.knuckles.quaternion.setFromAxisAngle(gA.curlAxis, curl);
       fingerCurl[n] = clamp(curl, 0, 1);
+      thumbW[n].open = a * (1 - att);
+      thumbW[n].flat = att;
     }
 
     // The model follows the rig; upright in the air, the artist's hover pose blends in.
