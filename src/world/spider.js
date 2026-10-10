@@ -116,6 +116,7 @@ export class Spider {
     r.spiderGoal.z = (g.z ?? 0) * K;
     r.spider.arrived = run.spider.arrived;
     r.tentacles = run.tentacles; // (firing, it walks slower)
+    r.fight = !!run.fight; // (fighting, it keeps its face to whoever it is squaring up to: see faceAt)
     // Whoever it is squaring up to, standing.
     if (run.faceAt) {
       this.faceAt.x = run.faceAt.x * K;

@@ -59,6 +59,7 @@ const K = HEIGHT / MODEL_HEIGHT; // world units per model unit (feet at y = 0)
 const U = HEIGHT / 2.02; // a body-proportional unit for the few absolute lengths below (tuned on a body 2.02 tall)
 const UP = new THREE.Vector3(0, 1, 0);
 const DOWN = new THREE.Vector3(0, -1, 0);
+const TOE_STRIKE = 0.3; // a step taken backwards lands on the ball of the foot, rolling down onto the heel (rad)
 
 /*
  * The driver rig's joints, in model units (y up, facing +z, his left at +x),
@@ -143,11 +144,22 @@ const KICK_SINK = 0.03;
 // the chest, HIT_ROLL to the side for one from the side, turned HIT_TURN with it), the head snaps
 // back (HIT_HEAD) and the hips are driven HIT_PUSH leg lengths along it; the legs take the stagger
 // and he comes back up to stand, each on its own spring.
-const HIT_PITCH = 0.2;
-const HIT_ROLL = 0.14;
-const HIT_TURN = 0.12;
-const HIT_HEAD = 0.16;
+const HIT_PITCH = 0.5;
+const HIT_ROLL = 0.35;
+const HIT_TURN = 0.4;
+const HIT_HEAD = 0.45;
 const HIT_PUSH = 0.12;
+// ... and he is carried back off his spot HIT_KB leg lengths (his feet stepping after him: a stumble, then he
+// walks back in), knees buckling (HIT_DIP of the landing dip), stunned for HIT_STUN s: the gun arm drops, the arms
+// fling out and his head rides the blow before he gathers himself.
+const HIT_KB = 0.55;
+const HIT_DIP = 0.6;
+const HIT_STUN = [0.25, 0.8];
+// Fighting (update's foe): eyes on the opponent, a word getting a glance of at most GLANCE s, no more than one
+// every GLANCE_GAP s; the chest squared up to him, the gun shoulder a little forward (GUN_LEAD rad); on guard.
+const GLANCE = 0.4;
+const GLANCE_GAP = 1.2;
+const GUN_LEAD = 0.3;
 
 /*
  * The thumb. The model's rest thumb juts out of the palm, which reads as stuck on, so it is posed in the
@@ -647,6 +659,9 @@ export function createIronMan(renderer, opts = {}) {
     look: { y: 0, p: 0, y0: 0, p0: 0, y1: 0, p1: 0, T0: -9, T: 0.3 }, // the head's look, and the turn it is making (from y0/p0 to y1/p1 since T0, over T)
     lookId: -1, // the word the head is on, since lookT
     lookT: -9,
+    knockT: -9, // when he was last struck (see hit)
+    foe: null, // whom he is fighting: his chest, world (see update)
+    glanceT: -9, // fighting, when his eyes last went to a word
     aimHigh: { L: 0, R: 0 }, // how far over AIM_UP each arm's word is (rad, by its aim's weight)
   };
   const ez = {
@@ -656,7 +671,7 @@ export function createIronMan(renderer, opts = {}) {
     shift: spring(1.6, 0.9), brace: spring(4, 0.9), wide: spring(4, 0.9), lean: spring(5, 0.9),
     arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(7, 0.75), R: spring(7, 0.75) }, aimEl: { L: spring(6, 0.85), R: spring(6, 0.85) }, secP: spring(6, 0.45), secR: spring(6, 0.45), nod: spring(8, 0.4), lead: spring(5, 0.8), aimWr: { L: spring(7, 0.9), R: spring(7, 0.9) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
     gx: spring(GRADE_W), gz: spring(GRADE_W), gOff: spring(GROUND_W), hV: spring(40), pushX: spring(11, 0.9), pushZ: spring(11, 0.9), apa: spring(10),
-    hitX: spring(6, 0.6), hitZ: spring(6, 0.6), hitP: spring(7, 0.5), hitR: spring(7, 0.5), hitY: spring(6, 0.6), hitH: spring(9, 0.45),
+    hitX: spring(6, 0.6), hitZ: spring(6, 0.6), kbX: spring(2.2), kbZ: spring(2.2), hitP: spring(7, 0.75), hitR: spring(7, 0.75), hitY: spring(6, 0.75), hitH: spring(8, 0.7, 0.06), combat: spring(3),
     hurry: spring(10), elev: spring(7), go: spring(14), ext: spring(6),
     // A blast's kick through the arm: back along the beam within ~50 ms, a touch past rest on the
     // way back, settled by ~0.25 s; and its push through the shoulder and torso, a beat later and slower.
@@ -1170,12 +1185,14 @@ export function createIronMan(renderer, opts = {}) {
   /** The ankle (world) of a foot planted at pos/yaw/nrm and pitched to rho on its heel: how a swing ends. */
   function heelStrikeAnkle(out, pos, yaw, nrm, rho, Ks) {
     flatFrame(q3, yaw, nrm);
-    const pz = HEEL_Z * Ks;
+    const ball = rho > 0; // (toes down: pivoting on the ball)
+    const pz = (ball ? BALL_Z : HEEL_Z) * Ks;
+    const py = (ball ? BALL_Y : 0) * Ks;
     const cr = Math.cos(rho);
     const sr = Math.sin(rho);
-    const ay = ANKLE_H * Ks;
+    const ay = ANKLE_H * Ks - py;
     const az = -pz;
-    return out.set(0, ay * cr - az * sr, ay * sr + az * cr + pz).applyQuaternion(q3).add(pos);
+    return out.set(0, ay * cr - az * sr + py, ay * sr + az * cr + pz).applyQuaternion(q3).add(pos);
   }
 
   function plantAll(Ks, yaw, base) {
@@ -1257,7 +1274,8 @@ export function createIronMan(renderer, opts = {}) {
     out.copy(pxz).addScaledVector(v, tA).addScaledVector(ctx.acc, 0.5 * tA * tA * 0.5);
     // From the hip joints (ahead of the pelvis), and the heel strike's toes-up pitch draws the
     // ankle back: the ground point lands that much further on.
-    out.addScaledVector(heading, (HIP_FWD + HS_BACK * clamp(ctx.walk, 0, 1)) * Ks);
+    const fwdShare = clamp((v.x * heading.x + v.z * heading.z) / Math.max(1e-3, ctx.across), 0, 1); // (the heel strike's offset, only going forwards)
+    out.addScaledVector(heading, (HIP_FWD + HS_BACK * clamp(ctx.walk, 0, 1) * fwdShare) * Ks);
     // On a slope the stance moves up the hill: uphill he plants high ahead and pushes up over the
     // foot, downhill he lands under himself and leaves the foot behind, as on stairs (the shift
     // that asks the same of the leg at heel strike and at toe off).
@@ -1290,7 +1308,8 @@ export function createIronMan(renderer, opts = {}) {
     const dx = out.x - o.x;
     const dz = out.z - o.z;
     const dl = Math.hypot(dx, dz);
-    const maxStep = 0.95 * lam;
+    const latS = Math.abs(v.x * leftV.x + v.z * leftV.z) / Math.max(1e-3, ctx.across);
+    const maxStep = (0.95 - 0.35 * latS) * lam; // (a hip's reach sideways, not a stride's)
     if (dl > maxStep) {
       out.x = o.x + (dx * maxStep) / dl;
       out.z = o.z + (dz * maxStep) / dl;
@@ -1314,7 +1333,10 @@ export function createIronMan(renderer, opts = {}) {
     const m = p >= TO.R && p < TO.L ? 'L' : 'R'; // the foot leaving next
     const f = st.feet[m];
     if (f.swing) return 1;
-    const behind = -((f.pos.x - pxz.x) * heading.x + (f.pos.z - pxz.z) * heading.z);
+    // (Behind along the way he travels, which need not be the way he faces: backing off, side-stepping.)
+    const hx = across > 1e-3 ? v.x / across : heading.x;
+    const hz = across > 1e-3 ? v.z / across : heading.z;
+    const behind = -((f.pos.x - pxz.x) * hx + (f.pos.z - pxz.z) * hz);
     // Until its toe off: what is left of the other foot's swing, then the double support.
     const single = m === 'R' ? (p >= TO.L ? (1 - p) / SS : 0) : p < HS.R ? (HS.R - p) / SS : 0;
     const double = m === 'R' ? (p >= TO.L ? 1 : (TO.R - p) / DS) : p < HS.R ? 1 : (TO.L - p) / DS;
@@ -1377,6 +1399,10 @@ export function createIronMan(renderer, opts = {}) {
     groundN(sw.tNrm);
     const step = Math.hypot(sw.tPos.x - f.pos.x, sw.tPos.z - f.pos.z) / (LEG * Ks);
     sw.tRho = HS_ROLL * clamp(step / 0.55, 0.25, 1) * (1 - clamp(ctx.grade * 1.6, 0, 0.85)); // a short step, or one up a slope, lands nearly flat
+    // (By the step's direction on the foot: heel first forwards, flat sideways, ball first backwards.)
+    const sl = Math.max(1e-6, step * LEG * Ks);
+    const sc = ((sw.tPos.x - f.pos.x) * heading.x + (sw.tPos.z - f.pos.z) * heading.z) / sl;
+    sw.tRho = sc >= 0 ? sw.tRho * smooth(0.2, 0.7, sc) : TOE_STRIKE * clamp(step / 0.55, 0.25, 1) * smooth(0.2, 0.7, -sc);
     heelStrikeAnkle(sw.a1, sw.tPos, sw.tYaw, sw.tNrm, sw.tRho, Ks);
   }
 
@@ -1431,6 +1457,7 @@ export function createIronMan(renderer, opts = {}) {
     f.rhoHi = rock < -1e-3 ? rock : RISE_MAX * clamp((sigma - 0.5) / 0.5, 0, 1) ** 2.5 * smooth(0.0, 0.18, behind) * clamp(ctx.active * 2, 0, 1);
     // Once the other foot is down he pushes off: the heel rises as a real one does, not only as far as the leg needs.
     f.rho = f.rhoLo < 0 ? f.rhoLo : f.rhoHi * smooth(0.78, 0.92, sigma);
+    if (rock > 1e-3) f.rho = f.rhoHi = Math.max(rock, f.rho); // (a ball-first contact rolls down onto the heel)
     // Winding up a leap: while the other foot steps round he pivots on the ball of this one (as people
     // turn sharply on the spot); in the dip, both down, the feet only finish the turn on their balls,
     // a little (more would twist them across each other: the rest is the hips' and trunk's).
@@ -1470,7 +1497,7 @@ export function createIronMan(renderer, opts = {}) {
           const go = needs(n, Ks, ctx);
           const goM = needs(m, Ks, ctx);
           let first = go ? n : goM ? m : null;
-          if (st.holding && ctx.active < 0.3) {
+          if (st.holding && ctx.active < 0.3 && !(st.time - st.knockT < 0.6)) {
             // Setting off from standing (or starting to move off): the foot his weight is off steps
             // first, and only once he has shifted his weight onto the other (a quarter second, as
             // people do before a first step).
@@ -2016,13 +2043,19 @@ export function createIronMan(renderer, opts = {}) {
    * @param {{at:number[], id:number, p:number}[]} targets words his palms are firing at, and how far each ray has reached
    * @param {number} halfH half the drawing buffer's height (px), for sprite sizes
    */
-  function update(spider, frameDt, camera, targets = [], halfH = 450) {
+  function update(spider, frameDt, camera, targets = [], halfH = 450, foe = null) {
+    st.foe = foe;
     // A jump in time (a seek) lands every spring and replants the feet; otherwise steps are capped.
     const jumped = frameDt > 0.3;
     const dt = clamp(frameDt, 0, 0.1);
     const sdt = jumped ? frameDt : dt;
     st.time += dt;
     v.set(spider.v[0], spider.v[1], spider.v[2]);
+    // Knocked back: carried off his spot over the ground (and walked back onto it), his feet stepping after him.
+    const kbx = ez.kbX.to(0, frameDt > 0.3 ? frameDt : clamp(frameDt, 0, 0.1));
+    const kbz = ez.kbZ.to(0, frameDt > 0.3 ? frameDt : clamp(frameDt, 0, 0.1));
+    v.x += ez.kbX.v;
+    v.z += ez.kbZ.v;
     const speed3 = v.length();
     a3.set(spider.F[0], 0, spider.F[2]);
     if (a3.lengthSq() > 1e-6) heading.copy(a3.normalize());
@@ -2081,7 +2114,7 @@ export function createIronMan(renderer, opts = {}) {
     st.lam = lam;
 
     fitGround(spider, sdt, g);
-    pxz.set(spider.p[0], st.gy, spider.p[2]);
+    pxz.set(spider.p[0] + kbx, st.gy, spider.p[2] + kbz);
     const grade = st.gx * heading.x + st.gz * heading.z; // the slope along his way (rise per unit)
     const across = Math.hypot(v.x, v.z);
     // Speed along the slope (climbing a grade covers more ground per stride than its plan view).
@@ -2090,6 +2123,12 @@ export function createIronMan(renderer, opts = {}) {
     const vr = (st.vr = speedS / lam);
     const walk = ez.walk.to((1 - g) * clamp(vr / 1.15, 0, 1.3), sdt);
     T = timing(vr);
+    // Stepping sideways: quicker, shorter steps (a side shuffle).
+    if (across > 1e-3) {
+      const lat = Math.abs(v.x * leftV.x + v.z * leftV.z) / across;
+      T.sw /= 1 + 0.45 * lat;
+      T.ds /= 1 + 0.45 * lat;
+    }
 
     /* ---- targets: each hand keeps to its word, taking the newest on its side ---- */
     const now = spider.time;
@@ -2127,15 +2166,18 @@ export function createIronMan(renderer, opts = {}) {
         if (t.id === A.id && !rec.back) cur = t;
         if (!best || (!rec.back && (st.seen.get(best.id).back || rec.t > st.seen.get(best.id).t))) best = t;
       }
-      // Switch to a newer word, but not more than ~4 times a second (the eye leads, the arm follows).
-      const pick = cur && now - A.seen < 0.25 ? cur : best && best.id !== A.id && !st.seen.get(best.id).back ? best : cur || best;
+      // Switch to a newer word, but not more than ~4 times a second (the eye leads, the arm follows);
+      // the opponent (ids < 0) always has the hand on his side.
+      let duel = null;
+      for (const t of targets) if (t.side === n && t.id < 0) duel = t;
+      const pick = duel || (cur && now - A.seen < 0.25 ? cur : best && best.id !== A.id && !st.seen.get(best.id).back ? best : cur || best);
       if (pick && pick.id !== A.id) {
         A.id = pick.id;
         A.seen = now;
       }
       tgt[n] = pick;
       // The arm comes up for a fresh word on its side and stays up between quick shots.
-      if (pick && now - st.seen.get(pick.id).t < 1) {
+      if (pick && (pick.id < 0 || now - st.seen.get(pick.id).t < 1)) {
         A.fresh = now;
         A.born = st.seen.get(pick.id).t;
       }
@@ -2145,7 +2187,8 @@ export function createIronMan(renderer, opts = {}) {
     // keeps swinging), unless both sides came up together; standing, both may.
     const walkingOn = speedS > 1.5 * V_GO * lam;
     if (st.aim.L.has && st.aim.R.has && walkingOn && Math.abs(st.aim.L.born - st.aim.R.born) > 0.25) {
-      const older = st.aim.L.born < st.aim.R.born ? 'L' : 'R';
+      // (Never the hand on his opponent.)
+      const older = tgt.L && tgt.L.id < 0 ? 'R' : tgt.R && tgt.R.id < 0 ? 'L' : st.aim.L.born < st.aim.R.born ? 'L' : 'R';
       st.aim[older].has = false;
     }
     for (const n of SIDES) if (!st.aim[n].has) tgt[n] = null;
@@ -2153,9 +2196,16 @@ export function createIronMan(renderer, opts = {}) {
     const both = firingStill && st.aim.L.has && st.aim.R.has;
     const brace = ez.brace.to(firingStill && !both ? (st.aim.R.has ? 1 : -1) : 0, sdt);
     const wide = ez.wide.to(both ? 1 : 0, sdt); // firing both ways: feet apart, knees bent
+    // Fighting: on guard (feet apart and bladed, the gun side back, knees soft), eased in and out; and how
+    // stunned he is by the last blast that struck him (see hit).
+    const combat = clamp(ez.combat.to(st.foe ? 1 - 0.3 * clamp(walk, 0, 1) : 0, sdt), 0, 1) * (1 - g) * (1 - crouch);
+    const sinceHit = st.time - st.knockT;
+    const stun = (st.stunK || 0) * smooth(0, 0.06, sinceHit) * (1 - smooth(HIT_STUN[0], HIT_STUN[1], sinceHit));
+    const gunSide = thanos ? -1 : 1; // (Thanos leads with the gauntlet, on his left)
+    const braceC = Math.abs(brace) > 0.8 * combat ? brace : gunSide * 0.8 * combat;
 
     // Feet: (re)planted where they stand when he comes down, or on a jump in time.
-    if (!st.feet || jumped || Math.hypot(st.feet.L.pos.x - spider.p[0], st.feet.L.pos.z - spider.p[2]) > 3 * U) plantAll(Ks, yaw, pxz);
+    if (!st.feet || jumped || Math.hypot(st.feet.L.pos.x - pxz.x, st.feet.L.pos.z - pxz.z) > 3 * U) plantAll(Ks, yaw, pxz);
     // Coming down: the landing is planned a moment before touchdown, so his legs can reach for their places.
     const tDown = spider.air && spider.airDur > 0 && !ld.on ? Math.max(0, (1 - uAir) * spider.airDur) : Infinity;
     if (ld.plan && !ld.on && landT < 0 && (jumped || tDown > APPROACH_T + 0.1)) ld.plan = false;
@@ -2185,7 +2235,7 @@ export function createIronMan(renderer, opts = {}) {
         f.swing = null;
       }
     }
-    const ctx = { speed: speedS, across: Math.max(1e-3, across), grade: (st.gx * v.x + st.gz * v.z) / Math.max(1e-3, across), yaw: yawGo, walk: clamp(walk, 0, 1), crouch, acc: st.acc, brace, wide, dt, active: ez.active.x };
+    const ctx = { speed: speedS, across: Math.max(1e-3, across), grade: (st.gx * v.x + st.gz * v.z) / Math.max(1e-3, across), yaw: yawGo, walk: clamp(walk, 0, 1), crouch, acc: st.acc, brace: braceC, wide: wide + 0.6 * combat, dt, active: ez.active.x };
     if (!st.grounded && g < 0.35 && !tk.on) {
       st.grounded = true;
       // Down on both feet, under the hips, a little apart and one a touch ahead (as a landing is taken);
@@ -2224,7 +2274,7 @@ export function createIronMan(renderer, opts = {}) {
     /* ---- stride ---- */
     // (Turning sharply on the spot: quick steps, one straight after the other.)
     const spun = spin();
-    const quick = ez.hurry.to(Math.max(hurry(Ks, across), 1 + 0.6 * spun), sdt);
+    const quick = ez.hurry.to(Math.max(hurry(Ks, across), 1 + 0.6 * spun, st.time - st.knockT < 0.8 ? HURRY_MAX : 1), sdt); // (knocked back: the catch step goes at once)
     T.sw /= quick;
     T.ds *= (1 - 0.65 * spun) / quick;
     let stepping = false;
@@ -2329,7 +2379,22 @@ export function createIronMan(renderer, opts = {}) {
       lookY += idle * on * (hash(slot) - 0.5) * 1.0;
       lookP += idle * on * (hash(slot + 0.37) - 0.6) * 0.35;
     }
-    const twist = ez.twist.to(clamp(nT ? twistTo / nT : 0, -0.75, 0.75) * (1 - g), sdt);
+    // Fighting: his eyes stay on his opponent (a new word gets a quick glance), and he squares up to him.
+    if (st.foe) {
+      a3.set(st.foe[0] - spider.p[0], st.foe[1] - (st.gy + 1.6 * lam), st.foe[2] - spider.p[2]);
+      const foeY = Math.atan2(a3.dot(leftV), a3.x * heading.x + a3.z * heading.z);
+      const foeP = -Math.atan2(a3.y, Math.hypot(a3.x, a3.z));
+      const word = newest && newest.id >= 0 ? newest : null;
+      if (word && st.lookT !== st.glanceT && st.lookT - st.glanceT > GLANCE_GAP) st.glanceT = st.lookT;
+      if (!(word && st.glanceT === st.lookT && now - st.lookT < GLANCE)) {
+        lookY = foeY;
+        lookP = foeP;
+      }
+      twistTo += 2 * (foeY + gunSide * GUN_LEAD);
+      nT += 2;
+    }
+    const twistMax = 0.75 + 0.25 * combat;
+    const twist = ez.twist.to(clamp(nT ? twistTo / nT : 0, -twistMax, twistMax) * (1 - g), sdt);
     const lk = st.look;
     const ty = clamp(lookY, -1.25, 1.25) * (1 - g);
     const tp = clamp(lookP, -0.5, 0.45) * (1 - g);
@@ -2375,7 +2440,7 @@ export function createIronMan(renderer, opts = {}) {
     if (ez.pelvisY.x === 0 || jumped) ez.pelvisY.x = J.pelvis[1] * Ks;
     // Where he is carried over the ground: the crawler's path, except coming in to land, when it is his own
     // way into the kneel (handed back to the crawler's as he rises: it stands on the same spot by then).
-    anc.set(spider.p[0], 0, spider.p[2]);
+    anc.set(spider.p[0] + kbx, 0, spider.p[2] + kbz);
     if (ld.plan) {
       landPath(st.time, d3);
       anc.lerp(d3, 1 - LW.rise);
@@ -2387,7 +2452,7 @@ export function createIronMan(renderer, opts = {}) {
     group.updateMatrixWorld(true);
     // (Crouching, taking a landing, braced to fire: that much lower than the legs would hold him.)
     const lowerCM = JW.depth * lam * JW.cm * (1 - JW.rise); // (winding up: the dip, out again with the drive)
-    const lower = softPos(dip, 0.05) * 0.16 * lam + 0.015 * lam * softAbs(brace, 0.15) + 0.02 * lam * wide + KICK_SINK * lam * clamp(Math.hypot(pushX, pushZ) / (KICK_PUSH * lam), 0, 1.5);
+    const lower = softPos(dip, 0.05) * 0.16 * lam + 0.015 * lam * softAbs(brace, 0.15) + 0.02 * lam * wide + 0.04 * lam * combat + KICK_SINK * lam * clamp(Math.hypot(pushX, pushZ) / (KICK_PUSH * lam), 0, 1.5);
     const blendW = (HANDOVER_IDLE + (HANDOVER - HANDOVER_IDLE) * active) * lam;
     let hCon = Infinity;
     for (const n of SIDES) {
@@ -2656,7 +2721,7 @@ export function createIronMan(renderer, opts = {}) {
     sk.spine.rotation.x += 0.4 * (secP + hitP);
     sk.spine.rotation.y += 0.4 * hitY;
     sk.spine.rotation.z += 0.4 * (secR + hitR);
-    sk.chest.rotation.x += 0.6 * (secP + hitP);
+    sk.chest.rotation.x += 0.6 * (secP + hitP) + 0.05 * combat;
     sk.chest.rotation.y += 0.4 * lifeY + 0.25 * turnLead + 0.6 * hitY;
     sk.chest.rotation.z += 0.6 * (secR + hitR) + lifeR;
     if (ld.on) {
@@ -2673,7 +2738,7 @@ export function createIronMan(renderer, opts = {}) {
     // Head: cancel what the trunk did under it, then look (85% stabilised, like a real head).
     q.copy(sk.root.quaternion).multiply(sk.spine.quaternion).multiply(sk.chest.quaternion);
     // (Landing, the head goes down with the trunk and bows further, then comes up first as he rises.)
-    q.slerp(q2.identity(), 0.15 + 0.6 * LW.head).invert();
+    q.slerp(q2.identity(), 0.15 + 0.6 * LW.head + 0.5 * stun).invert(); // (stunned, it rides the blow)
     q2.setFromEuler(euler.set(neckP - 0.2 * fold - 0.75 * att + 0.2 * LW.head + nod + lifeP + ez.hitH.to(0, sdt), (neckY + turnLead + lifeY) * (1 - LW.head), 0, 'YXZ'));
     sk.neck.quaternion.copy(q).multiply(q2);
     euler.order = 'XYZ';
@@ -2729,9 +2794,25 @@ export function createIronMan(renderer, opts = {}) {
         gA.el.quaternion.slerp(armQ.el, LW.arm);
         gA.wr.quaternion.slerp(armQ.wr, LW.arm);
       }
+      // On guard (fighting, the arm not firing): Iron Man's hands up before him toward his opponent, palms
+      // ready; Thanos's fists raised. The aim takes over from it as the arm comes up to fire.
+      const gW = st.foe ? 0.65 * combat * (1 - att) * (1 - LW.on) * (1 - stun) : 0;
+      if (gW > 1e-3) {
+        if (thanos) armPose(gA, 0.55, 0.25, 1.5, -0.2, 0.3);
+        else {
+          gA.clav.updateMatrixWorld(true);
+          gA.sh.getWorldPosition(b3);
+          guardV.set(st.foe[0] - b3.x, 0, st.foe[2] - b3.z).normalize().multiplyScalar(Math.cos(0.55)).addScaledVector(DOWN, Math.sin(0.55));
+          aimPose(gA, guardV, 0, 0, 0.35);
+        }
+        const Q = thanos ? armQ : aimQ;
+        gA.sh.quaternion.slerp(Q.sh, gW);
+        gA.el.quaternion.slerp(Q.el, gW);
+        gA.wr.quaternion.slerp(Q.wr, gW);
+      }
       // Aim: on its word, the direction eased (a quick, smooth move between words).
       const lead = ez.aim[n].x > 0.3 ? 1 : smooth(LOOK_LEAD[0], LOOK_LEAD[1], now - A.seen);
-      const aimTo = (A.has ? lead : 0) * (1 - g) * (1 - cr) * (1 - LW.on);
+      const aimTo = (A.has ? lead : 0) * (1 - g) * (1 - cr) * (1 - LW.on) * (1 - stun);
       ez.aim[n].w = aimTo < ez.aim[n].x ? AIM_DROP_W : AIM_RAISE_W; // (it comes up deliberately and drops sooner, relaxing)
       const a = clamp(ez.aim[n].to(aimTo, sdt), 0, 1);
       const elA = ez.aimEl[n];
@@ -2814,8 +2895,17 @@ export function createIronMan(renderer, opts = {}) {
         gA.el.quaternion.slerp(aimQ.el, aEl);
         gA.wr.quaternion.slerp(aimQ.wr, aWr);
       }
-      // Fingers: loosely curled at rest, open and back to fire (flicked further by each blast), straight in flight.
-      const curl = (0.42 * (1 - a) - 0.14 * a - 0.18 * rec * a + 0.14 * guard) * (1 - att) + 0.04 * att;
+      // Struck: the arms fling out with the blow, then he gathers them.
+      if (stun > 1e-3) {
+        armPose(gA, -0.5, 0.9, 0.6, 0, 0.2);
+        gA.sh.quaternion.slerp(armQ.sh, 0.8 * stun);
+        gA.el.quaternion.slerp(armQ.el, 0.8 * stun);
+        gA.wr.quaternion.slerp(armQ.wr, 0.8 * stun);
+      }
+      // Fingers: loosely curled at rest, open and back to fire (flicked further by each blast), straight in flight;
+      // Thanos's fists clenched on guard.
+      let curl = (0.42 * (1 - a) - 0.14 * a - 0.18 * rec * a + 0.14 * guard) * (1 - att) + 0.04 * att;
+      if (thanos) curl += (1 - curl) * gW * (1 - a);
       // (Landing: a fist on the ground; the other hand open behind him.)
       const curled = n === 'R' ? curl + (1 - curl) * LW.fist : curl * (1 - LW.arm);
       gA.knuckles.quaternion.setFromAxisAngle(gA.curlAxis, curled);
@@ -2882,6 +2972,9 @@ export function createIronMan(renderer, opts = {}) {
     const z = d[2];
     const l = Math.hypot(x, z);
     if (l < 1e-6 || !st.lam) return;
+    k = Math.min(1, k);
+    st.knockT = st.time;
+    st.stunK = k;
     const f = (x * heading.x + z * heading.z) / l; // + from behind him
     const sd = (x * leftV.x + z * leftV.z) / l; // + toward his left
     ez.hitP.kick(HIT_PITCH * k * f);
@@ -2890,7 +2983,11 @@ export function createIronMan(renderer, opts = {}) {
     ez.hitH.kick(HIT_HEAD * k * f);
     ez.hitX.kick((x / l) * HIT_PUSH * st.lam * k);
     ez.hitZ.kick((z / l) * HIT_PUSH * st.lam * k);
+    ez.kbX.kick((x / l) * HIT_KB * st.lam * k);
+    ez.kbZ.kick((z / l) * HIT_KB * st.lam * k);
+    ez.land.kick(HIT_DIP * k);
   }
+  const guardV = new THREE.Vector3();
 
   return {
     group,

@@ -50,6 +50,8 @@ const STRIDE = 28; // sim units of body travel per gait cycle: about half a leg 
 const CRUISE = 52; // walking speed, sim units/s (26 in the world at SCALE 0.5)
 const MAX_TURN = 0.7; // rad/s
 const FACE_TURN = 0.9; // rad/s, at most, standing and turning to face an opponent
+const FIGHT_TURN = 1.4; // rad/s, at most, keeping his face to an opponent as he moves (run.fight)
+const STRAFE = 28; // fighting, the fastest it steps sideways or backs off, sim units/s (14 in the world): a shuffle the feet keep up with
 const FIRE_SLOW = 0.55; // walking speed while he fires, of the usual
 const MAX_TILT = 1.05;
 const MAX_TILT_AIR = 0.9;
@@ -1109,9 +1111,13 @@ export class Spider {
     this.goalN = this.goalN ? norm(lerp3(this.goalN, n0, 1 - Math.exp(-2.5 * dt))) : n0;
     const n = this.goalN;
     const facing = Math.max(0.15, dot(this.hF, n));
+    // Fighting (run.fight with run.faceAt): its face stays to its opponent while it goes where it is going,
+    // sideways or backing off at a shuffle (STRAFE), forwards at a walk.
+    const fight = !!(run.fight && run.faceAt);
+    const cruise = fight ? STRAFE + (CRUISE - STRAFE) * clamp(dot(this.hF, n), 0, 1) : CRUISE * facing;
     // The speed it means to go eases too, so a burst gathers and dies away rather than kicking in.
     // (Firing, he slows to a purposeful step rather than strolling on at full pace.)
-    const target = this.walking ? Math.min(CRUISE, dist * 1.2) * facing * (run.tentacles && run.tentacles.length ? FIRE_SLOW : 1) : 0;
+    const target = this.walking ? Math.min(cruise, dist * 1.2) * (run.tentacles && run.tentacles.length ? FIRE_SLOW : 1) : 0;
     this.speedT += (target - this.speedT) * (1 - Math.exp(-10 * dt));
     this.speedV += ((this.speedT - this.speed) * 36 - this.speedV * 12) * dt;
     this.speed = Math.max(0, this.speed + this.speedV * dt);
@@ -1123,7 +1129,14 @@ export class Spider {
     let aim = n;
     let rate = 0.8;
     let cap = 0;
-    if (this.walking || moving > 0.1) {
+    if (fight) {
+      const f = [run.faceAt.x - this.p[0], 0, run.faceAt.z - this.p[2]];
+      if (len(f) > 8) {
+        aim = norm(f);
+        rate = 1.6;
+        cap = FIGHT_TURN;
+      }
+    } else if (this.walking || moving > 0.1) {
       aim = rotate(n, this.hU, wander);
       rate = 2.2;
       cap = MAX_TURN * (this.walking ? 1 : moving) * smooth(6, 14, dist);
@@ -1138,8 +1151,8 @@ export class Spider {
     else if (this.feel < 0.05 && dist > 10 && facing < 0.85) cap = 0.4;
     this.turnCap += (cap - this.turnCap) * (1 - Math.exp(-6 * dt));
     this.orient(aim, dt, rate, MAX_TILT, this.turnCap);
-    // Mostly along the body, a little straight to the goal so it never orbits it.
-    const dir = norm(add(scale(this.hF, 0.75), n, 0.25));
+    // Mostly along the body, a little straight to the goal so it never orbits it (fighting: straight to it).
+    const dir = fight ? n : norm(add(scale(this.hF, 0.75), n, 0.25));
     this.p = add(this.p, dir, this.speed * dt);
   }
 

@@ -3,8 +3,9 @@
  * sample prompt, checking that the camera films Iron Man up close and keeps
  * him in frame, seldom from behind, never comes too near him or into a
  * ball's nucleus, never lurches (but for its deliberate cut to each landing),
- * films each superhero landing from in front, low and close, and that
- * seeking reproduces live playback.
+ * films each superhero landing from in front, low and close, keeps Thanos in the
+ * frame with him while they fight (squared up to each other), and that seeking
+ * reproduces live playback.
  * Run: node --test test/camera.test.js
  */
 
@@ -21,13 +22,14 @@ const KNEEL_H = 28; // ...kneeling in the superhero landing
 const TAN = Math.tan((50 * Math.PI) / 360); // view3d FOV
 const RUN_TO = 110; // s: the first reads with their flights and landings
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+const PI = Math.PI;
 
 const seed = hashString(SAMPLE_PROMPT);
 const analysis = parsePrompt(SAMPLE_PROMPT, { fileName: SAMPLE_FILE_NAME });
 const world = buildWorld(analysis, seed);
 
-/** The lens and where his middle falls on screen (NDC) for the current step. */
-function view(d, aspect) {
+/** The lens and where his middle (or point P) falls on screen (NDC) for the current step. */
+function view(d, aspect, P = null) {
   const c = d.run.camera;
   const s = d.run.spider;
   const cp = Math.cos(c.pitch);
@@ -39,7 +41,7 @@ function view(d, aspect) {
   const r = [-f[2] / rl, 0, f[0] / rl];
   const u = [-r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1]];
   const sim = d.spider.sim;
-  const H = [s.x, s.y + (sim.mode === 'jump' && sim.launched ? 0 : 13), s.z]; // (in the air his middle rides the crawler point)
+  const H = P || [s.x, s.y + (sim.mode === 'jump' && sim.launched ? 0 : 13), s.z]; // (in the air his middle rides the crawler point)
   const q = [H[0] - eye[0], H[1] - eye[1], H[2] - eye[2]];
   const z = q[0] * f[0] + q[1] * f[1] + q[2] * f[2];
   return {
@@ -83,6 +85,10 @@ for (const [W, H, least] of [
   describe(`hero camera at ${W}x${H}`, () => {
     const d = createDirector(analysis, world, () => ({ width: W, height: H }), seed);
     const reading = [];
+    const fighting = []; // ... while Thanos fights him (a two-shot: each of them smaller)
+    let fightSteps = 0;
+    let foeOff = 0; // Thanos out of the frame while they fight
+    let squared = 0; // ... both facing the other (within 35 degrees)
     let offFrame = 0;
     let nearest = Infinity;
     let inNucleus = 0;
@@ -102,7 +108,16 @@ for (const [W, H, least] of [
       d.step();
       const v = view(d, W / H);
       const s = d.run.spider;
-      if (d.run.phase === 'read') reading.push(v.share);
+      const F = d.run.foe;
+      const fight = !!(F && F.state === 'here');
+      if (d.run.phase === 'read') (fight ? fighting : reading).push(v.share);
+      if (fight) {
+        fightSteps++;
+        const fv = view(d, W / H, [F.x, F.y + 13, F.z]);
+        if (fv.z <= 0 || Math.abs(fv.x) > 0.9 || Math.abs(fv.y) > 0.9) foeOff++;
+        const toFoe = Math.atan2(F.z - s.z, F.x - s.x);
+        if (Math.abs(wrap(toFoe - s.heading)) < 0.61 && Math.abs(wrap(toFoe + PI - F.heading)) < 0.61) squared++;
+      }
       if (v.z <= 0 || Math.abs(v.x) > 0.85 || Math.abs(v.y) > 0.85) offFrame++;
       nearest = Math.min(nearest, v.gap);
       for (const c of world.clusters) if (!c.extra && Math.hypot(v.eye[0] - c.cx, v.eye[1] - c.cy, v.eye[2] - c.cz) < c.r * 0.19) inNucleus++;
@@ -140,8 +155,19 @@ for (const [W, H, least] of [
     }
 
     test('he fills about half the view height while he reads (a little less on a phone)', () => {
-      const m = median(reading);
-      assert.ok(m > least && m < 0.6, `median share ${m.toFixed(2)}`);
+      if (reading.length) {
+        const m = median(reading);
+        assert.ok(m > least && m < 0.6, `median share ${m.toFixed(2)}`);
+      }
+      // Fighting, the two-shot has them both: each a little smaller, still big enough to read.
+      const mf = median(fighting);
+      assert.ok(mf > 0.75 * least && mf < 0.6, `median share fighting ${mf.toFixed(2)}`);
+    });
+
+    test('fighting, they face each other and Thanos stays in the frame with him', () => {
+      assert.ok(fightSteps > 60 * 30, `${(fightSteps / 60).toFixed(0)} s of fighting`);
+      assert.ok(foeOff / fightSteps < 0.05, `Thanos out of frame ${((100 * foeOff) / fightSteps).toFixed(0)}% of the fight`);
+      assert.ok(squared / fightSteps > 0.85, `squared up ${((100 * squared) / fightSteps).toFixed(0)}% of the fight`);
     });
 
     test('he is always in frame', () => {

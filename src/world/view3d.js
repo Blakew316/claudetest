@@ -957,10 +957,12 @@ export function createView3D(canvas) {
           (w.by === 'hero' ? targets : foeTargets).push(tg);
         }
       }
-      const struck = hero.update(spider, dt, camera, targets, halfH);
+      // (Each keeps his eyes on the other while they fight.)
+      const fighting = foeOn && F.state === 'here';
+      const struck = hero.update(spider, dt, camera, targets, halfH, fighting ? foeHero.chest() : null);
       if (foeOn) {
-        for (const id of struck) if (id < 0) foeHero.hit(dirTo(hero.chest(), foeHero.chest()), 0.6);
-        drawFoe(foe, dt, foeTargets, halfH, F.portal);
+        for (const id of struck) if (id < 0) foeHero.hit(dirTo(hero.chest(), foeHero.chest()), 0.85);
+        drawFoe(foe, dt, foeTargets, halfH, F.portal, fighting);
       } else if (foeHero) foeHero.group.visible = foeHero.fx.visible = false;
       if (portal) portal.update(F && F.portal, t);
       // His repulsor flashes light the dust round them.
@@ -1284,7 +1286,7 @@ export function createView3D(canvas) {
   }
 
   /** Thanos for a frame: clipped at his portal, firing at Iron Man, and Iron Man struck by what lands. */
-  function drawFoe(foe, dt, targets, halfH, P) {
+  function drawFoe(foe, dt, targets, halfH, P, fighting) {
     // (His materials take the clipping plane once his model has loaded.)
     if (!foeView.clipped) {
       foeHero.group.traverse((o) => {
@@ -1301,7 +1303,7 @@ export function createView3D(canvas) {
     const jump = foe !== foeView.last || !foeHero.group.visible;
     foeView.last = foe;
     foeHero.group.visible = foeHero.fx.visible = true;
-    const struck = foeHero.update(foe, jump ? 1 : dt, camera, targets, halfH);
+    const struck = foeHero.update(foe, jump ? 1 : dt, camera, targets, halfH, fighting ? hero.chest() : null);
     for (const id of struck) if (id < 0) hero.hit(dirTo(foeHero.chest(), hero.chest()), 1);
   }
 

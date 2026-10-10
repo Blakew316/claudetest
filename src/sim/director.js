@@ -53,20 +53,21 @@ const BOOT = 0.4;
 
 // The duel: Thanos fights him through the crawl (see stepFoe).
 const DUEL = true;
-const FOE_D = [60, 135]; // Thanos keeps this far from him (world units; Iron Man stands ~46 tall)...
-const FOE_STAND = 85; // ... moving to about this far when he has to move
-const FOE_SIDE = [2.8, 1.75]; // ... staged round from the lens (rad, at Iron Man): deep beyond him on a narrow screen, side-on on a wide one
-const FOE_SLACK = [0.35, 0.6]; // ... and moves once he is this far off it (rad; narrow, wide)
+const FOE_STAND = [55, 85]; // Thanos keeps about this far from him (world units, narrow screen to wide; Iron Man stands ~46 tall), pressing in and backing off FOE_SWAY...
+const FOE_SWAY = 0.2; // (of that)
+const FOE_CIRCLE = 0.1; // ... circling him at up to this rate (rad/s), now one way, now the other (every FOE_TURN s)
+const FOE_TURN = [4, 8];
 const FOE_FIRST = 9; // s: he first steps out of a portal, as Iron Man strolls the first ball
 const PORTAL_OPEN = 0.5; // s: a Space Stone portal opens (and closes) over this
 const PORTAL_AHEAD = 14; // he steps into a portal this far in front of him...
 const PORTAL_IN = 15; // ... and is gone once he is this far through it (out of one: there)
 const EMERGE_AT = 1.0; // s after Iron Man touches down, a portal opens near him, where he would stand
-const EXCHANGE = [1.6, 3.4]; // s of quiet between exchanges of fire
-const FOE_FIRE = [1.5, 2.5]; // Thanos's volley (s)
-const HERO_FIRE = [1.2, 2.1]; // Iron Man's answer...
-const ANSWER = [0.5, 1.1]; // ... opening up this long after the volley does
-const FOE_FRAME = 0.4; // the camera frames a point this far from Iron Man toward Thanos...
+const EXCHANGE = [0.5, 1.4]; // s between exchanges of fire (each squares up to the other through it)
+const FOE_FIRE = [2.0, 3.0]; // Thanos's volley (s)
+const HERO_FIRE = [1.8, 2.8]; // Iron Man's answer...
+const ANSWER = [0.4, 1.0]; // ... opening up this long after the volley does
+const FIGHT_SIDE = [0.7, 1.45]; // the lens films them from across the line between them, this far round from it (rad) beyond Thanos (narrow screen, wide)
+const FOE_FRAME = 0.45; // the camera frames a point this far from Iron Man toward Thanos...
 const FOE_IN = 0.8; // ... back far enough that both stay within this much of the half-frame...
 const FOE_BACK = 1.7; // ... but never more than this much further back than the shot would be
 const FOE_EASE = 1.2; // ... easing onto (and off) the two of them over about this long (s); not while filming a leap
@@ -103,6 +104,7 @@ const WAY = 0.2; // a waypoint every this much of the stroll (radii): a few stri
 const SLOPE = 0.2; // rise over run at most: he walks, he does not climb
 const ROAM_REACH = 0.1; // the goal moves on to the next waypoint once it is this close (radii)
 const ZOOM_MAX = 1.0; // camera zoom rate cap, log distance per second (~1.7% a frame)
+const EDGE = 0.75; // his middle never further out than this of the half-frame (see guard)
 const YAW_JERK = 2000; // the most the lens may be swung sideways by a change in its turn (world units/s², at its distance)
 // How fast the view may circle him (rad/s): gently while he reads and walks (a view that keeps swinging
 // round makes people queasy), quicker through a leap, where it swings onto the landing.
@@ -1568,6 +1570,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   function duelFrame(t, dt) {
     const on = foe && (foe.state === 'here' || foe.state === 'coming') && !(hc.leap && !hc.leap.done) ? 1 : 0;
     [hc.duel, hc.duelV] = smoothDamp(hc.duel || 0, on, hc.duelV || 0, FOE_EASE / 2, dt);
+    // (Taking off, the shot is his alone at once: the lens's own springs ease it over.)
+    if (hc.leap && !hc.leap.done) hc.duel = hc.duelV = 0;
     const k = clamp(hc.duel, 0, 1);
     if (k < 1e-4) return;
     const F = run.foe;
@@ -1578,21 +1582,40 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     t.x += sx * FOE_FRAME * k;
     t.y += sy * FOE_FRAME * k;
     t.z += sz * FOE_FRAME * k;
-    orbitDir(t.yaw, t.pitch, dir);
-    // Each of them (his middle; Thanos's): how far toward the lens from where it looks, and how far across.
+    // From across the line between them, on one side of it for the whole engagement (the side the lens is
+    // on as it begins), seen from beyond Thanos so that Iron Man's face is to the lens: side-on on a wide
+    // screen, nearer along the line on a narrow one (so both fit).
+    const sep = Math.hypot(sx, sz);
+    if (sep > 1) {
+      const ux = sx / sep;
+      const uz = sz / sep;
+      if (k < 0.05 || !hc.duelSide) {
+        const c = run.camera;
+        hc.duelSide = ux * Math.cos(c.yaw) - uz * Math.sin(c.yaw) >= 0 ? 1 : -1;
+      }
+      const psi = lerp(FIGHT_SIDE[0], FIGHT_SIDE[1], ss(0.6, 1.6, aspect()));
+      const cx = ux * Math.cos(psi) - uz * hc.duelSide * Math.sin(psi);
+      const cz = uz * Math.cos(psi) + ux * hc.duelSide * Math.sin(psi);
+      t.yaw += wrap(Math.atan2(cx, cz) - t.yaw) * k;
+    }
+    // Each of them (his middle; Thanos's): how far toward the lens from where it looks, and how far across,
+    // seen both from where the shot is going and from where the lens still is (it turns calmly).
     const room = FOE_IN * LENS_TAN * Math.min(aspect(), 1.8);
     const d0 = t.dist;
     let need = 0;
-    for (const [x, y, z, him] of [
-      [s.x, s.y + HERO_MID, s.z, true],
-      [F.x, F.y + HERO_MID, F.z, false],
-    ]) {
-      const qx = x - t.x;
-      const qy = y - t.y;
-      const qz = z - t.z;
-      const along = qx * dir[0] + qy * dir[1] + qz * dir[2];
-      const across = Math.hypot(qx - along * dir[0], qz - along * dir[2]);
-      need = Math.max(need, along + (across + 14) / room, him ? d0 + along : 0);
+    for (const yaw of [t.yaw, run.camera.yaw]) {
+      orbitDir(yaw, t.pitch, dir);
+      for (const [x, y, z, him] of [
+        [s.x, s.y + HERO_MID, s.z, true],
+        [F.x, F.y + HERO_MID, F.z, false],
+      ]) {
+        const qx = x - t.x;
+        const qy = y - t.y;
+        const qz = z - t.z;
+        const along = qx * dir[0] + qy * dir[1] + qz * dir[2];
+        const across = Math.hypot(qx - along * dir[0], qz - along * dir[2]);
+        need = Math.max(need, along + (across + 14) / room, him ? d0 + along : 0);
+      }
     }
     if (need > d0) t.dist = lerp(d0, Math.min(need, FOE_BACK * d0), k);
   }
@@ -1614,6 +1637,20 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     }
     const safe = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, NUCLEUS, 0, cam.dist);
     if (safe !== cam.dist) cam.dist += (safe - cam.dist) * (1 - Math.exp(-4 * dt));
+    // And he never drifts out of the frame's edge (a turn held at its cap can leave him there): the lens
+    // eases where it looks toward him once he is past EDGE of the half-frame.
+    E[0] = cam.x + cam.dist * dir[0];
+    E[1] = cam.y + cam.dist * dir[1];
+    E[2] = cam.z + cam.dist * dir[2];
+    lookBasis(E, [cam.x, cam.y, cam.z]);
+    const sc = onScreen(E, H[0], H[1], H[2], aspect());
+    const over = Math.abs(sc.x) - EDGE;
+    if (sc.z > 0 && over > 0) {
+      const k = clamp(over / Math.abs(sc.x), 0, 1) * (1 - Math.exp(-8 * dt));
+      cam.x += (H[0] - cam.x) * k;
+      cam.y += (H[1] - cam.y) * k;
+      cam.z += (H[2] - cam.z) * k;
+    }
   }
 
   function stepCamera(dt) {
@@ -1738,6 +1775,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
 
   function resetFoe() {
     run.faceAt = null;
+    run.fight = false;
     run.foe = { on: false, state: 'gone', x: 0, y: 0, z: 0, heading: 0, portal: null, fire: [] };
     if (!DUEL || !n) {
       foe = null;
@@ -1748,15 +1786,16 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       spider: null,
       spawns: 0,
       rand: fork(seed, 'duel'),
-      nextId: -1,
+      nextId: -10, // (ids < 0: the fighters; -1 is the rig's 'none')
       nextX: 0,
       emergeAt: FOE_FIRST,
       goal: null,
       wasLanding: false,
       go: 0, // when he sets off through a portal
-      side: 1, // which side of Iron Man he is staged on, as the lens sees them (never crossing the line)
+      side: 1, // which way round Iron Man he is circling, and when he turns back
+      turnAt: 0,
       face: { x: 0, z: 0 }, // Iron Man, for him to square up to
-      run: { t: 0, silkSection: 0, travel: null, spiderGoal: { x: 0, y: 0, z: 0 }, spider: { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, heading: 0, arrived: false }, silk: [], tentacles: null, faceAt: { x: 0, z: 0 } },
+      run: { t: 0, silkSection: 0, travel: null, spiderGoal: { x: 0, y: 0, z: 0 }, spider: { x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, heading: 0, arrived: false }, silk: [], tentacles: null, faceAt: { x: 0, z: 0 }, fight: true },
     };
   }
 
@@ -1776,23 +1815,21 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     if (P && P.t1 === Infinity) P.t1 = run.t;
   }
 
-  /**
-   * Where Thanos is staged, as a bearing from Iron Man (atan2(z, x)): round from the lens by
-   * FOE_SIDE on his side, so the two of them share the frame.
-   */
-  function stageBearing() {
-    const c = run.camera;
-    const lens = Math.atan2(Math.cos(c.yaw), Math.sin(c.yaw)); // (from Iron Man toward the lens, near enough)
-    return lens + foe.side * lerp(FOE_SIDE[0], FOE_SIDE[1], ss(0.5, 1.5, aspect()));
+  /** How far Thanos keeps from Iron Man: closer on a narrow screen, so the two of them fit it. */
+  function standOff() {
+    return lerp(FOE_STAND[0], FOE_STAND[1], ss(0.6, 1.6, aspect()));
   }
 
-  /** Thanos steps out of a portal near Iron Man, where he is staged, facing him. */
+  /** Thanos steps out of a portal in front of Iron Man (a little to the side away from the lens), facing him. */
   function emerge() {
     const s = run.spider;
-    const a = stageBearing();
+    const h = s.heading;
+    const c = run.camera;
+    const lens = Math.atan2(Math.cos(c.yaw), Math.sin(c.yaw)); // (from Iron Man toward the lens, near enough)
+    const a = h + (wrap(lens - h) > 0 ? -0.5 : 0.5);
     const dx = Math.cos(a);
     const dz = Math.sin(a);
-    const R = FOE_STAND + PORTAL_IN;
+    const R = standOff() + PORTAL_IN;
     openPortal(s.x + dx * R, s.y, s.z + dz * R, -dx, -dz, 1);
     const start = [s.x + dx * (R + 12), s.y, s.z + dz * (R + 12)];
     foe.spider = new Spider(start, seed + 7 + ++foe.spawns, world, Math.atan2(-dz, -dx));
@@ -1834,14 +1871,17 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const landing = spider.sim.mode === 'land';
     if (landing && !foe.wasLanding) foe.emergeAt = run.phase === 'ship' ? Infinity : run.t + EMERGE_AT;
     foe.wasLanding = landing;
-    if (foe.state === 'gone' && run.t >= foe.emergeAt && !heroAway() && !F.portal) {
+    // (Once the landing has been filmed, so the lens is there to see him come through.)
+    if (foe.state === 'gone' && run.t >= foe.emergeAt && !heroAway() && !F.portal && !(hc.leap && !hc.leap.done)) {
       foe.emergeAt = Infinity;
       emerge();
     }
     // Windows of fire run out.
     for (let i = F.fire.length - 1; i >= 0; i--) if (run.t >= F.fire[i].t1) F.fire.splice(i, 1);
     // (Whoever is shooting, Iron Man squares up to him when he stands.)
-    run.faceAt = foe.state === 'here' && F.fire.length ? F : null;
+    // (While Thanos is here Iron Man keeps his face to him, wherever he walks.)
+    run.faceAt = foe.state === 'here' ? F : null;
+    run.fight = foe.state === 'here';
 
     if (foe.state === 'gone') {
       F.on = false;
@@ -1894,27 +1934,21 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         closePortal();
       }
     } else {
-      // Stalking: where he stands is fine while it is at a fighting distance from Iron Man and near
-      // where he is staged (see stageBearing); once it is not, he moves there. Firing, he stands his ground.
+      // Circling him at a fighting distance, pressing in and backing off, his face to him; firing, he plants.
       const firing = F.fire.some((w) => w.by === 'foe' && run.t >= w.t0 - 0.6);
       if (firing) {
         hold();
         fr.tentacles = F.fire;
       } else {
-        const want = stageBearing();
-        const off = (x, z) => [Math.hypot(x - s.x, z - s.z), Math.abs(wrap(Math.atan2(z - s.z, x - s.x) - want))];
-        const [gd, ga] = foe.goal ? off(foe.goal.x, foe.goal.z) : [0, 9];
-        if (!foe.goal || gd < FOE_D[0] || gd > FOE_D[1] || ga > lerp(FOE_SLACK[0], FOE_SLACK[1], ss(0.5, 1.5, aspect()))) {
-          // (On whichever side of the line from the lens to Iron Man he is already on.)
-          const c = run.camera;
-          const lens = Math.atan2(Math.cos(c.yaw), Math.sin(c.yaw));
-          foe.side = wrap(Math.atan2(me[2] - s.z, me[0] - s.x) - lens) < 0 ? -1 : 1;
-          const a = stageBearing();
-          foe.goal = { x: s.x + Math.cos(a) * FOE_STAND, z: s.z + Math.sin(a) * FOE_STAND };
+        if (run.t >= foe.turnAt) {
+          foe.side = -foe.side;
+          foe.turnAt = run.t + range(foe.rand, FOE_TURN[0], FOE_TURN[1]);
         }
-        g.x = foe.goal.x;
+        const a = Math.atan2(me[2] - s.z, me[0] - s.x) + foe.side * FOE_CIRCLE * 1.5;
+        const R = standOff() * (1 + FOE_SWAY * Math.sin(0.37 * run.t + 1.3));
+        g.x = s.x + Math.cos(a) * R;
         g.y = s.y;
-        g.z = foe.goal.z;
+        g.z = s.z + Math.sin(a) * R;
       }
       // Exchanges of fire, both on the ground.
       if (run.t >= foe.nextX && !heroAway() && (run.phase === 'read' || run.phase === 'walk' || run.phase === 'visit')) {

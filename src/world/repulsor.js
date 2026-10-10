@@ -43,6 +43,8 @@ const DISCS = 48; // muzzle ripples and impact shells
 const SHOTS = 24; // blasts alive at once (both hands)
 
 const PERIOD = 0.85; // seconds between one hand's blasts (jittered to 0.65-1.05 s); the other hand fires halfway between
+const DUEL_PERIOD = 0.42; // ... at an opponent (target ids < 0): a volley
+const DUEL_IMPACT = 2.6; // a blast striking an opponent bursts this much bigger (and brighter) than on a word
 const JITTER = 0.22; // of a period
 const CHARGE = 0.3; // seconds the palm takes to come up to white-hot before a blast
 const SHOT_LIFE = 1.4; // seconds a blast's effects last (the last embers)
@@ -73,7 +75,7 @@ const hash = (x) => {
   return s - Math.floor(s);
 };
 /** When slot k of a hand fires (seconds on the animation clock); the right hand is half a period behind. */
-const slotTime = (side, k) => (k + (side === 'R' ? 0.5 : 0) + JITTER * (hash(k * 1.731 + (side === 'R' ? 91.7 : 13.3)) - 0.5)) * PERIOD;
+const slotTime = (side, k, P = PERIOD) => (k + (side === 'R' ? 0.5 : 0) + JITTER * (hash(k * 1.731 + (side === 'R' ? 91.7 : 13.3)) - 0.5)) * P;
 
 // Repulsor colours (linear): a white-hot core, a cyan sheath, a deep blue edge (another palette can be
 // passed to createRepulsors, e.g. the Power Stone's purple for Thanos's gauntlet).
@@ -531,6 +533,7 @@ export function createRepulsors(palette = {}) {
   const seen = new Map(); // word id -> last reach p (+10 once it is retracting)
   const elig = { L: [], R: [] };
   let prevT = -1e9;
+  let curTargets = [];
   const camPos = new THREE.Vector3();
   const camR = new THREE.Vector3();
   const camU = new THREE.Vector3();
@@ -629,6 +632,12 @@ export function createRepulsors(palette = {}) {
     return out.set(rr * Math.cos(ph), rr * Math.sin(ph), z);
   }
 
+  /** A hand's time between blasts: a volley at an opponent, else the reading pace. */
+  function period(n, targets = curTargets) {
+    for (const i of elig[n]) if (targets[i].id < 0) return DUEL_PERIOD;
+    return PERIOD;
+  }
+
   /** Start a blast from slot k of a hand at time T, from the palm at a word. */
   function addShot(side, k, T, palm, at, S, id) {
     let s = shots[0];
@@ -675,6 +684,7 @@ export function createRepulsors(palette = {}) {
    */
   function update(o) {
     const { dt, time, camera, halfH, unit, scale, palms, soles, head, vel, thrust, fly, targets, aim } = o;
+    curTargets = targets;
     const aspect = camera.aspect || 1;
     sparks.material.uniforms.uHalfH.value = halfH;
     glows.material.uniforms.uHalfH.value = halfH;
@@ -721,8 +731,9 @@ export function createRepulsors(palette = {}) {
     for (const n of SIDES) {
       ready[n] = aim[n] > 0.5 && elig[n].length > 0;
       if (!ready[n]) continue;
-      for (let k = Math.floor(t0 / PERIOD) - 1, k1 = Math.floor(time / PERIOD) + 1; k <= k1; k++) {
-        const T = slotTime(n, k);
+      const P = period(n);
+      for (let k = Math.floor(t0 / P) - 1, k1 = Math.floor(time / P) + 1; k <= k1; k++) {
+        const T = slotTime(n, k, P);
         if (T <= t0 || T > time) continue;
         const t = targets[elig[n][((k % elig[n].length) + elig[n].length) % elig[n].length]];
         addShot(n, k, T, palms[n], a3.set(t.at[0], t.at[1], t.at[2]), S, t.id);
@@ -740,9 +751,10 @@ export function createRepulsors(palette = {}) {
       lightAt[n].copy(palms[n]);
       c3.copy(palms[n]);
       if (ready[n]) {
-        let k = Math.floor(time / PERIOD) - 1;
-        while (slotTime(n, k) <= time) k++;
-        const x = clamp(1 - (slotTime(n, k) - time) / CHARGE, 0, 1);
+        const P = period(n);
+        let k = Math.floor(time / P) - 1;
+        while (slotTime(n, k, P) <= time) k++;
+        const x = clamp(1 - (slotTime(n, k, P) - time) / CHARGE, 0, 1);
         q = x * x; // slow to start, racing at the end
         const t = targets[elig[n][((k % elig[n].length) + elig[n].length) % elig[n].length]];
         d3.set(t.at[0], t.at[1], t.at[2]).sub(palms[n]);
@@ -896,13 +908,15 @@ export function createRepulsors(palette = {}) {
       // Impact: a hot white point as the bolt dumps its energy, an expanding shell of plasma,
       // sparks and embers flying straight out and cooling, a faint wisp dissipating.
       const ai = a - tau;
+      // (Striking an opponent: a burst on another scale.)
+      const SI = s.id < 0 ? DUEL_IMPACT * S : S;
       if (ai >= 0) {
         const pk = Math.exp(-ai / 0.03);
         const hk = 0.85 * pk + 0.1 * Math.exp(-ai / 0.18);
-        glow(s.to, (2.8 + 2.4 * (1 - Math.exp(-ai / 0.02))) * S, CYAN[0] * hk, CYAN[1] * hk, hk, 4 * pk);
-        flashAt(1, s.to, 2.6 * pk + 0.3 * Math.exp(-ai / 0.12), 26 * S);
+        glow(s.to, (2.8 + 2.4 * (1 - Math.exp(-ai / 0.02))) * SI, CYAN[0] * hk, CYAN[1] * hk, hk, 4 * pk);
+        flashAt(1, s.to, (2.6 * pk + 0.3 * Math.exp(-ai / 0.12)) * (s.id < 0 ? 2 : 1), 26 * SI);
         if (ai < 0.12) {
-          const R = (0.6 + 4.6 * (1 - Math.exp(-ai / 0.03))) * S;
+          const R = (0.6 + 4.6 * (1 - Math.exp(-ai / 0.03))) * SI;
           const fs = Math.exp(-ai / 0.025);
           disc(s.to, camR, camU, R, 0.08 * R, CYAN[0], CYAN[1], CYAN[2], 1.1 * fs, 0.12 * fs * pk, SHELL, seed);
         }
@@ -913,7 +927,7 @@ export function createRepulsors(palette = {}) {
           if (ai > life) continue;
           sphereDir(hash(seed + i * 4.13), hash(seed + i * 6.71), c3).addScaledVector(dir, -0.7).normalize();
           const h1 = hash(seed + i * 1.37);
-          const spd = (45 + 170 * h1 * h1) * S;
+          const spd = (45 + 170 * h1 * h1) * SI;
           const kd = 2.5;
           const x1 = (spd * (1 - Math.exp(-kd * ai))) / kd;
           const x0 = (spd * (1 - Math.exp(-kd * Math.max(0, ai - 0.016)))) / kd;
@@ -922,29 +936,29 @@ export function createRepulsors(palette = {}) {
           const u = ai / life;
           const f = (1 - u) * (1 - u);
           const cool = Math.exp(-ai / 0.07); // white-hot, cooling to cyan
-          streak(a3, b3, 0.04 * S, 0.13 * S, BLUE[0] * 0.3 * f, BLUE[1] * 0.3 * f, BLUE[2] * 0.3 * f, 0, CYAN[0] * 1.2 * f, CYAN[1] * 1.2 * f, 1.2 * f, 2.4 * f * cool);
+          streak(a3, b3, 0.04 * SI, 0.13 * SI, BLUE[0] * 0.3 * f, BLUE[1] * 0.3 * f, BLUE[2] * 0.3 * f, 0, CYAN[0] * 1.2 * f, CYAN[1] * 1.2 * f, 1.2 * f, 2.4 * f * cool);
         }
         for (let i = 0; i < IMPACT_EMBERS; i++) {
           const life = 0.45 + 0.55 * hash(seed + i * 8.17);
           const ae = ai - 0.01;
           if (ae < 0 || ae > life) continue;
           sphereDir(hash(seed + i * 3.33), hash(seed + i * 5.55), c3).addScaledVector(dir, -0.3).normalize();
-          const spd = (8 + 26 * hash(seed + i * 9.91)) * S;
+          const spd = (8 + 26 * hash(seed + i * 9.91)) * SI;
           a3.copy(s.to).addScaledVector(c3, spd * ae);
           const u = ae / life;
           const tw = 0.75 + 0.25 * Math.sin(time * 37 + i * 2.1 + seed);
           const k = (1 - u) * (1 - u) * tw;
           const cool = Math.exp(-ae / 0.12);
           // White, then cyan, then a dim blue as it fades.
-          glow(a3, 0.7 * S, (CYAN[0] * (1 - u) + BLUE[0] * u) * 0.5 * k, (CYAN[1] * (1 - u) + BLUE[1] * u) * 0.5 * k, 0.5 * k, 1.2 * k * cool);
+          glow(a3, 0.7 * SI, (CYAN[0] * (1 - u) + BLUE[0] * u) * 0.5 * k, (CYAN[1] * (1 - u) + BLUE[1] * u) * 0.5 * k, 0.5 * k, 1.2 * k * cool);
         }
         for (let i = 0; i < IMPACT_WISPS; i++) {
           const aw = ai - 0.02;
           if (aw < 0 || aw > 0.7) continue;
           sphereDir(hash(seed + i * 7.07), hash(seed + i * 2.22), c3).addScaledVector(dir, -0.5).normalize();
-          a3.copy(s.to).addScaledVector(c3, (1.2 + 9 * aw) * S);
+          a3.copy(s.to).addScaledVector(c3, (1.2 + 9 * aw) * SI);
           const k = 0.04 * (1 - Math.exp(-aw / 0.04)) * Math.exp(-aw / 0.16);
-          glow(a3, (2.5 + 7 * aw) * S, CYAN[0] * 0.6 * k, CYAN[1] * 0.8 * k, k, -1);
+          glow(a3, (2.5 + 7 * aw) * SI, CYAN[0] * 0.6 * k, CYAN[1] * 0.8 * k, k, -1);
         }
       }
     }
