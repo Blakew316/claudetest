@@ -104,6 +104,9 @@ const ARM_HANG = 0.6; // walking arms hang this much along the world's down rath
 const ARM_OUT = 0.14; // the arms hang this far out from the sides (rad), clear of the suit
 const ARM_PRONATE = 0.3; // ... the palms turned this far from facing the thighs toward the back (rad)
 const ELBOW_REST = 0.33; // a relaxed elbow's bend (rad)
+// A look round to a new word is paced as a person's head turns (at most ~350 degrees a second), not
+// snapped there however far it is.
+const LOOK_RATE = 6;
 // Recoil. The hand's kick (spring rad/s, damping) and how far it drives the hand back along the beam
 // (share of the arm's reach), climbs the muzzle and flicks the wrist back (rad), at a kick of 1.
 const RECOIL_W = 22;
@@ -284,6 +287,9 @@ const smooth = (a, b, x) => {
   return t * t * (3 - 2 * t);
 };
 const minJerk = (u) => u * u * u * (10 - 15 * u + 6 * u * u);
+/** |x| and max(0, x) with the corner at 0 rounded over about e: what eases through 0 does not kink there. */
+const softAbs = (x, e) => Math.hypot(x, e) - e;
+const softPos = (x, e) => (x + softAbs(x, e)) / 2;
 const wrapA = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const frac = (x) => x - Math.floor(x);
 const hash = (n) => frac(Math.sin(n * 127.1 + 311.7) * 43758.5453);
@@ -528,6 +534,7 @@ export function createIronMan(renderer) {
     aim: { L: { id: -1, fresh: -9, born: -9, has: false, dir: new THREE.Vector3(0, 0, 1), dirS: new THREE.Vector3(), dirV: new THREE.Vector3(), seen: 0 }, R: { id: -1, fresh: -9, born: -9, has: false, dir: new THREE.Vector3(0, 0, 1), dirS: new THREE.Vector3(), dirV: new THREE.Vector3(), seen: 0 } },
     seen: new Map(), // word id -> {t: first seen, p: last reach}
     landDipArmed: false,
+    look: { y: 0, p: 0 }, // where the head is headed for, moving at most LOOK_RATE
   };
   const ez = {
     walk: spring(5), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), att: spring(5), hover: spring(6),
@@ -642,7 +649,7 @@ export function createIronMan(renderer) {
     }
     LW.on = smooth(0, LAND_G, t);
     LW.torso = smooth(0, 0.3, t) * (1 - riseAt(t, 0.1, 0.65));
-    LW.head = smooth(0.05, 0.35, t) * (1 - riseAt(t, 0, 0.35));
+    LW.head = smooth(0.05, 0.35, t) * (1 - riseAt(t, 0, 0.45));
     LW.fist = smooth(0.05, 0.19, t) * (1 - riseAt(t, 0.08, 0.45));
     LW.arm = smooth(0, 0.3, t) * (1 - riseAt(t, 0.15, 0.7));
     LW.rise = minJerk(clamp((t - (LAND_TIME - 0.75 * LAND_RISE)) / (0.75 * LAND_RISE), 0, 1));
@@ -1912,8 +1919,12 @@ export function createIronMan(renderer) {
       lookP += idle * on * (hash(slot + 0.37) - 0.6) * 0.5;
     }
     const twist = ez.twist.to(clamp(nT ? twistTo / nT : 0, -0.75, 0.75) * (1 - g), sdt);
-    const neckY = ez.lookY.to(clamp(lookY, -1.25, 1.25) * (1 - g), sdt);
-    const neckP = ez.lookP.to(clamp(lookP, -0.5, 0.45) * (1 - g), sdt);
+    const lk = st.look;
+    const lkStep = sdt > 0.3 ? Infinity : LOOK_RATE * sdt;
+    lk.y += clamp(clamp(lookY, -1.25, 1.25) * (1 - g) - lk.y, -lkStep, lkStep);
+    lk.p += clamp(clamp(lookP, -0.5, 0.45) * (1 - g) - lk.p, -lkStep, lkStep);
+    const neckY = ez.lookY.to(lk.y, sdt);
+    const neckP = ez.lookP.to(lk.p, sdt);
 
     /* ---- pelvis bone: stride rotation and list; the hips lag a turn on the spot ---- */
     const rotAmp = (0.045 + 0.045 * clamp(walk, 0, 1.2)) * active;
@@ -1940,7 +1951,7 @@ export function createIronMan(renderer) {
     group.position.copy(onGround);
     group.updateMatrixWorld(true);
     // (Crouching, taking a landing, braced to fire: that much lower than the legs would hold him.)
-    const lower = CM_DROP * lam * JW.cm * (1 - JW.rise) + Math.max(0, dip) * 0.16 * lam + 0.015 * lam * Math.abs(brace) + 0.02 * lam * wide;
+    const lower = CM_DROP * lam * JW.cm * (1 - JW.rise) + softPos(dip, 0.05) * 0.16 * lam + 0.015 * lam * softAbs(brace, 0.15) + 0.02 * lam * wide;
     const blendW = (HANDOVER_IDLE + (HANDOVER - HANDOVER_IDLE) * active) * lam;
     let hCon = Infinity;
     for (const n of SIDES) {
@@ -2154,7 +2165,7 @@ export function createIronMan(renderer) {
       const swingAmp = (0.06 + 0.2 * clamp(walk, 0, 1.2)) * active;
       const ss = n === 'L' ? -1 : 1;
       const armSwing = ez.arm[n].to(ss * swingAmp * Math.cos(2 * Math.PI * (psi + 0.08)) - 0.04 * clamp(walk, 0, 1) + JW.arms, sdt);
-      const fwd = Math.max(0, armSwing + 0.08);
+      const fwd = softPos(armSwing + 0.08, 0.05);
       const other = n === 'L' ? 'R' : 'L';
       const guard = ez.guard[n].to(st.aim[other].has && !A.has ? 1 - clamp(walk * 1.5, 0, 1) : 0, sdt); // the off hand, while the other fires standing
       const clavY = -s * (0.05 * fwd - 0.04 * guard);
@@ -2167,9 +2178,9 @@ export function createIronMan(renderer) {
       gA.clav.updateMatrixWorld(true);
       // The elbow folds more on the forward swing, following the shoulder a beat late and a touch past
       // (its own spring): the forearm's follow-through. The off hand: a little back and out to balance
-      // the shot, elbow soft, palm turned in.
-      const elbow = ez.elbow[n].to(ELBOW_REST + 1.1 * Math.max(0, armSwing + 0.1) + 0.25 * guard + 0.3 * fold, sdt);
-      armPose(gA, armSwing * (1 - 0.5 * guard) - 0.1 * guard, ARM_OUT + 0.04 * clamp(walk, 0, 1) + 0.2 * guard + 0.06 * Math.abs(shift), elbow, ARM_PRONATE * (1 - guard), 0.12);
+      // the shot, elbow soft, palm turned in. (Resting on one leg, the arms a little out.)
+      const elbow = ez.elbow[n].to(ELBOW_REST + 1.1 * softPos(armSwing + 0.1, 0.05) + 0.25 * guard + 0.3 * fold, sdt);
+      armPose(gA, armSwing * (1 - 0.5 * guard) - 0.1 * guard, ARM_OUT + 0.04 * clamp(walk, 0, 1) + 0.2 * guard + 0.06 * softAbs(shift, 0.15), elbow, ARM_PRONATE * (1 - guard), 0.12);
       gA.sh.quaternion.copy(armQ.sh);
       gA.el.quaternion.copy(armQ.el);
       gA.wr.quaternion.copy(armQ.wr);
