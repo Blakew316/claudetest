@@ -53,8 +53,12 @@ const MAX_TILT = 1.05;
 const MAX_TILT_AIR = 0.9;
 const LAND_TIME = 0.6; // touchdown: compress, rebound once, settle
 const PUSH_TIME = 0.1; // the rear legs stay planted this long after launch, extending as they push off
+const LET_GO = 0.5; // a foot letting go of its star still lags the body by this share of the body's speed
+const IMPACT = 0.08; // a landing's kick to the body and abdomen is spread over this long
+const BRAKE = 0.25; // stopping to crouch, it brakes out of its walk over this long
 const WAVE = 0.53; // gait phase lag between neighbouring legs on a side: an alternating tetrapod (L1 R2 L3 R4 / R1 L2 R3 L4) with a slight ripple
 const FOOT_GAP = 7; // two feet never closer than this
+const STAND = 0.15; // a foot that has just come down stands at least this long before it lifts again (unless it must)
 const TURN_ARM = 28; // turning in place advances the gait as if walking this radius
 const TAP_TIME = 0.46;
 const LEG_SCALE = [1.24, 1.08, 0.94, 1.16]; // legs I..IV: I and IV longest, III shortest, as in a real spider
@@ -73,6 +77,8 @@ const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const scale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const ease = (u) => u * u * (3 - 2 * u);
+/** Minimum-jerk 0..1 (no jump in speed or acceleration at either end): how a limb reaches. */
+const minJerk = (u) => u * u * u * (10 + u * (6 * u - 15));
 /** 0 below a, 1 above b, eased between (a < b). */
 const smooth = (a, b, x) => ease(clamp((x - a) / (b - a), 0, 1));
 const frac = (x) => x - Math.floor(x);
@@ -154,6 +160,8 @@ export class Spider {
     this.pitch = 0;
     this.yawV = 0;
     this.pitchV = 0;
+    this.yawA = 0;
+    this.pitchA = 0;
     this.heading();
     // ...and the body frame drawn on screen: the heading tilted by the pose (pitch, roll).
     this.F = [...this.hF];
@@ -161,6 +169,8 @@ export class Spider {
     this.S = [...this.hS];
     this.aF = [...this.F]; // abdomen direction, lags behind F
     this.aD = [...this.F]; // ...as drawn: plus breathing and silk dabs
+    this.aL = [1, 0, 0]; // aD in the body frame (F, U, S), and its rate
+    this.aLV = [0, 0, 0];
     this.time = 0;
     this.mode = 'crawl';
     /** What it is doing, for anyone who wants to show it: pause, walk, settle, crouch, air, abseil, land. */
@@ -171,9 +181,13 @@ export class Spider {
     this.abseil = false;
     this.abKick = 0; // abdomen swing from launch and landing (rad, + is down), a damped spring
     this.abKickV = 0;
+    this.impact = null; // a landing's kick, delivered over the few frames the legs take the load
     this.airU = 0;
     this.speed = 0;
     this.speedV = 0;
+    this.gaitAmp = 0; // 0..1 how strongly the walk rocks the body, eased so it never pops
+    this.gaitAmpV = 0;
+    this.coastV = [0, 0, 0]; // walking velocity it brakes out of when it stops to crouch
     this.walking = false;
     this.intentT = 0.3;
     this.pauseT = 0;
@@ -183,6 +197,8 @@ export class Spider {
     this.settleT = 0;
     this.shuffle = null;
     this.gait = 0;
+    this.rock = 0; // phase the body rocks to: the gait's while crawling, coasting on after
+    this.rockRate = 0;
     this.loco = 0;
     this.waveRev = [false, false]; // per side: ripple runs rear to front (feet drifting forward past the body)
     this.travel = 0;
@@ -233,6 +249,10 @@ export class Spider {
           step: 1,
           stepDur: 0.2,
           lift: 6,
+          carry: [0, 0, 0], // the foot's speed as its step began, times the step's duration
+          footV: [0, 0, 0], // foot velocity over the last frame (from last, the foot a frame ago)
+          last: null,
+          planted: -1, // when the foot last came down
           rel: [0, 0, 0], // foot in the body frame, for air and feel
           relV: [0, 0, 0],
           launchAng: null, // pose (angles) it left the web in
@@ -389,16 +409,22 @@ export class Spider {
 
   /** Body-frame foot springs toward its pose: smooth, critically damped, carried along with the body. */
   followPose(leg, dt) {
+    // Still pushing off: the foot stays on its star while the body leaves, the leg extending,
+    // until the push is spent or the leg is at full stretch (it lets go, never dragged off).
     if (leg.holdT > 0) {
-      // Still pushing off: the foot stays on its star while the body leaves, the
-      // leg extending, until it is straight; then it swings into flight from there.
-      leg.holdT -= dt;
-      leg.rel = this.toLocal(leg.foot);
-      leg.relV = [0, 0, 0];
-      leg.airT = 0;
-      leg.launchAng = this.anglesOf(leg, leg.rel);
-      if (len(sub(leg.foot, leg.hip)) > (leg.femur + leg.tibia + leg.tarsus) * 0.96) leg.holdT = 0;
-      return;
+      const rel = this.toLocal(leg.foot);
+      const drift = scale(sub(rel, leg.rel), 1 / dt); // the star sliding back past the body
+      const full = leg.femur + leg.tibia + leg.tarsus;
+      leg.holdT = len(sub(leg.foot, this.legFrame(leg).hip)) > 0.95 * full ? 0 : leg.holdT - dt;
+      if (leg.holdT > 0) {
+        leg.rel = rel;
+        leg.relV = [0, 0, 0];
+        leg.airT = 0;
+        leg.launchAng = this.anglesOf(leg, rel); // so it swings into flight from where it let go
+        return;
+      }
+      // Letting go, the foot is pulled after the body over a few frames, not all in one.
+      leg.relV = scale(drift, LET_GO);
     }
     const target = leg.mode === 'feel' ? this.feelTarget(leg, dt) : this.airTarget(leg, dt);
     const k = leg.mode === 'feel' ? 70 : 45;
@@ -542,9 +568,13 @@ export class Spider {
       wy *= maxTurn / wl;
       wp *= maxTurn / wl;
     }
-    const k = 1 - Math.exp(-7 * dt);
-    this.yawV += (wy - this.yawV) * k;
-    this.pitchV += (wp - this.pitchV) * k;
+    // The rates follow through a critically damped spring: a turn's angular
+    // acceleration ramps up and down too, so it never starts or stops with a kick.
+    const W = 14;
+    this.yawA += ((wy - this.yawV) * W * W - this.yawA * 2 * W) * dt;
+    this.pitchA += ((wp - this.pitchV) * W * W - this.pitchA * 2 * W) * dt;
+    this.yawV += this.yawA * dt;
+    this.pitchV += this.pitchA * dt;
     this.yaw = wrap(this.yaw + this.yawV * dt);
     this.pitch = clamp(this.pitch + this.pitchV * dt, -MAX_TILT - 0.05, MAX_TILT + 0.05);
     this.heading();
@@ -571,12 +601,12 @@ export class Spider {
     this.F = F;
     this.U = U;
     this.S = norm(cross(F, U));
-    const gaitAmp = this.mode === 'crawl' ? Math.min(1, this.speed / CRUISE) : 0;
-    const bob = Math.sin(this.gait * Math.PI * 4) * 0.6 * gaitAmp + Math.sin(this.time * 1.9) * 0.35;
-    const sway = Math.sin(this.gait * Math.PI * 2) * 0.7 * gaitAmp;
+    const { gaitAmp } = this;
+    const bob = Math.sin(this.rock * Math.PI * 4) * 0.6 * gaitAmp + Math.sin(this.time * 1.9) * 0.35;
+    const sway = Math.sin(this.rock * Math.PI * 2) * 0.7 * gaitAmp;
     // Walking it runs low, and surges a little with each push of its legs.
     const crouch = 1.4 * gaitAmp;
-    const surge = Math.sin(this.gait * Math.PI * 4 + 0.8) * 0.5 * gaitAmp;
+    const surge = Math.sin(this.rock * Math.PI * 4 + 0.8) * 0.5 * gaitAmp;
     this.b = add(add(add(this.p, hU, bob - pose.lower - crouch), hS, sway + pose.shiftS), hF, pose.shiftF + surge);
   }
 
@@ -600,11 +630,23 @@ export class Spider {
       leg.ankle = add(foot, norm(lerp3(drop, line, leg.airy)), leg.tarsus);
       let a = sub(leg.ankle, hip);
       let d = len(a) || 1e-3;
+      // Near full reach femur and tibia ease to just short of straight (so the knee never
+      // pops), and the tarsus tips to keep the foot on its star for as long as it can.
       const max = leg.femur + leg.tibia - 0.5;
-      if (d > max) {
-        a = scale(a, max / d);
-        d = max;
-        leg.ankle = add(hip, a);
+      const soft = 3;
+      if (d > max - soft) {
+        const ds = max - soft * Math.exp((max - soft - d) / soft);
+        // The ankle: ds from the hip, a tarsus from the foot, as near its own pose as it can.
+        const n = scale(rel, 1 / rl);
+        const x = (ds * ds - leg.tarsus ** 2 + rl * rl) / (2 * rl);
+        const r2 = ds * ds - x * x;
+        const c = add(hip, n, Math.min(x, ds));
+        const w = sub(leg.ankle, c);
+        // Out of reach it eases onto the line to the foot, rather than snapping onto it.
+        const r = r2 > 1 ? Math.sqrt(r2) : Math.max(0, 0.5 + r2 / 2);
+        leg.ankle = add(c, norm(add(w, n, -dot(w, n))), r);
+        a = sub(leg.ankle, hip);
+        d = len(a) || 1e-3;
       }
       const ax = scale(a, 1 / d);
       // Knee up, in the leg's own vertical plane (so it never strays into a neighbour's); eased so it never flips.
@@ -643,6 +685,29 @@ export class Spider {
     const moved = len(sub(this.p, prev));
     const turn = Math.acos(clamp(dot(prevF, this.hF), -1, 1));
 
+    // The walk rocks the body on the gait's phase, its strength easing in and out
+    // (critically damped) so stopping to leap never pops the body. Leaving the crawl
+    // the gait's tempo drops at once to the turning rate, so the rocking coasts down instead.
+    const amp = this.mode === 'crawl' ? Math.min(1, this.speed / CRUISE) : 0;
+    this.gaitAmpV += ((amp - this.gaitAmp) * 144 - this.gaitAmpV * 24) * dt;
+    this.gaitAmp += this.gaitAmpV * dt;
+    if (this.mode === 'crawl') {
+      this.rockRate = (this.gait - this.rock) / dt;
+      this.rock = this.gait;
+    } else {
+      this.rockRate *= Math.exp(-4 * dt);
+      this.rock += this.rockRate * dt;
+    }
+    if (this.impact) {
+      // A landing's kick arrives as a short push while the legs load, not all in one step.
+      const im = this.impact;
+      const f = smooth(0, IMPACT, im.t + dt) - smooth(0, IMPACT, im.t);
+      im.t += dt;
+      this.poseV.pitch += im.pitch * f;
+      this.poseV.lower += im.lower * f;
+      this.abKickV += im.ab * f;
+      if (im.t >= IMPACT) this.impact = null;
+    }
     // Pose springs: crouching, weight shifts and leans ease in and out.
     for (const key of Object.keys(this.pose)) {
       const k = 14;
@@ -673,12 +738,14 @@ export class Spider {
 
   /** The abdomen trails the body, wags with the stride, breathes, and dips to dab each silk anchor. */
   abdomen(dt) {
-    const gaitAmp = this.mode === 'crawl' ? Math.min(1, this.speed / CRUISE) : 0;
-    const wag = rotate(this.F, this.U, Math.sin(this.time * 1.3) * 0.06 + Math.sin(this.gait * Math.PI * 2) * 0.08 * gaitAmp);
-    this.aF = norm(lerp3(this.aF, wag, 1 - Math.exp(-(this.mode === 'jump' ? 3 : 5) * dt)));
-    // It swings, but never so far that it brushes the rear legs.
+    const wag = rotate(this.F, this.U, Math.sin(this.time * 1.3) * 0.06 + Math.sin(this.rock * Math.PI * 2) * 0.08 * this.gaitAmp);
+    // It swings, but never so far that it brushes the rear legs: the further it
+    // lags the harder it is drawn along, a soft stop rather than a jolt.
+    const lag0 = Math.acos(clamp(dot(this.aF, this.F), -1, 1));
+    const follow = (this.mode === 'jump' ? 3 : 5) * (1 + 6 * smooth(0.15, 0.25, lag0));
+    this.aF = norm(lerp3(this.aF, wag, 1 - Math.exp(-follow * dt)));
     const lag = Math.acos(clamp(dot(this.aF, this.F), -1, 1));
-    if (lag > 0.2) this.aF = norm(add(scale(this.F, Math.sin(lag - 0.2)), this.aF, Math.sin(0.2)));
+    if (lag > 0.22) this.aF = norm(add(scale(this.F, Math.sin(lag - 0.22)), this.aF, Math.sin(0.22)));
     const Sa = norm(cross(this.aF, this.U));
     const breathe = Math.sin(this.time * 2.1);
     this.breath = 1 + 0.03 * breathe;
@@ -693,10 +760,19 @@ export class Spider {
     if (this.dip > 0 && this.dipAt) {
       const down = rotate(this.aF, Sa, 0.3);
       const toward = norm(sub(add(this.b, this.F, -1), this.dipAt));
-      const goal = dot(toward, this.aF) > 0.5 ? norm(lerp3(down, toward, 0.5)) : down;
+      // Toward the anchor only while it lies behind, faded so the swing never snaps across.
+      const goal = norm(lerp3(down, toward, 0.5 * smooth(0.35, 0.65, dot(toward, this.aF))));
       aD = norm(lerp3(aD, goal, this.dip * 0.8));
     }
-    this.aD = aD;
+    // It has mass: the drawn abdomen follows that pose (held relative to the body)
+    // through a critically damped spring, so a fresh dab or a kick never snaps it.
+    const l = [dot(aD, this.F), dot(aD, this.U), dot(aD, this.S)];
+    for (let j = 0; j < 3; j++) {
+      this.aLV[j] += ((l[j] - this.aL[j]) * 400 - this.aLV[j] * 40) * dt;
+      this.aL[j] += this.aLV[j] * dt;
+    }
+    const a = norm(this.aL);
+    this.aD = norm(add(add(scale(this.F, a[0]), this.U, a[1]), this.S, a[2]));
   }
 
   /** Palps flick now and then (more often while it stands and feels), over a slow idle sway. */
@@ -726,13 +802,15 @@ export class Spider {
     run.silk.push({ x: n[0], y: n[1], z: n[2], s: run.silkSection, t: run.t });
     if (run.silk.length > SILK_CAP) run.silk.shift();
     this.dipAt = n;
-    this.dipT = 0;
+    // A new dab while the last is still down carries on from where the abdomen is (on the dab's rise).
+    this.dipT = this.dip > 0 ? 0.16 * (0.5 - Math.sin(Math.asin(clamp(1 - 2 * this.dip, -1, 1)) / 3)) : 0;
   }
 
   /** A new travel: drop whatever it was doing and get ready to jump (or, the first time, to abseil). */
   beginTravel(run, tr) {
     this.travelId = tr.id;
     this.midAir = this.mode === 'jump' && this.launched;
+    this.coastV = this.mode === 'crawl' ? [...this.v] : [0, 0, 0];
     this.mode = 'jump';
     this.jumps++;
     // Only a travel with no crouch is an abseil; every other one is a real leap.
@@ -763,12 +841,15 @@ export class Spider {
     const T = run.t - tr.t0;
     let flat = [tr.to[0] - tr.from[0], 0, tr.to[2] - tr.from[2]];
     flat = Math.hypot(flat[0], flat[2]) > 4 ? norm(flat) : norm([this.hF[0], 0, this.hF[2]]);
+    // It brakes out of its walk (velocity easing to rest) rather than stopping dead.
+    const tb = Math.min(T + dt, BRAKE); // tr.from is where it stood a step ago
+    const coast = scale(this.coastV, tb - (tb * tb) / BRAKE + tb ** 3 / (3 * BRAKE * BRAKE));
     if (T < aim) {
       // Aim: a quick pivot on the spot, feet stepping round, fast enough to be square-on in time.
       this.behaviour = 'aim';
-      this.p = [...tr.from];
+      this.p = add(tr.from, coast);
       const off = Math.abs(wrap(Math.atan2(flat[2], flat[0]) - this.yaw));
-      this.orient(flat, dt, 9, MAX_TILT, Math.max(1.2, (1.5 * off) / Math.max(0.08, aim - T)));
+      this.orient(flat, dt, 6, MAX_TILT, Math.max(1, (1.25 * off) / Math.max(0.1, aim - T)));
       return;
     }
     if (T < crouch) {
@@ -777,7 +858,7 @@ export class Spider {
       // Wind-up: sink deep, rock back over the rear legs, nose up a touch, and
       // a last quiver of tension just before the spring lets go.
       const quiver = Math.sin(T * 70) * 0.3 * smooth(0.7, 1, (T - aim) / (crouch - aim));
-      this.p = add(tr.from, this.hU, -(10 * k + quiver));
+      this.p = add(add(tr.from, coast), this.hU, -(10 * k + quiver));
       this.orient(flat, dt, 6, MAX_TILT, 1.2); // settles any last few degrees of the aim
       // The forelegs come up and point at the target.
       if (!this.abseil) for (const leg of this.legs) if (leg.k === 0 && leg.mode === 'plant') this.release(leg);
@@ -863,9 +944,7 @@ export class Spider {
     // The impact: the nose dips, the body compresses, the abdomen swings on.
     const hit = clamp(s / 110, 0.4, 1);
     this.poseT = zeroPose();
-    this.poseV.pitch -= 1.5 * hit;
-    this.poseV.lower += 16 * hit;
-    this.abKickV += 4.2 * hit;
+    this.impact = { t: 0, pitch: -1.5 * hit, lower: 16 * hit, ab: 4.2 * hit };
     // Front legs touch first, then the rest in a quick ripple.
     const order = [];
     for (let k = 0; k < LEG_COUNT / 2; k++) for (const side of [-1, 1]) order.push(this.legs[(side < 0 ? 0 : LEG_COUNT / 2) + k]);
@@ -1037,8 +1116,11 @@ export class Spider {
     if (!sh.queue.length && sh.t > sh.end) this.shuffle = null;
   }
 
-  /** Lift a foot and swing it to a star near target. Unless forced, a step that would land where it stands is skipped. */
-  startStep(leg, target, dur, lift, r = 12, force = true) {
+  /**
+   * Lift a foot and swing it to a star near target, in dur (up to most for a long reach).
+   * Unless forced, a step that would land where it stands is skipped.
+   */
+  startStep(leg, target, dur, lift, r = 12, force = true, most = 0.34) {
     const to = this.pickFoothold(leg, target, r) || target;
     leg.due = false;
     if (!force && len(sub(to, leg.foot)) < 3) return false;
@@ -1046,7 +1128,16 @@ export class Spider {
     leg.to = to;
     leg.step = 0;
     // A long reach takes a little longer: feet never whip.
-    leg.stepDur = Math.max(dur, Math.min(0.34, len(sub(to, leg.foot)) / 120));
+    leg.stepDur = Math.max(dur, Math.min(most, len(sub(to, leg.foot)) / 120));
+    // Leave at the speed the foot already had (zero from a plant): a foot caught from the
+    // air carries on (up to 240/s) and slows onto its star, never on down past it (carried
+    // down no more than 2.5 times the drop to the star, the path stays above it).
+    let carry = scale(leg.footV, leg.stepDur);
+    const down = Math.min(0, 2.5 * dot(sub(to, leg.foot), this.hU)) - dot(carry, this.hU);
+    if (down > 0) carry = add(carry, this.hU, down);
+    const cl = len(carry);
+    const cap = 240 * leg.stepDur;
+    leg.carry = cl > cap ? scale(carry, cap / cl) : carry;
     leg.lift = lift;
     leg.mode = 'step';
     return true;
@@ -1068,7 +1159,7 @@ export class Spider {
     const prevGait = this.gait;
     this.gait += (this.loco * dt) / STRIDE;
     const cycle = STRIDE / Math.max(1, this.loco);
-    const swing = clamp(cycle * 0.32, 0.13, 0.26);
+    const swing = clamp(cycle * 0.32, crouching ? 0.18 : 0.13, 0.26); // pivoting to aim, steps stay unhurried
     let stepping = this.legs.reduce((c, l) => c + (l.mode === 'step' ? 1 : 0), 0);
     // The ripple runs the way the feet on that side drift past the body: the
     // leg a foot drifts toward has always just stepped, so it lands with room.
@@ -1090,14 +1181,17 @@ export class Spider {
       if (leg.mode === 'step') {
         leg.step = Math.min(1, leg.step + dt / leg.stepDur);
         const u = leg.step;
-        // Lift, swing, place: the foot snaps up first, travels, reaches a touch past
-        // its star and settles back onto it.
-        const e = ease(clamp((u - 0.06) / 0.86, 0, 1));
-        const h = e + 0.09 * Math.sin(Math.PI * e) * e;
-        leg.foot = add(lerp3(leg.from, leg.to, h), this.hU, Math.sin(Math.PI * u ** 0.72) * leg.lift);
+        // Lift, swing, place: the foot peels up briskly (highest at u = 0.4), travels on
+        // a minimum-jerk path, and lowers softly onto its star: no pop at either end.
+        // A foot that was already moving (caught from the air, a raised foreleg) carries
+        // on at its own speed for a moment rather than stopping dead.
+        const h = minJerk(clamp((u - 0.04) / 0.88, 0, 1));
+        const up = (u * u * (1 - u) ** 3) / 0.03456;
+        leg.foot = add(add(lerp3(leg.from, leg.to, h), this.hU, up * leg.lift), leg.carry, u * (1 - u) ** 2);
         if (u >= 1) {
           leg.mode = 'plant';
           leg.foot = [...leg.to];
+          leg.planted = this.time;
         }
         continue;
       }
@@ -1113,17 +1207,20 @@ export class Spider {
       const wave = locomoting && frac(prevGait + go) > frac(this.gait + go);
       const urgent = off > leg.reach * 0.55 || twist > 0.5 || this.footAz(leg) > 2.45 || stretch > 0.96 || above || this.crowded(leg);
       // A beat is never dropped: the leg stays due until its neighbours leave it room to land,
-      // and until the neighbour it swings toward has nearly put its own foot down.
+      // until the neighbour it swings toward has nearly put its own foot down, and until its
+      // own foot, if it has only just come down, has stood a moment (it never stutters).
       if (wave || urgent) leg.due = true;
       const lead = leg.k + (rev ? 1 : -1);
       const ahead = lead >= 0 && lead < LEG_COUNT / 2 ? this.legs[(leg.side < 0 ? 0 : LEG_COUNT / 2) + lead] : null;
       const critical = stretch > 0.96 || above || this.footAz(leg) > 2.6; // never let a rear foot drag under the abdomen
-      const blocked = ahead && ahead.mode === 'step' && ahead.step < 0.6 && !critical;
+      const blocked = ((ahead && ahead.mode === 'step' && ahead.step < 0.6) || this.time - leg.planted < STAND) && !critical;
       if (leg.due && !blocked && stepping < 5) {
         const [lo, hi] = this.window(leg);
         const target = locomoting ? this.stepTarget(rest, cycle, swing, leg) : rest;
         const gaitAmp = Math.min(1, this.loco / CRUISE);
-        if (lo < hi && this.startStep(leg, target, swing, locomoting ? 5 + 4 * gaitAmp : 5, 12, critical)) stepping++;
+        // Walking, a foot is back down within half a cycle: it stands before its next beat, never stutters.
+        const most = locomoting ? Math.min(0.34, cycle * 0.5) : 0.34;
+        if (lo < hi && this.startStep(leg, target, swing, locomoting ? 5 + 4 * gaitAmp : 5, 12, critical, most)) stepping++;
       }
     }
     // Standing: one foot at a time eases back under the body when it has drifted.
@@ -1133,7 +1230,7 @@ export class Spider {
         let worst = null;
         let we = 0.22;
         for (const leg of this.legs) {
-          if (leg.mode !== 'plant') continue;
+          if (leg.mode !== 'plant' || this.time - leg.planted < STAND) continue;
           const nb = this.legs.filter((o) => o.side === leg.side && Math.abs(o.k - leg.k) === 1);
           if (nb.some((o) => o.mode === 'step')) continue;
           const [lo, hi] = this.window(leg);
@@ -1150,6 +1247,11 @@ export class Spider {
         if (worst) this.startStep(worst, this.legFrame(worst).rest, 0.24, 4);
         this.settleT = range(this.rand, 0.08, 0.16);
       }
+    }
+    // How fast each foot is going, so a step can leave at that speed.
+    for (const leg of this.legs) {
+      leg.footV = leg.last ? scale(sub(leg.foot, leg.last), 1 / dt) : [0, 0, 0];
+      leg.last = [...leg.foot];
     }
   }
 
