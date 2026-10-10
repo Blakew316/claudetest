@@ -37,6 +37,7 @@ import { createIronMan } from './ironman.js';
 const AVATAR = 'ironman';
 
 export const FOV = 50;
+const MSAA = 4; // samples for the scene's buffers on a 1x screen (edges of the suit's plates and the stars)
 // Star sprites are sized in reference pixels: pixels of a 900px-tall frame. One
 // is uScale / REF_SCALE device pixels, so a star keeps its share of the frame
 // (and the field its density and brightness) on any window or screen.
@@ -462,7 +463,9 @@ export function createView3D(canvas) {
   const fog = new THREE.FogExp2(BG, 0.0005);
   scene.fog = fog;
   const camera = new THREE.PerspectiveCamera(FOV, 1, 2, 60000);
-  const composer = new EffectComposer(renderer);
+  // The scene is drawn into the composer's buffers, which the canvas's antialiasing does not reach; they get
+  // their own MSAA where the screen is coarse enough to need it (see resize).
+  const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: MSAA }));
   composer.addPass(new RenderPass(scene, camera));
   composer.addPass(new UnrealBloomPass(new THREE.Vector2(512, 512), 0.5, 0.35, 0.3));
   composer.addPass(new OutputPass());
@@ -496,6 +499,14 @@ export function createView3D(canvas) {
     size.h = h;
     renderer.setPixelRatio(dpr);
     renderer.setSize(w, h, false);
+    // A 1.5x+ screen hides the stairs, and its multisampled half-float buffers would be heavy.
+    const samples = dpr < 1.5 ? MSAA : 0;
+    if (composer.renderTarget1.samples !== samples) {
+      for (const rt of [composer.renderTarget1, composer.renderTarget2]) {
+        rt.samples = samples;
+        rt.dispose(); // rebuilt with the new sample count on next use
+      }
+    }
     composer.setPixelRatio(dpr);
     composer.setSize(w, h);
     camera.aspect = w / h;
