@@ -35,6 +35,8 @@ import { createIronMan } from './ironman.js';
 import { createPortal } from './portal.js';
 import { FADE as DUEL_FADE } from '../sim/fight.js';
 import { setSuitSurroundings, suitFrame, suitQuality } from './ironman-model.js';
+import { createDistortPass } from './distort.js';
+import { offset as shakeAt } from './shake.js';
 
 /** Who crawls the clusters: 'ironman' (the suit, hovering and flying) or 'spider'. */
 const AVATAR = 'ironman';
@@ -501,6 +503,9 @@ export function createView3D(canvas) {
   // their own MSAA where the screen is coarse enough to need it (see resize).
   const composer = new EffectComposer(renderer, new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, samples: MSAA }));
   composer.addPass(new RenderPass(scene, camera));
+  // The blasts' heat haze and shock fronts bend the light behind them (see distort.js), before the bloom.
+  const heat = createDistortPass(renderer);
+  composer.addPass(heat.pass);
   composer.addPass(new UnrealBloomPass(new THREE.Vector2(512, 512), 0.5, 0.35, 0.3));
   composer.addPass(new OutputPass());
   const hero = AVATAR === 'ironman' ? createIronMan(renderer) : null;
@@ -561,6 +566,7 @@ export function createView3D(canvas) {
     }
     composer.setPixelRatio(dpr);
     composer.setSize(w, h);
+    heat.setSize(w * dpr, h * dpr);
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     shared.uScale.value = (h * dpr) / 2 / Math.tan((FOV * Math.PI) / 360);
@@ -832,6 +838,15 @@ export function createView3D(canvas) {
     camera.rotateY(hy);
     camera.rotateX(hp);
     camera.rotateZ(bank + (c.roll || 0) + 0.002 * Math.sin(t * 0.61 + 0.9));
+    // Shaken by blasts striking home (see shake.js): a jolt that dies away in a few tenths of a second.
+    const sk = shakeAt(t);
+    if (sk.yaw || sk.pitch || sk.roll) {
+      camera.translateX(sk.x * c.dist);
+      camera.translateY(sk.y * c.dist);
+      camera.rotateY(sk.yaw);
+      camera.rotateX(sk.pitch);
+      camera.rotateZ(sk.roll);
+    }
     camera.updateMatrixWorld();
     // Haze by the scale of the scene, not by how close the shot is: filming him close up
     // must not fog out his own ball behind him.
@@ -1195,6 +1210,8 @@ export function createView3D(canvas) {
       W.silk.geometry.computeBoundingSphere();
     }
 
+    // The blasts' heat distortion, and the brightest flash of either fighter on the dust (see distort.js).
+    heat.render(camera, shared.uFlashP.value, shared.uFlashK.value);
     composer.render();
     silhouette();
   }
