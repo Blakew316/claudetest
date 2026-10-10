@@ -108,24 +108,28 @@ const ARM_HANG = 0.6; // walking arms hang this much along the world's down rath
 const ARM_OUT = 0.14; // the arms hang this far out from the sides (rad), clear of the suit
 const ARM_PRONATE = 0.3; // ... the palms turned this far from facing the thighs toward the back (rad)
 const ELBOW_REST = 0.33; // a relaxed elbow's bend (rad)
-// A look round to a new word is paced as a person's head turns (at most ~350 degrees a second), not
-// snapped there however far it is.
-const LOOK_RATE = 6;
+// A look round to a new word is paced as a person's head turns deliberately (at most ~200 degrees a
+// second), not snapped there however far it is; and once on a word it stays at least LOOK_HOLD (s) before
+// another word draws it (the head does not dart between words). The arm comes up for a word only once the
+// eyes are on it: it starts after LOOK_LEAD[0] and is on its way by LOOK_LEAD[1] (s).
+const LOOK_RATE = 3.5;
+const LOOK_HOLD = 0.6;
+const LOOK_LEAD = [0.1, 0.3];
 // Recoil. The hand's kick (spring rad/s, damping) and how far it drives the hand back along the beam
 // (share of the arm's reach), climbs the muzzle and flicks the wrist back (rad), at a kick of 1.
-const RECOIL_W = 22;
-const RECOIL_Z = 0.6;
-const RECOIL_BACK = 0.17;
-const RECOIL_CLIMB = 0.18;
-const RECOIL_FLICK = 0.3;
+const RECOIL_W = 17;
+const RECOIL_Z = 0.55;
+const RECOIL_BACK = 0.26;
+const RECOIL_CLIMB = 0.26;
+const RECOIL_FLICK = 0.36;
 // ... and the shoulder girdle and trunk giving under it (spring), the trunk turning and rocking back (rad).
-const KICK_W = 12;
+const KICK_W = 9;
 const KICK_Z = 0.7;
-const KICK_TURN = 0.09;
-const KICK_ROCK = 0.11;
+const KICK_TURN = 0.12;
+const KICK_ROCK = 0.17;
 // ... and the body pushed back along the beams through his legs (leg lengths), the knees giving a little.
-const KICK_PUSH = 0.06;
-const KICK_SINK = 0.02;
+const KICK_PUSH = 0.09;
+const KICK_SINK = 0.03;
 
 /*
  * The thumb. The model's rest thumb juts out of the palm, which reads as stuck on, so it is posed in the
@@ -579,14 +583,16 @@ export function createIronMan(renderer) {
     seen: new Map(), // word id -> {t: first seen, p: last reach}
     landDipArmed: false,
     look: { y: 0, p: 0 }, // where the head is headed for, moving at most LOOK_RATE
+    lookId: -1, // the word the head is on, since lookT
+    lookT: -9,
     aimHigh: { L: 0, R: 0 }, // how far over AIM_UP each arm's word is (rad, by its aim's weight)
   };
   const ez = {
     walk: spring(5), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), att: spring(9), hover: spring(6),
     speed: spring(6), active: spring(6), pelvisY: spring(PELVIS_W), sway: spring(9, 0.9), land: spring(9, 0.55),
-    hips: spring(5, 0.9), twist: spring(7, 0.9), lookY: spring(12, 0.85), lookP: spring(12, 0.85),
+    hips: spring(5, 0.9), twist: spring(7, 0.9), lookY: spring(8, 0.9), lookP: spring(8, 0.9),
     shift: spring(1.6, 0.9), brace: spring(4, 0.9), wide: spring(4, 0.9), lean: spring(5, 0.9),
-    arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(9, 0.9), R: spring(9, 0.9) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
+    arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(7, 0.75), R: spring(7, 0.75) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
     gx: spring(GRADE_W), gz: spring(GRADE_W), gOff: spring(GROUND_W), hV: spring(40), pushX: spring(11, 0.9), pushZ: spring(11, 0.9), apa: spring(10),
     hurry: spring(10), elev: spring(7), go: spring(14), ext: spring(6),
     // A blast's kick through the arm: back along the beam within ~50 ms, a touch past rest on the
@@ -1613,7 +1619,7 @@ export function createIronMan(renderer) {
     perp(upv, d, heading);
     // Elbow: soft, folding as the blast drives the hand back along the beam (out in front of him,
     // never back into the chest).
-    const ext = clamp(0.985 - RECOIL_BACK * rec, 0.8, 0.99);
+    const ext = clamp(0.985 - RECOIL_BACK * rec, 0.72, 0.99);
     const r = ext * (LU + LF);
     const cosA = clamp((LU * LU + r * r - LF * LF) / (2 * LU * r), -1, 1);
     const ang = Math.acos(cosA);
@@ -2145,17 +2151,24 @@ export function createIronMan(renderer) {
       nT++;
       if (!newest || st.seen.get(t.id).t > st.seen.get(newest.id).t) newest = t;
     }
+    // Hold the look on the word it is on for LOOK_HOLD before the newest draws it.
+    const held = tgt.L && tgt.L.id === st.lookId ? tgt.L : tgt.R && tgt.R.id === st.lookId ? tgt.R : null;
+    if (held && now - st.lookT < LOOK_HOLD) newest = held;
+    else if (newest && newest.id !== st.lookId) {
+      st.lookId = newest.id;
+      st.lookT = now;
+    }
     if (newest) {
       a3.set(newest.at[0] - spider.p[0], newest.at[1] - (st.gy + 1.6 * lam), newest.at[2] - spider.p[2]);
       lookY = Math.atan2(a3.dot(leftV), a3.x * heading.x + a3.z * heading.z);
       lookP = -Math.atan2(a3.y, Math.hypot(a3.x, a3.z));
     } else if (!st.aim.L.has && !st.aim.R.has) {
-      // Idle glances: a look somewhere every couple of seconds, held, then back.
+      // Idle glances: now and then a look somewhere, held, then back.
       const idle = (1 - clamp(walk * 2, 0, 1)) * (1 - crouch);
-      const slot = Math.floor(now / 2.3);
-      const on = hash(slot * 3.1) > 0.35 ? 1 : 0;
-      lookY += idle * on * (hash(slot) - 0.5) * 1.6;
-      lookP += idle * on * (hash(slot + 0.37) - 0.6) * 0.5;
+      const slot = Math.floor(now / 3.6);
+      const on = hash(slot * 3.1) > 0.5 ? 1 : 0;
+      lookY += idle * on * (hash(slot) - 0.5) * 1.0;
+      lookP += idle * on * (hash(slot + 0.37) - 0.6) * 0.35;
     }
     const twist = ez.twist.to(clamp(nT ? twistTo / nT : 0, -0.75, 0.75) * (1 - g), sdt);
     const lk = st.look;
@@ -2517,7 +2530,8 @@ export function createIronMan(renderer) {
         gA.wr.quaternion.slerp(armQ.wr, LW.arm);
       }
       // Aim: on its word, the direction eased (a quick, smooth move between words).
-      const a = clamp(ez.aim[n].to((A.has ? 1 : 0) * (1 - g) * (1 - cr) * (1 - LW.on), sdt), 0, 1);
+      const lead = ez.aim[n].x > 0.3 ? 1 : smooth(LOOK_LEAD[0], LOOK_LEAD[1], now - A.seen);
+      const a = clamp(ez.aim[n].to((A.has ? lead : 0) * (1 - g) * (1 - cr) * (1 - LW.on), sdt), 0, 1);
       aimW[n] = a;
       const rec = ez.recoil[n].to(0, sdt);
       const kb = ez.kick[n].to(0, sdt);
