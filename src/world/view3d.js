@@ -2,10 +2,10 @@
  * WebGL renderer (three.js) for the crawl.
  *
  * Environment: per section a small universe, a dense star cluster (tens of
- * thousands of soft stars with hot white cores, depth of field, twinkle and
- * drift) laced with a fine constellation web; tidal streams of stardust
- * between clusters; floating dust and a deep background starfield for
- * parallax. The stars brighten around the spider as it moves through them.
+ * thousands of crisp stars in true stellar colours, the brightest with thin
+ * diffraction spikes; depth of field, scintillation and drift) laced with a
+ * fine constellation web; tidal streams of stardust between clusters;
+ * floating dust and a deep background starfield for parallax. The stars brighten around the spider as it moves through them.
  * No glow sprites: the light lives in the stars.
  *
  * Spider: shaded 3D anatomy, all real geometry: tapered limb segments with
@@ -33,6 +33,10 @@ import { LEG_COUNT, MAX_TENTACLES } from '../core/contracts.js';
 import { ABDOMEN, CEPH, SCALE as SS } from './spider.js';
 
 export const FOV = 50;
+// Star sprites are sized in reference pixels: pixels of a 900px-tall frame. One
+// is uScale / REF_SCALE device pixels, so a star keeps its share of the frame
+// (and the field its density and brightness) on any window or screen.
+const REF_SCALE = 450 / Math.tan((FOV * Math.PI) / 360);
 const TENTACLE_DOTS = 200;
 const SILK_SUB = 5;
 const SILK_MAX = 520 * SILK_SUB + 24;
@@ -225,11 +229,19 @@ function writeSegments(line, arr) {
 }
 
 /**
- * Soft particles with depth of field: crisp at the focal distance, swelling
- * into faint discs in front and behind; they twinkle and drift like dust in
- * air, and brighten near the spider. Needs 'bright' and 'phase' attributes.
+ * Stars with depth of field. In focus each star is a point-spread function:
+ * a crisp Gaussian core sized by its apparent brightness, not its world size,
+ * so stars near the camera resolve into sharp points rather than swelling into
+ * blobs; a saturated star bloats a little, gains a faint tight halo and, for
+ * the brightest, thin diffraction spikes. Out of focus a star spreads into a
+ * faint disc holding the same light. Colour follows stellar temperature
+ * (mostly faint orange and red, few bright blue-white), faint stars leaning to
+ * the section hue so each ball keeps its colour. Very subtle scintillation,
+ * slow drift, brighter near the spider. Needs 'bright', 'phase' and 'hot'.
+ * stellar: how much of the temperature palette applies (0 for dust motes);
+ * spikes: diffraction spike strength; giants: share drawn as giants (amber or blue-white).
  */
-function depthPoints(shared, { size, max, drift, dof }) {
+function depthPoints(shared, { size, max, drift, dof, stellar = 1, spikes = 0, giants = 0 }) {
   return new THREE.ShaderMaterial({
     uniforms: {
       ...shared,
@@ -240,18 +252,34 @@ function depthPoints(shared, { size, max, drift, dof }) {
       uDof: { value: dof },
       uGain: { value: 1 },
       uFogK: { value: 1 },
+      uStellar: { value: stellar },
+      uSpikes: { value: spikes },
+      uGiants: { value: giants },
     },
     vertexShader: `
       attribute float bright;
       attribute float phase;
       attribute float hot;
-      uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDpr, uDrift, uDof, uGain, uLightR, uLightGain, uFogK, uClear;
+      uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDrift, uDof, uGain, uLightR, uLightGain, uFogK, uClear, uStellar, uSpikes, uGiants;
       uniform vec3 uLight;
-      varying float vA;
+      uniform vec3 uColor;
+      varying vec3 vC;
+      varying float vSize;
+      varying float vSigma;
+      varying float vHalo;
+      varying float vSpike;
+      varying float vSpikeL;
       varying float vBlur;
-      varying float vHot;
-      varying float vTemp;
-      varying float vGlint;
+      varying float vDisc;
+      const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
+      // Star colours (linear), cool to hot: M, K, G, F, A, B.
+      vec3 stellar(float t) {
+        vec3 c = mix(vec3(1.0, 0.233, 0.084), vec3(1.0, 0.462, 0.171), smoothstep(0.0, 0.25, t));
+        c = mix(c, vec3(1.0, 0.748, 0.448), smoothstep(0.25, 0.48, t));
+        c = mix(c, vec3(1.0, 0.933, 0.828), smoothstep(0.48, 0.66, t));
+        c = mix(c, vec3(0.638, 0.748, 1.0), smoothstep(0.66, 0.84, t));
+        return mix(c, vec3(0.319, 0.477, 1.0), smoothstep(0.84, 1.0, t));
+      }
       void main() {
         vec3 p = position + uDrift * vec3(
           sin(uTime * 0.21 + phase * 6.2831),
@@ -260,11 +288,14 @@ function depthPoints(shared, { size, max, drift, dof }) {
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
         float depth = max(1.0, -mv.z);
         float px = uSize * uScale / depth;
+        float k = uScale / ${REF_SCALE.toFixed(2)};
         float blur = uDof * clamp(abs(depth - uFocus) / uFocus - 0.12, 0.0, 1.3);
-        float grow = 1.0 + blur * 4.0;
-        gl_PointSize = clamp(px * grow, 1.0, uMax * uDpr);
-        float tw = 0.72 + 0.28 * sin(uTime * (0.7 + phase * 1.9) + phase * 31.0);
-        float energy = min(1.0, px) / pow(grow, 1.6);
+        // Scintillation, very subtle: two quick, incommensurate flickers per star.
+        float tw = 1.0 + 0.05 * sin(uTime * (2.1 + phase * 2.9) + phase * 41.0) + 0.03 * sin(uTime * (4.3 + phase * 3.7) + phase * 17.0);
+        // Apparent brightness: fades below a pixel (toward inverse-square, so distant
+        // balls keep their dark gaps), rises gently as a star comes close.
+        float rpx = px / k;
+        float prox = pow(min(rpx, 1.0), 1.3) * (1.0 + 0.5 * log2(max(rpx, 1.0)));
         float dl = distance(p, uLight);
         float lit = uGain + uLightGain * exp(-dl * dl / (uLightR * uLightR));
         float fz = uFog * depth * uFogK;
@@ -275,38 +306,75 @@ function depthPoints(shared, { size, max, drift, dof }) {
         float lateral = length(mv.xy / depth - lv.xy / ld) * ld;
         float front = 1.0 - smoothstep(ld - 40.0, ld - 6.0, depth);
         float clear = 1.0 - 0.88 * front * (1.0 - smoothstep(uClear * 0.3, uClear, lateral));
-        vA = bright * tw * energy * lit * clear * exp(-fz * fz);
-        vBlur = clamp(blur, 0.0, 1.0);
-        vHot = hot;
-        // Star temperature from the per-star phase: most near the section hue,
-        // some warmer or cooler, a rare few amber or blue-white giants.
-        vTemp = fract(phase * 13.73) * 2.0 - 1.0;
-        // Only the brightest, sharpest, large-enough stars get a glint.
-        vGlint = smoothstep(0.85, 1.0, bright) * (1.0 - clamp(blur, 0.0, 1.0)) * smoothstep(3.0, 7.0, gl_PointSize);
+        // 0.62: the Gaussian core spreads a star's light over a few pixels; this keeps
+        // the frame's total light where it was with one-pixel dots.
+        float F = 0.62 * bright * prox * lit * clear * tw * exp(-fz * fz);
+        // A saturated star bloats a little (soft roll-off), it never becomes a blob.
+        float peak = min(F, 1.0) + 0.6 * log(max(F, 1.0));
+        // Core width in reference pixels; the device width keeps the same look once
+        // the pixel grid is counted (a finer grid would otherwise give crisper,
+        // brighter peaks and more bloom on a retina screen); the amplitude keeps the light.
+        float sc = 0.55 + 0.3 * sqrt(max(F - 1.0, 0.0));
+        float sd2 = max((sc * sc + 0.0833) * k * k - 0.0833, 0.09);
+        vSigma = sqrt(sd2);
+        peak *= sc * sc * k * k / sd2;
+        vHalo = 0.07 * smoothstep(0.7, 2.2, F);
+        vSpike = uSpikes * smoothstep(1.15, 2.2, F) * (1.0 - smoothstep(0.1, 0.5, blur));
+        vSpikeL = (4.0 + 10.0 * smoothstep(1.15, 3.0, F)) * k;
+        // The sprite is just big enough for the light above the noise floor.
+        float rad = vSigma * sqrt(2.0 * log(max(peak, 0.004) / 0.004));
+        if (vHalo > 0.004) rad = max(rad, 2.4 * vSigma * log(vHalo / 0.004));
+        if (vSpike > 0.0) rad = max(rad, vSpikeL);
+        // Defocus: a disc whose size depends on depth alone (not on how bright the
+        // star is), kept small so a star in front never becomes a soft blob.
+        float coc = min(uScale / depth * min(uSize, 1.2) * blur * 4.0, min(uMax, 10.0) * k);
+        float S = clamp(max(2.0 * rad, coc), 1.0, uMax * k);
+        vBlur = smoothstep(1.0, 2.2, coc / max(2.0 * rad, 1.0));
+        vDisc = clamp(2.5 * k * k / (S * S), 0.04, 1.0);
+        vSize = S;
+        // Temperature from the per-star phase: faint stars mostly cool, bright
+        // and young (hot-region) ones bluer; giants split amber and blue-white.
+        float u = fract(phase * 13.73);
+        float tq = pow(u, mix(2.8, 0.8, clamp(bright * 0.8 + hot * 0.6, 0.0, 1.0)));
+        float giant = fract(phase * 7.31) < uGiants ? 1.0 : 0.0;
+        tq = mix(tq, u < 0.35 ? 0.1 + 0.4 * u : 0.7 + 0.43 * (u - 0.35), giant);
+        vec3 bb = stellar(tq);
+        float Lt = dot(uColor, LUMA);
+        // At the section colour's brightness, cool stars a little dimmer than hot ones.
+        vec3 star = bb * (Lt * mix(0.7, 1.05, tq) / max(dot(bb, LUMA), 0.05));
+        // Faint stars lean to the section hue so the ball keeps its colour; resolved ones show their own.
+        float w = uStellar * mix(0.2, 0.72, smoothstep(0.45, 1.6, F));
+        vC = mix(uColor, star, w) * peak;
+        gl_PointSize = S;
         gl_Position = projectionMatrix * mv;
       }`,
     fragmentShader: `
-      uniform vec3 uColor;
-      varying float vA;
+      uniform float uScale;
+      varying vec3 vC;
+      varying float vSize;
+      varying float vSigma;
+      varying float vHalo;
+      varying float vSpike;
+      varying float vSpikeL;
       varying float vBlur;
-      varying float vHot;
-      varying float vTemp;
-      varying float vGlint;
+      varying float vDisc;
       void main() {
-        vec2 q = gl_PointCoord - 0.5;
-        float d = length(q);
-        if (d > 0.5) discard;
-        float sharp = smoothstep(0.5, 0.06, d);
-        float disc = smoothstep(0.5, 0.4, d) * (0.55 + 0.45 * smoothstep(0.15, 0.45, d));
-        // Hot stars burn toward white at the core of the cluster.
-        vec3 c = mix(uColor, vec3(1.0, 0.97, 0.92), vHot * 0.5) * (1.0 - vHot * 0.25);
-        float t = abs(vTemp);
-        vec3 tint = vTemp > 0.0 ? vec3(1.0, 0.8, 0.58) : vec3(0.74, 0.86, 1.0);
-        c *= mix(vec3(1.0), tint, t * t * 0.45);
-        c = mix(c, vTemp > 0.0 ? vec3(1.0, 0.74, 0.4) : vec3(0.78, 0.88, 1.0), smoothstep(0.94, 1.0, t) * 0.55);
-        // A tiny four-point diffraction glint on the brightest stars (inside the point, never a halo).
-        float glint = (exp(-abs(q.x) * 34.0) * exp(-abs(q.y) * 3.2) + exp(-abs(q.y) * 34.0) * exp(-abs(q.x) * 3.2)) * vGlint;
-        gl_FragColor = vec4(c * vA * (mix(sharp, disc, vBlur) + glint * 0.55), 1.0);
+        vec2 q = (gl_PointCoord - 0.5) * vSize;
+        float r2 = dot(q, q);
+        float R = 0.5 * vSize;
+        if (r2 > R * R) discard;
+        float r = sqrt(r2);
+        float core = exp(-r2 / (2.0 * vSigma * vSigma));
+        float halo = vHalo * exp(-r / (2.4 * vSigma));
+        // Thin four-point diffraction spikes tapering to nothing, fixed to the
+        // screen like a telescope's vanes (never a soft cross or a halo).
+        vec2 a = abs(q);
+        float k = uScale / ${REF_SCALE.toFixed(2)};
+        float sw = 0.5 * k;
+        vec2 taper = max(vec2(0.0), 1.0 - a / vSpikeL);
+        float spike = vSpike * 0.3 * (exp(-a.y * a.y / (2.0 * sw * sw)) * taper.x * taper.x + exp(-a.x * a.x / (2.0 * sw * sw)) * taper.y * taper.y);
+        float disc = vDisc * smoothstep(R, R - k, r) * (0.65 + 0.35 * smoothstep(0.3 * R, 0.95 * R, r));
+        gl_FragColor = vec4(vC * mix(core + halo + spike, disc, vBlur), 1.0);
       }`,
     transparent: true,
     depthWrite: false,
@@ -403,7 +471,6 @@ export function createView3D(canvas) {
     uFog: { value: 0.0005 },
     uFocus: { value: 800 },
     uScale: { value: 500 },
-    uDpr: { value: 1 },
     uLight: { value: new THREE.Vector3() },
     uLightR: { value: 210 },
     uLightGain: { value: 0.55 },
@@ -427,7 +494,6 @@ export function createView3D(canvas) {
     camera.aspect = w / h;
     camera.updateProjectionMatrix();
     shared.uScale.value = (h * dpr) / 2 / Math.tan((FOV * Math.PI) / 360);
-    shared.uDpr.value = dpr;
     if (W) for (const l of W.fat) l.material.resolution.set(w, h);
   }
 
@@ -476,12 +542,12 @@ export function createView3D(canvas) {
     const mpos = new Float32Array(MOTES * 3);
     const mbase = Float32Array.from({ length: MOTES * 3 }, () => rnd() * MOTE_BOX);
     const mglow = Float32Array.from({ length: MOTES }, () => 0.05 + 0.08 * rnd());
-    const mm = depthPoints(shared, { size: 1, max: 5, drift: 0, dof: 0.6 });
+    const mm = depthPoints(shared, { size: 1, max: 5, drift: 0, dof: 0.6, stellar: 0 });
     mm.uniforms.uColor.value.set('#a8b8e0');
     const motes = new THREE.Points(pointsGeo(mpos, () => 0), mm);
     motes.frustumCulled = false;
     root.add(motes);
-    const dm = depthPoints(shared, { size: 1.1, max: 16, drift: 7, dof: 1.3 });
+    const dm = depthPoints(shared, { size: 1.1, max: 16, drift: 7, dof: 1.3, stellar: 0 });
     dm.uniforms.uColor.value.set('#8fa0c8');
     root.add(new THREE.Points(pointsGeo(dpos, () => 0.05 + 0.15 * rnd()), dm));
     // Deep background starfield, far beyond everything, for a sense of open space.
@@ -515,7 +581,7 @@ export function createView3D(canvas) {
         g.pos[i + 1] += b.y + rr * u * 0.7;
         g.pos[i + 2] += b.z + rr * sq * Math.sin(th);
       }
-      const m = depthPoints(shared, { size: 1.6, max: 5, drift: 0.5, dof: 0.3 });
+      const m = depthPoints(shared, { size: 1.6, max: 5, drift: 0.5, dof: 0.3, stellar: 0.7 });
       m.uniforms.uColor.value.set(SECTION_PALETTE[k % 7]).lerp(new THREE.Color('#9fb0d8'), 0.45);
       m.uniforms.uGain.value = 0.32;
       m.uniforms.uFogK.value = 0.2;
@@ -529,14 +595,17 @@ export function createView3D(canvas) {
       const big = [];
       for (let k = 0; k < n; k++) if (g.bright[k] > 1.2) big.push(k);
       // A real luminosity function: most stars faint, a few bright (gain is raised to match).
-      const points = new THREE.Points(pointsGeo(g.pos, (k) => Math.min(1, g.bright[k]) * (0.22 + 0.78 * rnd() ** 2.4), g.hot), depthPoints(shared, { size: 0.95, max: 7, drift: 1.2, dof: 0.5 }));
+      // The power on the structure's brightness sinks the micro-dust and haze, so voids,
+      // lanes and filaments read; only the brightest of these get spikes, and only up close.
+      const points = new THREE.Points(pointsGeo(g.pos, (k) => Math.min(1, g.bright[k]) ** 1.35 * (0.15 + 0.85 * rnd() ** 3.2), g.hot), depthPoints(shared, { size: 0.95, max: 7, drift: 1.2, dof: 0.5, spikes: 0.5 }));
       const bpos = new Float32Array(big.length * 3);
       const bhot = new Float32Array(big.length);
       big.forEach((k, j) => {
         bpos.set(g.pos.subarray(k * 3, k * 3 + 3), j * 3);
         bhot[j] = 0.6;
       });
-      const stars = new THREE.Points(pointsGeo(bpos, () => 1, bhot), depthPoints(shared, { size: 2.2, max: 12, drift: 0.8, dof: 0.6 }));
+      // The bright stars span a range too, so only a few saturate into spiked giants.
+      const stars = new THREE.Points(pointsGeo(bpos, () => 0.3 + 0.7 * rnd() ** 3, bhot), depthPoints(shared, { size: 2.2, max: 30, drift: 0.8, dof: 0.6, spikes: 1, giants: 1 }));
       // Constellation web between neighbouring stars.
       const eg = new THREE.BufferGeometry();
       eg.setAttribute('position', points.geometry.getAttribute('position'));
@@ -724,10 +793,13 @@ export function createView3D(canvas) {
       cl.tint.copy(grey).lerp(cl.color, cl.mix);
       for (const m of [cl.points.material, cl.stars.material]) {
         m.uniforms.uColor.value.copy(cl.tint);
-        m.uniforms.uGain.value = cl.gain * (m === cl.points.material ? 1.85 : 1);
+        // Points: raised to match the steep luminosity function. Bright stars: enough
+        // that the top few saturate into spiked giants, the rest stay crisp points.
+        m.uniforms.uGain.value = cl.gain * (m === cl.points.material ? 2.4 : 1.7);
       }
       cl.lines.material.uniforms.uColor.value.copy(cl.tint);
-      cl.lines.material.uniforms.uOpacity.value = (0.03 + 0.05 * cl.mix) * cl.gain;
+      // The web stays a faint lace under crisp stars rather than a net over them.
+      cl.lines.material.uniforms.uOpacity.value = (0.018 + 0.03 * cl.mix) * cl.gain;
     });
 
     // Word nodes recolour only when reading state changes.
