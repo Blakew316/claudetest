@@ -80,6 +80,8 @@ const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
 const scale = (a, s) => [a[0] * s, a[1] * s, a[2] * s];
 const lerp3 = (a, b, t) => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 const ease = (u) => u * u * (3 - 2 * u);
+/** The flight's acceleration as it leaves (see jump(): h'' = 0.65 ease''(0) along the way, the arc's -8 apex / air^2 up). */
+const launchAccel = (from, tr) => [(3.9 * (tr.to[0] - from[0])) / tr.air ** 2, (3.9 * (tr.to[1] - from[1]) - 8 * tr.apex) / tr.air ** 2, (3.9 * (tr.to[2] - from[2])) / tr.air ** 2];
 /** Minimum-jerk 0..1 (no jump in speed or acceleration at either end): how a limb reaches. */
 const minJerk = (u) => u * u * u * (10 + u * (6 * u - 15));
 /** 0 below a, 1 above b, eased between (a < b). */
@@ -860,14 +862,25 @@ export class Spider {
     const crouch = this.midAir ? 0 : tr.crouch;
     const aim = this.midAir ? 0 : Math.min(tr.aim || 0, crouch * 0.7);
     const T = run.t - tr.t0;
-    // (For whoever is drawn on it: how long the wind-up is, and how long until the launch.)
+    // (For whoever is drawn on it: how long the wind-up is, how much of it is the turn to face the
+    // target, and how long until the launch.)
     this.crouchDur = crouch;
+    this.aimDur = aim;
     this.launchIn = this.launched ? -1 : crouch - T;
     let flat = [tr.to[0] - tr.from[0], 0, tr.to[2] - tr.from[2]];
     flat = Math.hypot(flat[0], flat[2]) > 4 ? norm(flat) : norm([this.hF[0], 0, this.hF[2]]);
     // It brakes out of its walk (velocity easing to rest) rather than stopping dead.
     const tb = Math.min(T + dt, BRAKE); // tr.from is where it stood a step ago
     const coast = scale(this.coastV, tb - (tb * tb) / BRAKE + tb ** 3 / (3 * BRAKE * BRAKE));
+    // (The way the flight will head off, as it stands, and how fast it climbs over its first 0.4 s (as the
+    // arc below has it): whoever is drawn on it shapes the push to it.)
+    if (!this.launched && !this.abseil) {
+      const from = add(tr.from, coast);
+      this.launchV = add(scale(sub(tr.to, from), 0.35 / tr.air), UP, (4 * tr.apex) / tr.air);
+      const u1 = Math.min(1, 0.4 / tr.air);
+      this.launchRise = ((tr.to[1] - from[1]) * (0.35 * u1 + 0.65 * ease(u1)) + tr.apex * 4 * u1 * (1 - u1)) / (u1 * tr.air);
+      this.launchA = launchAccel(from, tr);
+    }
     if (T < aim) {
       // Aim: a quick pivot on the spot, feet stepping round, fast enough to be square-on in time.
       this.behaviour = 'aim';
@@ -902,6 +915,7 @@ export class Spider {
       const v0 = add(scale(sub(tr.to, this.launchAt), 1 / tr.air), UP, this.abseil ? 0 : (4 * tr.apex) / tr.air);
       // (Where the flight path heads from the launch, for whoever is drawn on it: the abseil eases off from rest.)
       this.launchV = this.abseil ? [0, 0, 0] : add(scale(sub(tr.to, this.launchAt), 0.35 / tr.air), UP, (4 * tr.apex) / tr.air);
+      this.launchA = this.abseil ? [0, 0, 0] : launchAccel(this.launchAt, tr);
       const push = scale([dot(v0, this.F), dot(v0, this.U), dot(v0, this.S)], -0.12);
       for (const leg of this.legs) if (leg.mode !== 'air') this.release(leg, push);
       this.spreadLaunch();

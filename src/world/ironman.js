@@ -192,22 +192,34 @@ const HANG_W = 8; // airborne, the feet come in under him this quickly (rad/s)
 const CARRY_W = 30; // how quickly the body takes up a kick in its speed (rad/s): see carry()
 const LAND_BLEND = 0.035; // landing, the legs settle from where they reached onto where they stand over about this long (s)
 /*
- * The leap (times to the launch in s, lengths in leg lengths). From where he stands he winds up: the
- * countermovement deepens from CM_LEAD before the launch to its bottom PUSH_T before it (the hips down
- * and back, the knees and ankles loading, the trunk forward, the arms swung back, his eyes on where he
- * is going); then he drives up, hips first, then the knees, then the heels and toes, the arms swinging
- * forward and up, and leaves the ground moving up fast as the jets light. The flight takes him from
- * where he left it, not from where the crawler's body is.
+ * The leap (times to the launch in s, lengths in leg lengths). While the crawler turns to face where it
+ * will leap he steps round to face it too; then, his feet under him, he winds up: the countermovement
+ * deepens from (at most) CM_LEAD before the launch to its bottom PUSH_T before it (the hips down and
+ * back, the knees and ankles loading, the trunk forward, the arms swung back, his eyes on where he is
+ * going), no faster than a body can drop on its own legs (CM_ACC); then he drives up, hips first, then
+ * the knees, then the heels and toes, the arms swinging forward and up, and leaves the ground as the jets
+ * light. The drive is as hard as the flight climbs (V_LEAP: a leap off level or downhill is a lean and a
+ * spring forward, not a jump up), and the flight takes him from where he left it, not from where the
+ * crawler's body is.
  */
 const CM_LEAD = 0.7;
 const PUSH_T = 0.24;
-const CM_DROP = 0.3; // the countermovement takes the pelvis this much lower ...
+const CM_BOTTOM = 0.6 * PUSH_T; // the dip bottoms out as the drive gets going
+const CM_DROP = 0.3; // the countermovement takes the pelvis this much lower (at most) ...
 const CM_BACK = 0.06; // ... and back
+const MPS = HEIGHT / 1.8; // a metre (a metre a second) in world units: he is 1.8 m tall
+const G_W = 9.81 * MPS; // gravity (world units/s^2)
+const CM_ACC = 0.85; // the dip's hardest acceleration (g): it never yanks him down faster than he could fall
+const V_LEAP = 3.2 * MPS; // a flight leaving upward this fast (world units/s) gets the full drive ...
+const LEAP_MIN = 0.3; // ... and the gentlest still this much of it
+const DRIVE_FWD = 0.1; // the drive takes the hips forward this much (at a level departure)
+const PIVOT_W = 5; // winding up, a planted foot turns on its ball at most this fast (rad/s) ...
+const PIVOT_CAP = 0.5; // ... and, both feet down in the dip, at most this far (rad): more takes a step
 const CM_PITCH = [0.2, 0.35, 0.2]; // pelvis, spine and chest pitched forward (rad)
 const CM_ARMS = 0.95; // the arms swung back (rad) ...
 const PUSH_ARMS = 0.55; // ... and through, forward and up, by the launch
 const PUSH_ROLL = 1.0; // the heels up off the ground by the launch (rad)
-const TAKEOFF_W = 5; // the flight takes him over from where he left at this rate (rad/s)
+const TAKEOFF_W = 2.6; // the flight takes him over from where he left at this rate (rad/s): about a gravity's pull, not a yank
 // As the toes leave the ground the ankles ease onto the end of the legs' reach about the hips (this
 // much of it) at this rate (rad/s), so the feet are taken up over a few frames as the knees lock, not in one.
 const LEAVE_REACH = 0.94;
@@ -228,6 +240,12 @@ const LAND_RISE = 0.9; // the rise takes this long, ending as the crawler walks 
 // never so short a body would brake harder than its legs can, nor so long it would go past the kneel.
 const LAND_DROP = 0.35;
 const LAND_DROP_V = 0.0014;
+// The landing is planned this long before touchdown (s): from then the legs reach for their places (the
+// front foot coming straight down onto its spot, the rear leg folded as it will kneel) ...
+const APPROACH_T = 0.35;
+// ... and his way in is eased to rest on the kneel point by this long after touchdown (s): carried on
+// into the kneel by his momentum, never springing back.
+const LAND_STOP = 0.32;
 const KNEEL_LEAD = 0.12; // the kneeling knee down this far ahead of its hip (the thigh near upright: a right angle at the knee)
 const KNEEL_SIT = 0.05; // the pelvis sat back this far
 const KNEEL_FRONT = 0.32; // the front ankle this far ahead of its hip (beside the kneeling knee) ...
@@ -515,9 +533,11 @@ export function createIronMan(renderer) {
     blendTau: LAND_BLEND, // ... over about this long
     pole: new THREE.Vector3(), // the knee's way (world), taken this much over the foot's own (the kneeling leg's)
     poleW: 0,
+    raise: new THREE.Vector3(), // landing: the ankle held this far off its place (world), coming down with the body
     off: new THREE.Vector3(), // the ankle from its hip (world axes), and how fast that changes: the leap hands it over
     offV: new THREE.Vector3(),
     leaving: false, // taking off: the toes leaving the ground
+    piv: 0, // winding up: how far it has turned on its ball since the dip began (rad)
   });
   const swingState = () => ({ u: 0, v0: 0, v1: 0, vy0: 0, m0: -1, mU: 1, tipOff: 0, a0: new THREE.Vector3(), a1: new THREE.Vector3(), yaw0: 0, rho0: 0, toe0: 0, n0: new THREE.Vector3(), tPos: new THREE.Vector3(), tNrm: new THREE.Vector3(), tYaw: 0, tRho: HS_ROLL, lift: 0, rel0: new THREE.Quaternion() });
   const st = {
@@ -541,13 +561,13 @@ export function createIronMan(renderer) {
     look: { y: 0, p: 0 }, // where the head is headed for, moving at most LOOK_RATE
   };
   const ez = {
-    walk: spring(5), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), att: spring(5), hover: spring(6),
+    walk: spring(5), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), att: spring(9), hover: spring(6),
     speed: spring(6), active: spring(6), pelvisY: spring(PELVIS_W), sway: spring(9, 0.9), land: spring(9, 0.55),
     hips: spring(5, 0.9), twist: spring(7, 0.9), lookY: spring(12, 0.85), lookP: spring(12, 0.85),
     shift: spring(1.6, 0.9), brace: spring(4, 0.9), wide: spring(4, 0.9), lean: spring(5, 0.9),
     arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(9, 0.9), R: spring(9, 0.9) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
     gx: spring(GRADE_W), gz: spring(GRADE_W), gOff: spring(GROUND_W), hV: spring(40), push: spring(8, 0.9), apa: spring(10),
-    hurry: spring(10), elev: spring(6),
+    hurry: spring(10), elev: spring(7), go: spring(14),
     // A blast's kick through the arm: back along the beam within ~50 ms, a touch past rest on the
     // way back, settled by ~0.25 s; and its push through the shoulder and torso, a beat later and slower.
     recoil: { L: spring(RECOIL_W, RECOIL_Z), R: spring(RECOIL_W, RECOIL_Z) },
@@ -579,33 +599,64 @@ export function createIronMan(renderer) {
   const euler = new THREE.Euler();
   const palms = { L: new THREE.Vector3(), R: new THREE.Vector3() };
   const landFrom = { L: [0, 0, 0], R: [0, 0, 0] };
+  const anc = new THREE.Vector3(); // the point on the ground he is carried over (see update)
+  const qBody = new THREE.Quaternion();
+  const qLegG = [0, 1, 2, 3].map(() => new THREE.Quaternion()); // scratch: a leg's bones on the ground, in flight, in the air
+  const qLegF = [0, 1, 2, 3].map(() => new THREE.Quaternion());
+  const qLegA = [0, 1, 2, 3].map(() => new THREE.Quaternion());
 
   /* ---------------- the three-point landing ---------------- */
 
   // Placed at touchdown: the ground he lands on, his heading then, the drop he comes in with, the
   // kneeling knee's and the fist's places on the ground; and his height, for the drop's speed.
-  const ld = { on: false, t: 0, ground: 0, h: new THREE.Vector3(), l: new THREE.Vector3(), h0: NaN, v0: 0, T: LAND_DROP, hK0: NaN, knee: new THREE.Vector3(), fist: new THREE.Vector3(), wrist: new THREE.Vector3(), lastY: 0, vy: 0, lastPH: 0 };
+  const ld = { on: false, t: 0, ground: 0, h: new THREE.Vector3(), l: new THREE.Vector3(), h0: NaN, v0: 0, T: LAND_DROP, hK0: NaN, knee: new THREE.Vector3(), fist: new THREE.Vector3(), wrist: new THREE.Vector3(), lastY: 0, vy: 0, lastPH: 0,
+    // Planned on the way down (APPROACH_T before touchdown): where he will kneel (K, on the crawler's landing
+    // point), how high the kneel holds his pelvis over the ground (kneelH), the feet's places (fp: foot states,
+    // planted), and his horizontal path into the kneel (a cubic from his way in to rest on K: no rebound).
+    // (approached: the legs reached their places before touchdown; drop: the pelvis over the kneel, for the rear leg.)
+    plan: false, approached: false, K: new THREE.Vector3(), kneelH: 0, fp: null, ap: null, a0: new THREE.Vector3(), av: new THREE.Vector3(), aT0: 0, aT: 1, drop: 0 };
   // The leap: how deep in the countermovement (cm), how far through the drive (push), the heels'
   // roll, the arms' swing; and, from the launch, the flight taking him over from where he left.
-  const JW = { cm: 0, push: 0, unfold: 0, rise: 0, heel: 0, arms: 0 };
-  const tk = { on: false, t: 0, off: new THREE.Vector3(), offV: new THREE.Vector3(), v: new THREE.Vector3(), last: new THREE.Vector3(), b0: new THREE.Vector3(), vL: new THREE.Vector3() };
+  // (t0: the countdown when the dip began, -1 before; depth: how deep it goes (leg lengths); drive: how hard
+  // the push is, by how steeply the flight climbs; fwd: how much of the departure is forward.)
+  const JW = { cm: 0, push: 0, unfold: 0, rise: 0, heel: 0, arms: 0, t0: -1, depth: CM_DROP, drive: 1, fwd: 0 };
+  const tk = { on: false, t: 0, T: 1, off: new THREE.Vector3(), offV: new THREE.Vector3(), v: new THREE.Vector3(), last: new THREE.Vector3(), p0: new THREE.Vector3(), vL: new THREE.Vector3(), aL: new THREE.Vector3(), dp: new THREE.Vector3(), dpT: 0 };
 
   /**
    * The leap's parts in time (into JW).
    * @param {number} tl seconds until the launch (< 0: not winding up)
    * @param {number} dur the whole wind-up (s)
+   * @param {number} aim the first of it the crawler spends turning to face the leap (s)
    * @param {number} tA seconds since the launch (< 0: not just launched)
+   * @param {boolean} ready his feet are down and turned his way: the dip may begin
+   * @param {number[]} launchV the way the flight heads off (world units/s)
+   * @param {number} rise how fast the flight climbs over its first moments (world units/s, < 0 diving)
+   * @param {number} lam leg length (world)
+   * @param {boolean} jumped a jump in time (a seek): the dip as if begun on time
    */
-  function jumpWeights(tl, dur, tA) {
+  function jumpWeights(tl, dur, aim, tA, ready, launchV, rise, lam, jumped) {
     if (tl >= 0) {
+      // The dip begins once he has stepped round to face his way and his feet are coming under him (or
+      // there is no more time to wait), as deep as the time left lets a body drop on its legs (min-jerk:
+      // peak acceleration 5.77 x depth / time^2). Its bottom is the drive's start: no pause there.
       const lead = Math.min(CM_LEAD, Math.max(dur, PUSH_T + 0.12));
-      JW.cm = minJerk(clamp((lead - tl) / (lead - PUSH_T), 0, 1)); // (at rest at its bottom)
+      if (jumped) JW.t0 = -1;
+      if (JW.t0 < 0 && tl <= lead && (ready || jumped || tl <= PUSH_T + 0.16)) {
+        JW.t0 = jumped ? lead : Math.max(tl, PUSH_T + 0.04);
+        const T = JW.t0 - CM_BOTTOM;
+        const speed = Math.hypot(launchV[0], launchV[1], launchV[2]);
+        JW.drive = clamp(rise / V_LEAP, LEAP_MIN, 1);
+        JW.fwd = speed > 1e-3 ? clamp(Math.hypot(launchV[0], launchV[2]) / speed, 0, 1) : 0;
+        JW.depth = Math.min(CM_DROP * (0.25 + 0.75 * JW.drive), (CM_ACC * G_W * T * T) / 5.77 / lam);
+      }
+      JW.cm = JW.t0 < 0 ? 0 : minJerk(clamp((JW.t0 - tl) / (JW.t0 - CM_BOTTOM), 0, 1));
       JW.push = clamp((PUSH_T - tl) / PUSH_T, 0, 1);
     } else if (tA >= 0) {
       JW.cm = 1;
       JW.push = 1;
     } else {
       JW.cm = JW.push = JW.unfold = JW.rise = JW.heel = JW.arms = 0;
+      JW.t0 = -1;
       return JW;
     }
     const p = JW.push;
@@ -614,7 +665,7 @@ export function createIronMan(renderer) {
     const k = clamp((p - 0.1) / 0.9, 0, 1);
     JW.rise = k * k;
     const h = clamp((p - 0.45) / 0.55, 0, 1);
-    JW.heel = PUSH_ROLL * h * h + (tA >= 0 ? 0.6 * smooth(0, 0.12, tA) : 0); // (on over the toe tips as they leave)
+    JW.heel = PUSH_ROLL * (0.3 + 0.7 * JW.drive) * h * h + (tA >= 0 ? 0.6 * smooth(0, 0.12, tA) : 0); // (on over the toe tips as they leave)
     // The arms: back with the dip, then through and up with the drive, and on into the flight.
     JW.arms = -CM_ARMS * JW.cm * (1 - smooth(0, 0.6, p)) + PUSH_ARMS * smooth(0.15, 0.95, p) * (tA >= 0 ? 1 - smooth(0, 0.3, tA) : 1);
     return JW;
@@ -622,23 +673,28 @@ export function createIronMan(renderer) {
 
   /**
    * The launch: the flight takes him over from where he is drawn, moving as he is (rising off his
-   * legs), not from where the crawler's body is; the difference dies away over the first of the flight.
+   * legs), not from where the crawler's body is: the difference in speed dies away over the first
+   * moments of the flight, as the jets take him (about a gravity's pull, never a yank), and the
+   * difference in height (he leaves standing tall; the crawler crouched) over its first half.
    * @param {object} spider the crawler as drawn
    * @param {number} dt frame time (s)
    */
   function beginTakeoff(spider, dt) {
     tk.on = true;
     tk.t = 0;
-    // (The crawler's body as drawn takes a step to get up to the flight's speed: the flight is taken
-    // from where it leaves, along the way it heads off, until the drawn body is properly under way.)
-    tk.b0.fromArray(spider.b);
+    // (On the crawler's flight path itself, which is smooth from its launch (its drawn body's pose springs
+    // back out of the crouch as it goes, which he has no part in), as it leaves taken from its launch
+    // speed and curve: as drawn it is a step late getting under way.)
     tk.vL.fromArray(spider.launchV);
-    tk.off.copy(group.position).addScaledVector(tk.v, dt).sub(tk.b0);
+    tk.aL.fromArray(spider.launchA);
+    tk.p0.fromArray(spider.p);
+    tk.off.copy(group.position).addScaledVector(tk.v, dt).sub(tk.p0);
     tk.offV.copy(tk.v).sub(tk.vL);
+    tk.T = clamp(0.45 * (spider.airDur || 2), 0.6, 1.1);
   }
 
   // How far into the pose each part is (0..1), by time from touchdown (see landWeights).
-  const LW = { on: 0, torso: 0, head: 0, fist: 0, arm: 0, rise: 0, roll: 0, sit: 0 };
+  const LW = { on: 0, torso: 0, head: 0, fist: 0, arm: 0, rise: 0, roll: 0 };
 
   /**
    * The landing's parts in time: the trunk folds and the head bows as he takes the impact, the fist
@@ -648,17 +704,16 @@ export function createIronMan(renderer) {
    */
   function landWeights(t) {
     if (t < 0) {
-      LW.on = LW.torso = LW.head = LW.fist = LW.arm = LW.rise = LW.roll = LW.sit = 0;
+      LW.on = LW.torso = LW.head = LW.fist = LW.arm = LW.rise = LW.roll = 0;
       return LW;
     }
     LW.on = smooth(0, LAND_G, t);
     LW.torso = smooth(0, 0.3, t) * (1 - riseAt(t, 0.1, 0.65));
     LW.head = smooth(0.05, 0.35, t) * (1 - riseAt(t, 0, 0.45));
     LW.fist = smooth(0.05, 0.19, t) * (1 - riseAt(t, 0.08, 0.45));
-    LW.arm = smooth(0, 0.3, t) * (1 - riseAt(t, 0.15, 0.7));
+    LW.arm = smooth(0, 0.42, t) * (1 - riseAt(t, 0.15, 0.7));
     LW.rise = minJerk(clamp((t - (LAND_TIME - 0.75 * LAND_RISE)) / (0.75 * LAND_RISE), 0, 1));
     LW.roll = 1 - riseAt(t, 0.5, 1);
-    LW.sit = smooth(0, 0.35, t) * (1 - riseAt(t, 0.25, 0.9));
     return LW;
   }
 
@@ -674,55 +729,70 @@ export function createIronMan(renderer) {
   }
 
   /**
-   * Touchdown: place the landing. The body is set, for a moment, where it will kneel and folded as it
-   * will be, to find where its parts meet the ground: the right knee ahead of its hip (the thigh
-   * reaching down from the low pelvis), the right foot behind it up on its toes (the shin back along
-   * the ground), the left foot well ahead, the right fist below and ahead of its shoulder. The frame
-   * then poses him properly; these places hold until he walks on.
+   * Plan the landing, on the way down (APPROACH_T before touchdown) or, with no way down to plan it on,
+   * at touchdown. He will kneel on the crawler's landing point, K. The body is set, for a moment, where
+   * it will kneel and folded as it will be, to find where its parts meet the ground: the right knee ahead
+   * of its hip (the thigh reaching down from the low pelvis), the right foot behind it up on its toes
+   * (the shin back along the ground), the left foot well ahead, the right fist below and ahead of its
+   * shoulder. These places hold until he walks on: the legs reach for them before touchdown, so nothing
+   * is snatched onto its place or slid along the ground after it. His way in is a cubic from where he
+   * is, moving as he is, to rest on K a moment after touchdown (his momentum carries him on into the
+   * kneel; he never springs back against it).
    * @param {object} spider the crawler as drawn
    * @param {number} Ks mesh scale
    * @param {number} lam leg length (world)
-   * @param {boolean} seek a jump in time into the landing: no drop to take, already kneeling
+   * @param {number} tRem seconds to touchdown (0: touching down now)
+   * @param {boolean} seek a jump in time into the landing: already kneeling
    */
-  function beginLanding(spider, Ks, lam, seek) {
-    ld.on = true;
-    ld.ground = spider.p[1] - LAND_RIDE * lam;
+  function planLanding(spider, Ks, lam, tRem, seek) {
+    ld.plan = true;
+    const at = spider.airDur > 0 ? spider.landAt : spider.p;
+    ld.ground = at[1] - LAND_RIDE * lam;
     ld.h.copy(heading);
     ld.l.copy(leftV);
-    ld.h0 = seek ? NaN : group.position.y - ld.ground;
-    ld.v0 = seek ? 0 : ld.vy;
-    ld.hK0 = NaN;
-    st.grounded = true;
-    st.holding = true;
-    st.phase = TO.L;
-    st.prep = -1;
-    st.prepFoot = null;
-    st.landDipArmed = false;
+    ld.K.set(at[0], 0, at[2]).addScaledVector(ld.h, -KNEEL_SIT * lam); // (sat back over the rear heel)
+    if (seek) {
+      ld.a0.copy(ld.K);
+      ld.av.set(0, 0, 0);
+    } else {
+      ld.a0.set(spider.p[0], 0, spider.p[2]);
+      ld.av.set(spider.v[0], 0, spider.v[2]);
+    }
+    ld.aT0 = st.time;
+    ld.aT = tRem + LAND_STOP;
     const yaw = Math.atan2(heading.x, heading.z);
-    // (The feet as they are drawn, reaching down: the legs settle from there.)
-    for (const n of SIDES) sk.limbs[n].ankle.getWorldPosition(b3).toArray(landFrom[n]);
-    // The kneel, provisionally (the pelvis a slanting thigh over the kneeling knee).
+    // The kneel, provisionally (upright on his heading; the pelvis a slanting thigh over the kneeling knee).
+    qBody.copy(body.quaternion);
+    body.quaternion.setFromAxisAngle(UP, yaw);
     const kneeOff = (KNEEL_LEAD * lam) / Ks;
-    group.position.set(spider.p[0], ld.ground + (Math.sqrt(L1 * L1 - kneeOff * kneeOff) + KNEE_PAD - HIP_UP) * Ks, spider.p[2]).addScaledVector(ld.h, -KNEEL_SIT * lam);
+    ld.kneelH = (Math.sqrt(L1 * L1 - kneeOff * kneeOff) + KNEE_PAD - HIP_UP) * Ks;
+    group.position.set(ld.K.x, ld.ground + ld.kneelH, ld.K.z);
+    sk.root.position.y = pelvisY0;
     sk.root.rotation.set(0, 0, 0);
     sk.spine.rotation.set(0, 0, 0);
     sk.chest.rotation.set(0, 0, 0);
     foldTrunk(1);
     sk.limbs.R.clav.rotation.set(0, -sk.limbs.R.s * FIST_DROP, -sk.limbs.R.s * FIST_DROP);
     group.updateMatrixWorld(true);
+    if (!ld.fp) {
+      ld.fp = { L: footState(), R: footState() };
+      ld.ap = { L: footState(), R: footState() }; // (scratch for the legs' reach on the way down)
+    }
+    const fR = ld.fp.R;
+    const fL = ld.fp.L;
     // Right: the knee down ahead of its hip; the foot behind it, up on its toes.
-    const fR = st.feet.R;
-    const fL = st.feet.L;
     sk.limbs.R.hip.getWorldPosition(hipW);
     ld.knee.set(hipW.x, ld.ground + KNEE_PAD * Ks, hipW.z).addScaledVector(ld.h, KNEEL_LEAD * lam);
     for (const n of SIDES) {
-      const f = st.feet[n];
+      const f = ld.fp[n];
       f.swing = null;
       f.nrm.copy(UP);
       f.yaw = yaw + (n === 'L' ? TOE_OUT : -TOE_OUT);
       f.sigma = 0.5;
       f.rock = 0;
-      f.blendTau = n === 'L' ? 0.07 : 0.16; // (the rear foot comes round from behind)
+      f.rhoLo = 0;
+      f.blendT = -9;
+      f.raise.set(0, 0, 0);
     }
     fR.pos.set(0, 0, 0);
     ankleAt(fR, KNEEL_ROLL, Ks, c3); // its ankle from its ground point, up on its toes
@@ -732,21 +802,15 @@ export function createIronMan(renderer) {
     fR.pos.set(ld.knee.x - ld.h.x * back - c3.x, ld.ground, ld.knee.z - ld.h.z * back - c3.z);
     fR.rho = fR.rhoHi = KNEEL_ROLL;
     fR.toe = TOE_MAX;
-    // Left: the foot ahead of its hip, where it is coming down (so it comes straight down onto the
-    // ground, not sliding onto its place), within reason.
+    fR.pole.copy(ld.h);
+    // Left: the foot well ahead of its hip and out to its side, the knee up and open beside the chest.
     sk.limbs.L.hip.getWorldPosition(hipW);
-    const [ax, , az] = landFrom.L;
-    const lead = clamp((ax - hipW.x) * ld.h.x + (az - hipW.z) * ld.h.z, 0.6 * KNEEL_FRONT * lam, 1.3 * KNEEL_FRONT * lam);
-    const wide = clamp((ax - hipW.x) * ld.l.x + (az - hipW.z) * ld.l.z, KNEEL_WIDE * lam, (KNEEL_WIDE + 0.1) * lam);
-    fL.pos.set(hipW.x, ld.ground, hipW.z).addScaledVector(ld.h, lead).addScaledVector(ld.l, wide);
+    fL.pos.set(hipW.x, ld.ground, hipW.z).addScaledVector(ld.h, KNEEL_FRONT * lam).addScaledVector(ld.l, KNEEL_WIDE * lam);
     fL.rho = fL.rhoHi = fL.toe = 0;
+    fL.pole.copy(ld.h).addScaledVector(UP, 1.5).addScaledVector(ld.l, 0.8).normalize();
     for (const n of SIDES) {
-      const f = st.feet[n];
-      f.rhoLo = 0;
-      f.landT = st.time;
-      poseStance(f, Ks);
-      f.blend.fromArray(landFrom[n]).sub(f.ankle);
-      f.blendT = st.time;
+      ld.fp[n].poleW = 1;
+      poseStance(ld.fp[n], Ks);
     }
     // The fist: below and ahead of the right shoulder (out a little), as far as the arm reaches.
     sk.limbs.R.sh.getWorldPosition(b3);
@@ -755,6 +819,90 @@ export function createIronMan(renderer) {
     const out = Math.sqrt(Math.max(0, reach * reach - drop * drop));
     c3.copy(ld.h).multiplyScalar(0.55).addScaledVector(ld.l, -0.45).normalize();
     ld.fist.set(b3.x, ld.ground, b3.z).addScaledVector(c3, out);
+    body.quaternion.copy(qBody);
+    group.updateMatrixWorld(true);
+  }
+
+  /** His horizontal way into the kneel at time t (into out, y untouched): the planned cubic, then at rest on K. */
+  function landPath(t, out) {
+    const T = ld.aT;
+    const u = clamp((t - ld.aT0) / T, 0, 1);
+    const h01 = u * u * (3 - 2 * u);
+    const h10 = u * (1 - u) * (1 - u) * T;
+    out.x = ld.a0.x + (ld.K.x - ld.a0.x) * h01 + ld.av.x * h10;
+    out.z = ld.a0.z + (ld.K.z - ld.a0.z) * h01 + ld.av.z * h10;
+    return out;
+  }
+
+  /**
+   * How high over the landing's ground the pelvis puts the kneeling knee on the ground, its thigh
+   * reaching down to it from the right hip where it is now (world; the pelvis at group.position).
+   */
+  function kneelAt(hip, Ks) {
+    const thigh = 0.99 * L1 * Ks;
+    const kx = hip.x - ld.knee.x;
+    const kz = hip.z - ld.knee.z;
+    return ld.knee.y + Math.sqrt(Math.max(0, thigh * thigh - kx * kx - kz * kz)) - (hip.y - group.position.y) - ld.ground;
+  }
+
+  /**
+   * Coming down into the kneel, the rear foot is held off its place (into out) as the pelvis is above
+   * the kneel (up): it comes down folded with the body, and along with it while it is well clear of the
+   * ground (so a pelvis still on its way to the kneel point does not drag it), onto its place as the
+   * knee goes down.
+   */
+  function rearRaise(out, up) {
+    const lam = LEG * K;
+    landPath(ld.aT0 + ld.aT, out); // (where the pelvis comes to rest, horizontally)
+    const rigid = smooth(0.05 * lam, 0.3 * lam, up);
+    return out.set((group.position.x - out.x) * rigid, up, (group.position.z - out.z) * rigid);
+  }
+
+  /**
+   * Touchdown: take up the landing planned on the way down (or plan it now). The feet are on their
+   * places already (see the approach in update()), so they are simply planted there.
+   * @param {object} spider the crawler as drawn
+   * @param {number} Ks mesh scale
+   * @param {number} lam leg length (world)
+   * @param {boolean} seek a jump in time into the landing: no drop to take, already kneeling
+   */
+  function beginLanding(spider, Ks, lam, seek) {
+    const approached = ld.plan && !seek;
+    if (!approached) planLanding(spider, Ks, lam, 0, seek);
+    ld.on = true;
+    ld.approached = approached || seek;
+    ld.h0 = seek ? NaN : group.position.y - ld.ground;
+    ld.v0 = seek ? 0 : ld.vy;
+    ld.hK0 = NaN;
+    st.grounded = true;
+    st.holding = true;
+    st.phase = TO.L;
+    st.prep = -1;
+    st.prepFoot = null;
+    st.landDipArmed = false;
+    for (const n of SIDES) {
+      const f = st.feet[n];
+      const p = ld.fp[n];
+      // (Where the foot is drawn, carried on by its speed: what it settles from, if it was not already reaching for its place.)
+      sk.limbs[n].ankle.getWorldPosition(b3).addScaledVector(f.vel, approached || seek ? 0 : 1 / 60);
+      f.swing = null;
+      f.pos.copy(p.pos);
+      f.nrm.copy(UP);
+      f.yaw = p.yaw;
+      f.rho = f.rhoHi = p.rho;
+      f.rhoLo = 0;
+      f.toe = p.toe;
+      f.sigma = 0.5;
+      f.rock = 0;
+      f.landT = st.time;
+      f.pole.copy(p.pole);
+      f.poleW = 1;
+      f.raise.set(0, 0, 0);
+      poseStance(f, Ks);
+      f.blendTau = 0.08;
+      f.blendT = approached || seek ? -9 : st.time;
+      f.blend.copy(b3).sub(f.ankle);
+    }
   }
   const soles = [new THREE.Vector3(), new THREE.Vector3()];
   const aimW = { L: 0, R: 0 };
@@ -1071,9 +1219,12 @@ export function createIronMan(renderer) {
     return clamp((single * T.sw + double * T.ds) / Math.max(left, 0.05), 1, HURRY_MAX);
   }
 
+  /** How sharply he is being turned on the spot (0..1): his way swinging round fast, he hardly moving. */
+  const spin = () => Math.max(smooth(0.5, 1.8, Math.abs(st.yawRate)), smooth(0.25, 0.9, st.turnErr || 0)) * (1 - smooth(0.1, 0.4, st.vr || 0));
+
   /** Does foot n need to step (moving, or out of place: drifted, turned, or the stance changed)? */
   function needs(n, Ks, ctx) {
-    if (!st.grounded || ctx.crouch > 0.3) return false;
+    if (!st.grounded || JW.t0 >= 0 || JW.push > 0) return false; // (winding up he steps round to face his way, until the dip begins)
     if (ctx.speed > V_GO * LEG * Ks) return true;
     const f = st.feet[n];
     const yawT = footTarget(n, T.sw, Ks, ctx, d3);
@@ -1175,10 +1326,16 @@ export function createIronMan(renderer) {
     f.rhoHi = rock < -1e-3 ? rock : RISE_MAX * clamp((sigma - 0.5) / 0.5, 0, 1) ** 2.5 * smooth(0.0, 0.18, behind) * clamp(ctx.active * 2, 0, 1);
     // Once the other foot is down he pushes off: the heel rises as a real one does, not only as far as the leg needs.
     f.rho = f.rhoLo < 0 ? f.rhoLo : f.rhoHi * smooth(0.78, 0.92, sigma);
-    // Crouched for a leap: he turns on the balls of his feet instead of stepping.
-    if (ctx.crouch > 0.3) {
+    // Winding up a leap: while the other foot steps round he pivots on the ball of this one (as people
+    // turn sharply on the spot); in the dip, both down, the feet only finish the turn on their balls,
+    // a little (more would twist them across each other: the rest is the hips' and trunk's).
+    if (JW.t0 < 0) f.piv = 0;
+    const other = st.feet[n === 'L' ? 'R' : 'L'];
+    if (ctx.crouch > 0.3 && (other.swing || JW.t0 >= 0)) {
       const want = ctx.yaw + (n === 'L' ? 1 : -1) * TOE_OUT;
-      const dy = clamp(wrapA(want - f.yaw), -3 * ctx.dt, 3 * ctx.dt);
+      let dy = clamp(wrapA(want - f.yaw), -PIVOT_W * ctx.dt, PIVOT_W * ctx.dt);
+      if (!other.swing) dy = clamp(dy, -PIVOT_CAP - f.piv, PIVOT_CAP - f.piv);
+      f.piv += dy;
       if (Math.abs(dy) > 1e-5) {
         flatFrame(q, f.yaw, f.nrm);
         a3.set(0, BALL_Y * Ks, BALL_Z * Ks).applyQuaternion(q).add(f.pos); // the ball, fixed
@@ -1221,7 +1378,7 @@ export function createIronMan(renderer) {
             else if ((go && goM) || (setting && !first)) first = ez.sway.x > 0 ? 'R' : 'L';
             if (first) {
               if (st.prep < 0) {
-                st.prep = APA_T;
+                st.prep = APA_T * (1 - 0.8 * spin()); // (turning sharply, he steps round at once)
                 st.prepFoot = first;
               }
               st.prep -= left;
@@ -1309,6 +1466,7 @@ export function createIronMan(renderer) {
    */
   function solveLeg(g, f, Ks) {
     a3.copy(f.ankle);
+    a3.add(f.raise);
     const sinceLand = (st.time - f.blendT) / f.blendTau;
     if (sinceLand < 8) a3.addScaledVector(f.blend, (1 + sinceLand) * Math.exp(-sinceLand)); // (settling onto a landing, from rest)
     a3.applyMatrix4(inv); // into the pelvis bone's frame (mesh units)
@@ -1692,7 +1850,7 @@ export function createIronMan(renderer) {
     const landT = spider.landT >= 0 ? ld.t : -1;
     landWeights(landT);
     if (spider.air && !st.wasAir && !jumped && !tk.on) beginTakeoff(spider, dt);
-    else if (tk.on && (!spider.air || jumped || tk.t > 1.5)) tk.on = false;
+    else if (tk.on && (!spider.air || jumped || ld.plan || tk.t > tk.T + 1)) tk.on = false;
     else if (tk.on) tk.t += dt;
     st.wasAir = !!spider.air;
     // (The countdown carries on through the launch from where it last was, so the drive finishes
@@ -1701,13 +1859,26 @@ export function createIronMan(renderer) {
     if (winding) st.tlLast = spider.launchIn;
     else if (!tk.on) st.tlLast = -1;
     const wound = tk.on && st.tlLast >= 0;
-    jumpWeights(winding ? spider.launchIn : wound ? Math.max(0, st.tlLast - tk.t - dt) : -1, spider.crouchDur || 0, wound ? tk.t : -1);
-    const g = clamp(Math.max(air, fly), 0, 1) * (1 - LW.on); // off the ground
     const scale = 1; // true size in flight too: the in-flight shot comes in close instead
-    // Flight attitude: he leaves upright on his thrusters, pitches forward into the flight, and
-    // swings back upright to brake on his boots before he lands.
+    // Winding up, his feet turn to where he will leap from the start, stepping round as the crawler
+    // turns (it turns fast): not after it.
+    // (Eased in, as a step already under way is turned onto it rather than snatched round.)
+    const lv = spider.launchV;
+    const going = spider.crouch && !spider.air && Math.hypot(lv[0], lv[2]) > 0.15 * Math.hypot(lv[0], lv[1], lv[2]);
+    const yawGo = yaw + wrapA((going ? Math.atan2(lv[0], lv[2]) : yaw) - yaw) * clamp(ez.go.to(going ? 1 : 0, sdt), 0, 1);
+    const feetYaw0 = st.feet ? Math.atan2(Math.sin(st.feet.L.yaw) + Math.sin(st.feet.R.yaw), Math.cos(st.feet.L.yaw) + Math.cos(st.feet.R.yaw)) : yaw;
+    st.turnErr = spider.crouch && !spider.air ? Math.abs(wrapA(yawGo - feetYaw0)) : 0;
+    // (The dip waits for his feet: turned near enough his way, and down, or the last step coming down:
+    // he lowers into it, as people do into the step before a jump.)
+    const feetSet = !!st.feet && st.turnErr < 0.45 && SIDES.every((n) => !st.feet[n].swing || st.feet[n].swing.u > 0.55);
+    jumpWeights(winding ? spider.launchIn : wound ? Math.max(0, st.tlLast - tk.t - dt) : -1, spider.crouchDur || 0, spider.aimDur || 0, wound ? tk.t : -1, feetSet, spider.launchV, spider.launchRise ?? spider.launchV[1], LEG * K * scale, jumped);
+    const g = clamp(Math.max(air, fly), 0, 1) * (1 - LW.on); // off the ground
+    // Flight attitude: he leaves upright on his thrusters, pitches into the flight as it gets under way
+    // (as soon as he is moving fast: not gliding along upright), holds it, and swings back upright to
+    // brake on his boots before he lands.
     const uAir = spider.airU || 0;
-    const att = clamp(ez.att.to((spider.taut || 0) * smooth(0, 0.24, uAir) * (1 - smooth(0.55, 0.8, uAir)), sdt), 0, 1);
+    const sp3 = Math.hypot(spider.v[0], spider.v[1], spider.v[2]);
+    const att = clamp(ez.att.to((spider.air && spider.taut > 0.05 ? 1 : 0) * smooth(0, 0.1, uAir) * (1 - smooth(0.58, 0.85, uAir)) * smooth(0.5 * MPS, 2 * MPS, sp3), sdt), 0, 1);
     const Ks = K * scale;
     const lam = LEG * Ks;
 
@@ -1718,7 +1889,7 @@ export function createIronMan(renderer) {
     // Speed along the slope (climbing a grade covers more ground per stride than its plan view).
     const speed = across * Math.sqrt(1 + (st.gx * heading.x + st.gz * heading.z) ** 2);
     const speedS = ez.speed.to(speed, sdt);
-    const vr = speedS / lam;
+    const vr = (st.vr = speedS / lam);
     const walk = ez.walk.to((1 - g) * clamp(vr / 1.15, 0, 1.3), sdt);
     T = timing(vr);
 
@@ -1780,14 +1951,22 @@ export function createIronMan(renderer) {
 
     // Feet: (re)planted where they stand when he comes down, or on a jump in time.
     if (!st.feet || jumped || Math.hypot(st.feet.L.pos.x - spider.p[0], st.feet.L.pos.z - spider.p[2]) > 3 * U) plantAll(Ks, yaw, pxz);
+    // Coming down: the landing is planned a moment before touchdown, so his legs can reach for their places.
+    const tDown = spider.air && spider.airDur > 0 && !ld.on ? Math.max(0, (1 - uAir) * spider.airDur) : Infinity;
+    if (ld.plan && !ld.on && landT < 0 && (jumped || tDown > APPROACH_T + 0.1)) ld.plan = false;
+    if (!ld.plan && !ld.on && !jumped && tDown < APPROACH_T && landT < 0) planLanding(spider, Ks, lam, tDown, false);
     if (landT >= 0 && (!ld.on || jumped)) beginLanding(spider, Ks, lam, jumped);
     else if (landT < 0 && ld.on) {
       ld.on = false;
+      ld.plan = false;
       for (const n of SIDES) {
         st.feet[n].poleW = 0;
         st.feet[n].blendTau = LAND_BLEND;
+        st.feet[n].raise.set(0, 0, 0);
       }
     }
+    // (The legs' share of the reach for those places, before touchdown.)
+    const wA = ld.plan && !ld.on ? 1 - smooth(0.05, APPROACH_T - 0.03, tDown) : 0;
     if (st.grounded && (g > 0.6 || tk.on) && !ld.on) {
       st.grounded = false;
       st.landDipArmed = true;
@@ -1801,7 +1980,7 @@ export function createIronMan(renderer) {
         f.swing = null;
       }
     }
-    const ctx = { speed: speedS, across: Math.max(1e-3, across), grade: (st.gx * v.x + st.gz * v.z) / Math.max(1e-3, across), yaw, walk: clamp(walk, 0, 1), crouch, acc: st.acc, brace, wide, dt, active: ez.active.x };
+    const ctx = { speed: speedS, across: Math.max(1e-3, across), grade: (st.gx * v.x + st.gz * v.z) / Math.max(1e-3, across), yaw: yawGo, walk: clamp(walk, 0, 1), crouch, acc: st.acc, brace, wide, dt, active: ez.active.x };
     if (!st.grounded && g < 0.35 && !tk.on) {
       st.grounded = true;
       // Down on both feet, under the hips, a little apart and one a touch ahead (as a landing is taken);
@@ -1838,9 +2017,11 @@ export function createIronMan(renderer) {
     }
 
     /* ---- stride ---- */
-    const quick = ez.hurry.to(hurry(Ks, across), sdt);
+    // (Turning sharply on the spot: quick steps, one straight after the other.)
+    const spun = spin();
+    const quick = ez.hurry.to(Math.max(hurry(Ks, across), 1 + 0.6 * spun), sdt);
     T.sw /= quick;
-    T.ds /= quick;
+    T.ds *= (1 - 0.65 * spun) / quick;
     let stepping = false;
     if (st.grounded && dt > 0 && !ld.on) stepping = runClock(dt, Ks, ctx);
     const active = clamp(ez.active.to(stepping ? 1 : 0, sdt), 0, 1);
@@ -1888,7 +2069,8 @@ export function createIronMan(renderer) {
     // dive). One turn, eased as one: never through a flip, as a head and a chest direction eased
     // separately can be when he dives nearly straight down.
     // (Toward where he is going, eased: the way he moves turns sharply as he lands.)
-    const elev = ez.elev.to(speed3 > 1 ? Math.atan2(v.x * heading.x + v.z * heading.z, v.y) : ez.elev.x, sdt);
+    // (On the ground there is no way he is flying: upright, so the flight's pitch grows from there.)
+    const elev = ez.elev.to(!spider.air ? 0 : speed3 > 0.3 * MPS ? Math.atan2(v.x * heading.x + v.z * heading.z, v.y) : ez.elev.x, sdt);
     const pitch = att * elev;
     bodyQ.setFromAxisAngle(UP, yaw).multiply(q3.setFromAxisAngle(AX, pitch));
     body.quaternion.slerp(bodyQ, jumped ? 1 : 1 - Math.exp(-9 * dt));
@@ -1950,13 +2132,21 @@ export function createIronMan(renderer) {
     // settling onto it no faster than a body does. One smooth fall and rise per step, as deep as the
     // step is long, less what the heel and toe rockers take out of it.
     if (ez.pelvisY.x === 0 || jumped) ez.pelvisY.x = J.pelvis[1] * Ks;
-    const onGround = b3.set(spider.p[0], st.gy + ez.pelvisY.x, spider.p[2]).addScaledVector(leftV, sway).addScaledVector(heading, -push);
-    if (ld.on) onGround.addScaledVector(ld.h, -KNEEL_SIT * lam * LW.sit); // (kneeling, sat back over the rear heel)
-    onGround.addScaledVector(heading, -CM_BACK * lam * JW.cm * (1 - JW.rise)); // (winding up, the hips back)
+    // Where he is carried over the ground: the crawler's path, except coming in to land, when it is his own
+    // way into the kneel (handed back to the crawler's as he rises: it stands on the same spot by then).
+    anc.set(spider.p[0], 0, spider.p[2]);
+    if (ld.plan) {
+      landPath(st.time, d3);
+      anc.lerp(d3, 1 - LW.rise);
+    }
+    const onGround = b3.set(anc.x, st.gy + ez.pelvisY.x, anc.z).addScaledVector(leftV, sway).addScaledVector(heading, -push);
+    // (Winding up, the hips back; driving off, forward, as far as the flight leaves forward.)
+    onGround.addScaledVector(heading, (-CM_BACK * JW.cm * (1 - JW.rise) + DRIVE_FWD * JW.fwd * JW.rise) * lam);
     group.position.copy(onGround);
     group.updateMatrixWorld(true);
     // (Crouching, taking a landing, braced to fire: that much lower than the legs would hold him.)
-    const lower = CM_DROP * lam * JW.cm * (1 - JW.rise) + softPos(dip, 0.05) * 0.16 * lam + 0.015 * lam * softAbs(brace, 0.15) + 0.02 * lam * wide;
+    const lowerCM = JW.depth * lam * JW.cm * (1 - JW.rise); // (winding up: the dip, out again with the drive)
+    const lower = softPos(dip, 0.05) * 0.16 * lam + 0.015 * lam * softAbs(brace, 0.15) + 0.02 * lam * wide;
     const blendW = (HANDOVER_IDLE + (HANDOVER - HANDOVER_IDLE) * active) * lam;
     let hCon = Infinity;
     for (const n of SIDES) {
@@ -2009,20 +2199,20 @@ export function createIronMan(renderer) {
     // than legs push a heavy body up: stepping up a slope, the leading leg extends under him rather
     // than him popping up as the trailing one lets go. A jump in the height wanted eases in.)
     const hWant = hDes - lower;
-    const hWantV = ez.hV.to(st.hWant === undefined || jumped || dt <= 0 ? 0 : clamp((hWant - st.hWant) / dt, -TRACK_V * lam, Math.max(RISE_V * lam, RISE_SPEED * speedS)), sdt);
+    const rawV = st.hWant === undefined || jumped || dt <= 0 ? 0 : (hWant - st.hWant) / dt;
+    const hWantV = ez.hV.to(clamp(rawV, -TRACK_V * lam, Math.max(RISE_V * lam, RISE_SPEED * speedS, 1.6 * lam * JW.push)), sdt);
     st.hWant = hWant;
+    // (Winding up, the dip is laid over this: its speed and acceleration are its own, never a catch-up's;
+    // driving off, the heels rise faster than a walk's rise is let be, and the height is let follow them.)
     ez.pelvisY.w = hWant < ez.pelvisY.x ? PELVIS_W : PELVIS_W_UP;
-    let pelvisH = ez.pelvisY.track(clamp(hWant, ez.pelvisY.x - DROP_GAP * lam, ez.pelvisY.x + RISE_GAP * lam), hWantV, sdt);
+    let pelvisH = ez.pelvisY.track(clamp(hWant, ez.pelvisY.x - DROP_GAP * lam, ez.pelvisY.x + (RISE_GAP + 0.1 * JW.push) * lam), hWantV, sdt) - lowerCM;
     if (ld.on) {
       // Landing: as low as puts the right knee on the ground (its thigh reaching down to it from the
       // hip), reached from the height and speed he came down with as fast as a heavy body's legs take
       // it out (never past it: the knee does not go through the ground); a slow breath while he holds
       // it; then up to where his legs hold him.
       sk.limbs.R.hip.getWorldPosition(hipW);
-      const thigh = 0.99 * L1 * Ks;
-      const kx = hipW.x - ld.knee.x;
-      const kz = hipW.z - ld.knee.z;
-      const hK = ld.knee.y + Math.sqrt(Math.max(0, thigh * thigh - kx * kx - kz * kz)) - (hipW.y - group.position.y) - ld.ground;
+      const hK = kneelAt(hipW, Ks);
       if (Number.isNaN(ld.hK0)) {
         ld.hK0 = hK;
         const x0 = Number.isNaN(ld.h0) ? 0 : ld.h0 - hK;
@@ -2035,16 +2225,12 @@ export function createIronMan(renderer) {
       const drop = x0 * (1 - sD) * (1 - sD) * (1 + 2 * sD) + ld.v0 * ld.T * sD * (1 - sD) * (1 - sD);
       const breathe = 0.006 * lam * Math.sin((2 * Math.PI * landT) / 1.3) * smooth(0.3, 0.6, landT);
       const kneel = hK + drop + breathe;
+      // (The rear leg comes down with it, see rearRaise: from as far above its place as the pelvis was above
+      // the planned kneel at touchdown, the difference made up through the drop.)
+      ld.drop = Math.max(0, drop + (hK - ld.kneelH) * (1 - smooth(0, ld.T, landT)));
       const h = kneel + (st.gy + hWant - ld.ground - kneel) * LW.rise;
       pelvisH = ld.ground + h - st.gy;
       // (The height follower is kept in step, so it carries on from here as he walks on.)
-      ez.pelvisY.v = dt > 0 && !jumped ? (pelvisH - ld.lastPH) / dt : 0;
-      ez.pelvisY.x = pelvisH;
-    }
-    if (JW.cm > 0 && !ld.on && st.grounded) {
-      // Winding up and driving off, the height his legs give is followed as it comes (it is smooth,
-      // and the drive is faster than a walk's rise is let be).
-      pelvisH += (hWant - pelvisH) * smooth(0, 0.15, JW.cm);
       ez.pelvisY.v = dt > 0 && !jumped ? (pelvisH - ld.lastPH) / dt : 0;
       ez.pelvisY.x = pelvisH;
     }
@@ -2054,16 +2240,27 @@ export function createIronMan(renderer) {
     // him and his sway are smooth already, and filtered again they would overshoot what the planted
     // legs reach.
     // (Landing, the height is the landing's own, which takes up the flight's at touchdown.)
-    c3.set(spider.p[0] + (spider.b[0] - spider.p[0]) * g, ld.on ? 0 : (spider.b[1] - onGround.y) * g, spider.p[2] + (spider.b[2] - spider.p[2]) * g);
+    c3.set(anc.x + (spider.b[0] - spider.p[0]) * g, ld.on ? 0 : (spider.b[1] - onGround.y) * g, anc.z + (spider.b[2] - spider.p[2]) * g);
+    e3.copy(c3);
     carry(c3, sdt, jumped);
     if (ld.on) c3.y = 0;
-    a3.set((onGround.x - spider.p[0]) * (1 - g), onGround.y, (onGround.z - spider.p[2]) * (1 - g)).add(c3);
+    if (ld.plan) {
+      // (His own way into the kneel is smooth already: not filtered again, which would carry him past its end.)
+      c3.x = e3.x;
+      c3.z = e3.z;
+    }
+    a3.set((onGround.x - anc.x) * (1 - g), onGround.y, (onGround.z - anc.z) * (1 - g)).add(c3);
     if (tk.on) {
       // Just launched: on the crawler's flight, from where he left it (the gap closing critically).
       const t = tk.t;
-      const e = Math.exp(-TAKEOFF_W * t);
-      c3.copy(tk.b0).addScaledVector(tk.vL, t).lerp(b3.fromArray(spider.b), smooth(0.03, 0.35, t));
-      a3.copy(c3).addScaledVector(tk.off, (1 + TAKEOFF_W * t) * e).addScaledVector(tk.offV, t * e);
+      // (For its first frames, its path from its launch speed and curve; then the crawler's as drawn, from
+      // where that left off, the step's difference fading.)
+      if (t < 0.04) {
+        tk.dp.copy(tk.p0).addScaledVector(tk.vL, t).addScaledVector(tk.aL, 0.5 * t * t).sub(b3.fromArray(spider.p));
+        tk.dpT = t;
+      }
+      c3.fromArray(spider.p).addScaledVector(tk.dp, 1 - smooth(tk.dpT, tk.dpT + 0.5, t));
+      a3.copy(c3).addScaledVector(tk.off, 1 - smooth(0, tk.T, t)).addScaledVector(tk.offV, t * Math.exp(-TAKEOFF_W * t));
     }
     group.position.copy(a3);
     group.updateMatrixWorld(true);
@@ -2102,19 +2299,60 @@ export function createIronMan(renderer) {
         }
       }
       if (g < 0.999 && !ld.on) leaveGround(gL, f, Ks, dt);
-      if (g < 0.999) solveLeg(gL, f, Ks);
-      if (g > 0.001) {
+      // (Kneeling: the rear leg comes down folded as it kneels, its knee and toes meeting the ground together as the drop ends.)
+      if (ld.on && n === 'R') rearRaise(f.raise, ld.drop);
+      // (Once down from an approach, the legs are on their places: no flight pose left to hand over from.)
+      const gl = ld.on && ld.approached ? 0 : g;
+      if (gl < 0.999) solveLeg(gL, f, Ks);
+      if (gl > 0.001) {
+        const bones = [gL.hip, gL.knee, gL.ankle, gL.toe];
+        if (gl < 0.999) bones.forEach((b, k) => qLegG[k].copy(b.quaternion));
         // Coming in to land, the front (left) leg reaches forward for the ground and the right
         // folds back, ready to kneel.
         const prep = ld.on ? 1 : spider.air ? smooth(0.8, 0.97, uAir) * (1 - att) : 0; // (held as it hands over to the landing)
         const front = n === 'L' ? prep : 0;
         const rear = n === 'R' ? prep : 0;
-        const legs = [[gL.hip, 0.12 * att - 0.15 * air * (1 - att) - 0.45 * front + 0.2 * rear, 0, -gL.s * 0.03 * att], [gL.knee, 0.18 * att + 0.35 * air * (1 - att) + 0.2 * front + 0.6 * rear, 0, 0], [gL.ankle, 0.5 * fly + 0.2 * air * (1 - fly) - 0.3 * front, 0, 0]];
-        for (const [bone, x, y, z] of legs) {
-          if (g >= 0.999) bone.quaternion.setFromEuler(euler.set(x, y, z));
-          else bone.quaternion.slerp(flightQ.setFromEuler(euler.set(x, y, z)), g);
+        gL.hip.quaternion.setFromEuler(euler.set(0.12 * att - 0.15 * air * (1 - att) - 0.45 * front + 0.2 * rear, 0, -gL.s * 0.03 * att));
+        gL.knee.quaternion.setFromEuler(euler.set(0.18 * att + 0.35 * air * (1 - att) + 0.2 * front + 0.6 * rear, 0, 0));
+        gL.ankle.quaternion.setFromEuler(euler.set(0.5 * fly + 0.2 * air * (1 - fly) - 0.3 * front, 0, 0));
+        gL.toe.quaternion.identity();
+        if (wA > 0) {
+          // The approach: the legs reach for the places planned for them, the front foot coming
+          // straight down onto its spot to meet the ground at touchdown, the rear leg folded as it
+          // will kneel, carried down with the body (and along with it, until it nears the ground).
+          // The ankle is taken from where the flight pose has it to there, and the foot turned to
+          // how it will stand, so the leg reaches rather than swapping one pose for another.
+          bones.forEach((b, k) => qLegF[k].copy(b.quaternion));
+          const p = ld.fp[n];
+          const a = ld.ap[n];
+          gL.ankle.getWorldPosition(a.ankle);
+          gL.ankle.getWorldQuaternion(a.q);
+          b3.copy(p.ankle);
+          if (n === 'L') {
+            b3.y += ((tDown * tDown) / (tDown + 0.06)) * Math.max(-ld.vy, 0.5 * lam); // (slowing onto the ground as it meets it)
+            // (Reaching for it from further off, the knee stays a little soft rather than locking and then folding.)
+            gL.hip.getWorldPosition(hipW);
+            e3.copy(b3).sub(hipW);
+            const r = 0.95 * (L1 + L2) * Ks;
+            if (e3.lengthSq() > r * r) b3.copy(hipW).add(e3.setLength(r));
+          } else b3.add(rearRaise(e3, Math.max(0, group.position.y - ld.ground - ld.kneelH)));
+          a.ankle.lerp(b3, wA);
+          a.q.slerp(p.q, wA);
+          a.pole.copy(p.pole);
+          a.poleW = wA;
+          a.raise.set(0, 0, 0);
+          a.blendT = -9;
+          a.toe = p.toe * wA;
+          solveLeg(gL, a, Ks);
+          if (wA < 1) bones.forEach((b, k) => b.quaternion.slerp(qLegF[k], 1 - wA));
         }
-        gL.toe.quaternion.slerp(flightQ.identity(), g);
+        // (Handing over between the ground's pose and the air's.)
+        if (gl < 0.999) {
+          bones.forEach((b, k) => {
+            qLegA[k].copy(b.quaternion);
+            b.quaternion.copy(qLegG[k]).slerp(qLegA[k], gl);
+          });
+        }
       }
     }
 
