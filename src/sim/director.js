@@ -1833,6 +1833,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     openPortal(s.x + dx * R, s.y, s.z + dz * R, -dx, -dz, 1);
     const start = [s.x + dx * (R + 12), s.y, s.z + dz * (R + 12)];
     foe.spider = new Spider(start, seed + 7 + ++foe.spawns, world, Math.atan2(-dz, -dx));
+    [run.foe.x, run.foe.y, run.foe.z] = start; // (where Iron Man turns to, from this step)
     foe.state = 'coming';
     foe.go = run.t + PORTAL_OPEN * 0.8;
     foe.goal = null;
@@ -1879,9 +1880,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // Windows of fire run out.
     for (let i = F.fire.length - 1; i >= 0; i--) if (run.t >= F.fire[i].t1) F.fire.splice(i, 1);
     // (Whoever is shooting, Iron Man squares up to him when he stands.)
-    // (While Thanos is here Iron Man keeps his face to him, wherever he walks.)
-    run.faceAt = foe.state === 'here' ? F : null;
-    run.fight = foe.state === 'here';
+    // (From the moment the portal opens on him Iron Man keeps his face to Thanos, wherever he walks.)
+    run.faceAt = foe.state === 'here' || foe.state === 'coming' ? F : null;
+    run.fight = !!run.faceAt;
 
     if (foe.state === 'gone') {
       F.on = false;

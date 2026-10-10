@@ -972,7 +972,7 @@ export function createView3D(canvas) {
         }
       }
       // (Each keeps his eyes on the other while they fight.)
-      const fighting = foeOn && F.state === 'here';
+      const fighting = foeOn && (F.state === 'here' || F.state === 'coming');
       const struck = hero.update(spider, dt, camera, targets, halfH, fighting ? foeHero.chest() : null);
       if (foeOn) {
         for (const id of struck) if (id < 0) foeHero.hit(dirTo(hero.chest(), foeHero.chest()), wide(id, t - MISS_FLIGHT) ? 0.15 : 0.85);
