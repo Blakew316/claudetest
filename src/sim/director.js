@@ -39,6 +39,7 @@ import { computeScore } from '../analyze/score.js';
 import { clearDistance, fitDistance, followCamera, orbitDir, sampleKeys, smoothDamp } from '../world/camera.js';
 import { fork, range } from '../core/rng.js';
 import { Spider } from '../world/spider.js';
+import { labelLife } from '../world/labels.js';
 
 const BOOT = 0.4;
 const INTRO_AIR = 7.5; // the opening fly-in, while the spider wakes and walks on the first ball
@@ -111,6 +112,7 @@ const HAND_W = 0.5; // ...and his body hiding the firing hand
 const MIN_GAP = 40; // the lens never comes nearer his middle than this
 const NUCLEUS = 0.2; // ...nor into a ball's blinding nucleus (radii)
 const PRE_LEAP = 1.6; // s over which it drifts round toward the takeoff view once the last words go
+const LABEL_CAP = 6; // s: a flag stays up all section, but the camera plans for it this long
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -645,17 +647,19 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return out;
   }
 
-  /** The words he is firing at, and the next few he will (each counting less): [x, y, z, weight] in hc.att. */
+  /**
+   * The words that matter to the shot now (from hc.sched, see schedule): the
+   * ones going out and the labels still up, in full, and the next few, less
+   * the later they come. [x, y, z, weight] in hc.att.
+   */
   function attention() {
     const a = hc.att;
     a.length = 0;
-    const wp = world.wordPos;
-    const add = (id, w) => a.push(wp[id * 3], wp[id * 3 + 1], wp[id * 3 + 2], w);
-    for (const tn of run.tentacles) add(tn.wordId, tn.stage === 'retract' ? 0.3 : 1);
-    if ((run.phase === 'read' || run.phase === 'walk') && run.active < n) {
-      const sec = analysis.sections[run.active];
-      const end = sec.start + sec.count;
-      for (let k = 0, id = cursor; k < 3 && id < end; k++, id += span) add(id, 0.6 * 0.78 ** k);
+    const s = hc.sched;
+    for (let j = 0; j < s.length; j += 6) {
+      const d = -s[j + 3]; // s since it went (< 0: still to come)
+      const w = s[j + 4] * (d > -0.2 ? 1 - ss(s[j + 5] + 0.4, s[j + 5] + 0.9, d) : 0.6 * Math.exp(d / 1.2));
+      if (w > 0.02) a.push(s[j], s[j + 1], s[j + 2], w);
     }
     return a;
   }
@@ -770,23 +774,38 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return cost + (fixed >= 0 ? fixed : fixedCost(el, xd, hx, hz));
   }
 
+  /** How much a word matters to the shot (its label: a flag most, a link more than a plain word, a filler word none). */
+  function wordWeight(id) {
+    const w = analysis.words[id];
+    return w.vague ? 2 : w.kind ? 1.4 : labelLife(w) > 0 ? 1 : 0.35;
+  }
+
   /**
-   * The words he will fire at over the next few seconds, with when: the ones
-   * going out now, then the rest in reading order at the read's pace (or,
-   * before the read starts, at its opening pace). [x, y, z, t] in hc.sched.
+   * The words that matter to the shot over the next few seconds: those with
+   * their labels still up, those being fired at, then the rest in reading
+   * order at the read's pace (or, before the read starts, its opening pace).
+   * Per word [x, y, z, when it goes (s from now), weight, how long it stays
+   * up after] in hc.sched.
    */
   function schedule() {
     const out = hc.sched;
     out.length = 0;
-    const wp = world.wordPos;
-    for (const tn of run.tentacles) out.push(wp[tn.wordId * 3], wp[tn.wordId * 3 + 1], wp[tn.wordId * 3 + 2], tn.stage === 'retract' ? -0.6 : -0.2);
     const sec = analysis.sections[run.active];
     if (!sec || (run.phase !== 'read' && run.phase !== 'walk')) return out;
+    const wp = world.wordPos;
+    const add = (id, t) => out.push(wp[id * 3], wp[id * 3 + 1], wp[id * 3 + 2], t, wordWeight(id), Math.min(LABEL_CAP, labelLife(analysis.words[id])));
+    for (let id = sec.start; id < cursor; id++) {
+      if (run.wordState[id] === 1) add(id, -0.2);
+      else if (run.wordState[id] === 2) {
+        const t = run.readAt[id] - run.t - 0.4;
+        if (-t < Math.min(LABEL_CAP, labelLife(analysis.words[id])) + 1.3) add(id, t);
+      }
+    }
     const end = sec.start + sec.count;
     const reading = run.phase === 'read';
     const per = reading ? GAP / Math.max(0.3, rate) : 0.3; // s between reaches
     let t = reading ? Math.max(0, nextReach - readAcc) : 1.2;
-    for (let id = cursor; id < end && t < AHEAD + 2; id += reading ? span : 1, t += per) out.push(wp[id * 3], wp[id * 3 + 1], wp[id * 3 + 2], t);
+    for (let id = cursor; id < end && t < AHEAD + 2; id += reading ? span : 1, t += per) add(id, t);
     return out;
   }
 
@@ -800,7 +819,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
    * actually happens. Returns the path sampled every AHEAD_DT from now.
    */
   function planAhead() {
-    const sched = schedule();
+    const sched = hc.sched; // just scheduled (see planTwoShot)
     heroPoint(H);
     const s = run.spider;
     const hx = Math.cos(s.heading);
@@ -830,12 +849,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     }
     for (let k = 0; k < S; k++) {
       const t = k * AHEAD_DT;
-      // The words live then; and keep near the last plan, so re-planning never jumps about.
+      // The words that matter then; and keep near the last plan, so re-planning never jumps about.
       const prev = hc.path.n && run.t - hc.path.t0 < AHEAD ? aheadAt(run.t - hc.path.t0 + t, hc.pathAt).az : null;
       hc.att.length = 0;
-      for (let j = 0; j < sched.length; j += 4) {
-        const d = sched[j + 3] - t; // a word is live (and its label fresh) for about a second and a half after it goes
-        const wt = ss(-1.9, -1.3, d) * (1 - ss(-0.1, 0.3, d));
+      for (let j = 0; j < sched.length; j += 6) {
+        // From as it goes (the beam) until its label is gone.
+        const d = t - sched[j + 3];
+        const wt = sched[j + 4] * ss(-0.4, 0, d) * (1 - ss(sched[j + 5] + 0.4, sched[j + 5] + 0.9, d));
         if (wt > 0.01) hc.att.push(sched[j], sched[j + 1], sched[j + 2], wt);
       }
       for (let b = 0; b < NB; b++) {
@@ -908,6 +928,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
    * the takeoff view.
    */
   function planTwoShot() {
+    schedule();
     const sec = analysis.sections[run.active];
     const words = run.tentacles.length > 0 || (sec && (run.phase === 'read' || run.phase === 'walk') && cursor < sec.start + sec.count);
     let path = null;
