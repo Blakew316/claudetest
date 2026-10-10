@@ -1197,7 +1197,8 @@ export function createView3D(canvas) {
   function silhouette() {
     sil.on = false;
     if (!hero || !hero.group.visible) return;
-    if (!silBones) {
+    // (Found once the suit's model has loaded: it decodes after the first frames.)
+    if (!silBones || !silBones.segs.length) {
       const by = {};
       hero.group.traverse((o) => {
         if (o.isBone) by[o.name] = o;
