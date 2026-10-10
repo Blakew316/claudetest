@@ -995,6 +995,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     [s.sx, s.vSx] = smoothDamp(s.sx, p.sx, s.vSx, 0.8, dt);
   }
 
+  /** The two-shot as it has eased so far, as a camera target. */
   function twoShotRig(out) {
     const s = hc.shot;
     compose(heroPoint(H), s.az, s.el, Math.exp(s.lD), s.sx, SHOT_Y, out);
@@ -1125,7 +1126,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const L = hc.leap && !hc.leap.done && hc.leap.id === run.travel?.id ? hc.leap : null;
     let hero = hc.two;
     if (L) hero = leapRig(hc.two, hc.out);
-    // After a slow drift on round, so it keeps breathing.
+    // The last shot of him, the nebula behind him; once settled it drifts slowly on round, so it keeps breathing.
     compose(heroPoint(H), ship.finalYaw + ship.turn * 0.012 * settled, 0.2, shotDist(SIZE_REST), -0.12 * ship.turn, SHOT_Y, hc.rest);
     hero = mixRig(hero, setEase(hc.rest, 1.0, 1.3, 0.4), ss(9, 13, run.phaseT), hc.out, 'rest');
     // Pulled back once he is down from his last leap (or at once, if he only strolled to his rest).
