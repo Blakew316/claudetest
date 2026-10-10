@@ -62,6 +62,8 @@ const INSET = { top: 112, right: 12, bottom: 18, left: 12 };
 const CHEVRON = 6;
 /** A label that would sit over him while its word is behind him moves aside, this far clear, on a leader. */
 const CLEAR = 8;
+/** ...and a section title there all but fades (to this opacity). */
+const TITLE_BEHIND = 0.15;
 
 /** Text-width cache for the 11px label font; cleared when web fonts finish loading. */
 const widthCache = new Map();
@@ -174,7 +176,8 @@ export function drawLabels(ctx, world, run, view, analysis) {
   ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
 
-  // Section titles.
+  const hero = view.hero && view.hero.on ? view.hero : null;
+  // Section titles (one behind him, over his body, all but fades away).
   for (const sec of analysis.sections) {
     const c = world.clusters[sec.index];
     if (!c) continue;
@@ -186,13 +189,14 @@ export function drawLabels(ctx, world, run, view, analysis) {
     const status = run.status[sec.index];
     const read = run.readCount[sec.index] || 0;
     const statusWord = ship ? 'read' : status;
-    ctx.globalAlpha = 1;
     ctx.font = TITLE_FONT;
+    const behind = hero && p.d > hero.d && overHero(hero, x, y - 12, ctx.measureText(sec.name).width, 36) ? TITLE_BEHIND : 1;
+    ctx.globalAlpha = behind;
     ctx.fillStyle = status === 'queued' && !ship ? QUEUED : sec.color;
     ctx.fillText(sec.name, x, y);
     ctx.font = SUB_FONT;
     ctx.fillStyle = TEXT_DIM;
-    ctx.globalAlpha = status === 'queued' && !ship ? 0.75 : 0.9;
+    ctx.globalAlpha = (status === 'queued' && !ship ? 0.75 : 0.9) * behind;
     ctx.fillText(`${read}/${sec.count} words · ${statusWord}`, x, y + 18);
   }
 
@@ -205,7 +209,6 @@ export function drawLabels(ctx, world, run, view, analysis) {
 
   const words = analysis.words;
   const pos = world.wordPos;
-  const hero = view.hero && view.hero.on ? view.hero : null;
   const rect = { left: INSET.left, top: Math.min(INSET.top, height * 0.2), right: width - INSET.right, bottom: height - INSET.bottom };
   const pinned = []; // boxes already pinned to the edge, [x, y, w] each
   for (const sec of order) {
