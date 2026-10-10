@@ -19,9 +19,9 @@ export function clusterRadius(count) {
   return Math.max(140, Math.min(340, 140 + 11 * Math.sqrt(count)));
 }
 
-/** Star count for a cluster. */
+/** Star count for a cluster (enough for its families, multiples and chains to resolve up close). */
 export function particleCount(count) {
-  return Math.min(36000, Math.round(21500 + 1750 * Math.sqrt(count)));
+  return Math.min(41000, Math.round(24500 + 2000 * Math.sqrt(count)));
 }
 
 function norm(v) {
