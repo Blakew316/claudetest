@@ -753,7 +753,7 @@ export class Spider {
     const KA = 70;
     this.abKickV += (-KA * this.abKick - 2 * 0.45 * Math.sqrt(KA) * this.abKickV) * dt;
     this.abKick = clamp(this.abKick + this.abKickV * dt, -0.3, 0.38);
-    let aD = rotate(this.aF, Sa, 0.02 * breathe * (this.walking ? 0.5 : 1) + this.abKick);
+    let aD = rotate(this.aF, Sa, 0.02 * breathe * (this.walking ? 0.5 : 1));
     this.dipT += dt;
     const t = this.dipT;
     this.dip = t < 0.16 ? ease(t / 0.16) : t < 0.3 ? 1 : 1 - smooth(0.3, 0.75, t);
@@ -772,7 +772,9 @@ export class Spider {
       this.aL[j] += this.aLV[j] * dt;
     }
     const a = norm(this.aL);
-    this.aD = norm(add(add(scale(this.F, a[0]), this.U, a[1]), this.S, a[2]));
+    const aw = norm(add(add(scale(this.F, a[0]), this.U, a[1]), this.S, a[2]));
+    // The launch and landing swing rides on top: it is a spring of its own.
+    this.aD = rotate(aw, norm(cross(aw, this.U)), this.abKick);
   }
 
   /** Palps flick now and then (more often while it stands and feels), over a slow idle sway. */
@@ -882,7 +884,7 @@ export class Spider {
       // Push-off: the rear legs keep their grip a moment and extend behind the body.
       if (!this.abseil) for (const leg of this.legs) if (leg.k >= 2) leg.holdT = PUSH_TIME * (0.8 + 0.2 * (leg.k - 2)); // legs III and IV drive the jump
       // The abdomen lags the launch and swings down.
-      if (!this.abseil) this.abKickV += 3.2;
+      if (!this.abseil) this.impact = { t: 0, pitch: 0, lower: 0, ab: 3.2 }; // spread over the push, like a landing's
     }
     const u = Math.min(1, (T - crouch) / tr.air);
     this.airU = u;
@@ -1117,7 +1119,7 @@ export class Spider {
   }
 
   /**
-   * Lift a foot and swing it to a star near target, in dur (up to most for a long reach).
+   * Lift a foot and swing it to a star near target, in dur (up to most for a long reach, unless that would whip).
    * Unless forced, a step that would land where it stands is skipped.
    */
   startStep(leg, target, dur, lift, r = 12, force = true, most = 0.34) {
@@ -1127,8 +1129,10 @@ export class Spider {
     leg.from = [...leg.foot];
     leg.to = to;
     leg.step = 0;
-    // A long reach takes a little longer: feet never whip.
-    leg.stepDur = Math.max(dur, Math.min(most, len(sub(to, leg.foot)) / 120));
+    // A long reach takes a little longer: feet never whip, even on a short beat (a foot
+    // a quick pivot left far behind swings back at no more than 300/s on average).
+    const span = len(sub(to, leg.foot));
+    leg.stepDur = Math.max(dur, Math.min(most, span / 120), Math.min(0.34, span / 300));
     // Leave at the speed the foot already had (zero from a plant): a foot caught from the
     // air carries on (up to 240/s) and slows onto its star, never on down past it (carried
     // down no more than 2.5 times the drop to the star, the path stays above it).
