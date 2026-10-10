@@ -13,6 +13,7 @@ const out = await build({
   minify: true,
   format: 'iife',
   target: 'es2020',
+  loader: { '.obj': 'text', '.png': 'dataurl' }, // the hero's mesh and textures, inlined
   write: false,
 });
 const js = out.outputFiles[0].text.replace(/<\/script/gi, '<\\/script');

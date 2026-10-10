@@ -31,6 +31,10 @@ import { makeBall } from './galaxy.js';
 import { mulberry32 } from '../core/rng.js';
 import { LEG_COUNT, MAX_TENTACLES } from '../core/contracts.js';
 import { ABDOMEN, CEPH, SCALE as SS } from './spider.js';
+import { createIronMan } from './ironman.js';
+
+/** Who crawls the clusters: 'ironman' (the suit, hovering and flying) or 'spider'. */
+const AVATAR = 'ironman';
 
 export const FOV = 50;
 // Star sprites are sized in reference pixels: pixels of a 900px-tall frame. One
@@ -38,6 +42,7 @@ export const FOV = 50;
 // (and the field its density and brightness) on any window or screen.
 const REF_SCALE = 450 / Math.tan((FOV * Math.PI) / 360);
 const TENTACLE_DOTS = 200;
+const TENTACLE_RGB = new THREE.Color(TENTACLE).toArray();
 const SILK_SUB = 5;
 const SILK_MAX = 520 * SILK_SUB + 24;
 const MOTES = 500; // dust motes drifting past the lens
@@ -461,6 +466,8 @@ export function createView3D(canvas) {
   composer.addPass(new RenderPass(scene, camera));
   composer.addPass(new UnrealBloomPass(new THREE.Vector2(512, 512), 0.5, 0.35, 0.3));
   composer.addPass(new OutputPass());
+  const hero = AVATAR === 'ironman' ? createIronMan() : null;
+  if (hero) scene.add(hero.group);
 
   const orbit = { yaw: 0, pitch: 0 };
   const size = { w: 1, h: 1 };
@@ -675,13 +682,15 @@ export function createView3D(canvas) {
     const core = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 12), new THREE.MeshBasicMaterial({ color: FLAG, depthTest: false, fog: false, transparent: true, opacity: 0.9 }));
     core.matrixAutoUpdate = false;
     core.renderOrder = 20;
+    // The spider's tendrils, or Iron Man's pulsar rays (additive, so they burn into the bloom).
     const tentacles = new THREE.Points(
-      dynamicGeometry(MAX_TENTACLES * TENTACLE_DOTS),
-      new THREE.PointsMaterial({ color: TENTACLE, size: 3, sizeAttenuation: false, transparent: true, depthWrite: false, depthTest: false, fog: false }),
+      dynamicGeometry(MAX_TENTACLES * TENTACLE_DOTS, 3, 3),
+      new THREE.PointsMaterial({ vertexColors: true, size: 3, sizeAttenuation: false, transparent: true, depthWrite: false, depthTest: false, fog: false, blending: hero ? THREE.AdditiveBlending : THREE.NormalBlending }),
     );
     tentacles.renderOrder = 15;
     const silk = new THREE.Line(dynamicGeometry(SILK_MAX, 3, 4), new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false }));
     root.add(silk, tentacles, limbs, joints, hairs, spinnerets, abdomen, ceph, eyeBalls, eyes, eyesSmall, core);
+    if (hero) for (const o of [silk, limbs, joints, hairs, spinnerets, abdomen, ceph, eyeBalls, eyes, eyesSmall, core]) o.visible = false;
 
     const fat = [hairs];
     W = { root, motes, mbase, mglow, clusters, streams, words, wcol, wordKey: '', world, abdomen, ceph, limbs, joints, hairs, eyeBalls, eyes, eyesSmall, spinnerets, core, tentacles, silk, fat, hairBuf: new Float32Array(LEG_COUNT * HAIRS * 6) };
@@ -823,150 +832,185 @@ export function createView3D(canvas) {
       W.wcol.needsUpdate = true;
     }
 
-    // Body parts: cephalothorax, and the abdomen hanging off the waist, breathing.
-    const { F, U, S } = spider;
-    const breath = 1 + 0.03 * Math.sin(spider.time * 2.1);
-    const ab = spider.abdomenFrame();
-    setBody(W.abdomen, ab.c, ab.F, ab.U, ab.S, ABDOMEN.RX * breath, ABDOMEN.RY * breath, ABDOMEN.RZ * breath);
-    setBody(W.ceph, spider.cephCenter(), F, U, S, CEPH.RX, CEPH.RY, CEPH.RZ);
-    // Heartbeat: a quick double pulse, then rest.
-    const beat = spider.time * 1.6 - Math.floor(spider.time * 1.6);
-    const pulse = 1 + 0.18 * (Math.exp(-((beat - 0.1) ** 2) / 0.002) + 0.6 * Math.exp(-((beat - 0.28) ** 2) / 0.002));
-    setBody(W.core, add(add(ab.c, ab.U, ABDOMEN.RZ * 0.55), ab.F, ABDOMEN.RX * 0.12), ab.F, ab.U, ab.S, ABDOMEN.RX * 0.44, ABDOMEN.RY * 0.09 * pulse, ABDOMEN.RZ * 0.09 * pulse);
+    // The crawler: Iron Man, or the spider's body, legs, eyes and spinnerets.
+    let from; // where the reading tentacles leave it
+    let U; // its up
+    if (hero) {
+      const wpos = W.world.wordPos;
+      hero.update(spider, dt, camera, run.tentacles.map((tn) => [wpos[tn.wordId * 3], wpos[tn.wordId * 3 + 1], wpos[tn.wordId * 3 + 2]]));
+      from = hero.chest();
+      U = hero.up();
+    } else {
+      // Body parts: cephalothorax, and the abdomen hanging off the waist, breathing.
+      const { F, S } = spider;
+      U = spider.U;
+      const breath = 1 + 0.03 * Math.sin(spider.time * 2.1);
+      const ab = spider.abdomenFrame();
+      setBody(W.abdomen, ab.c, ab.F, ab.U, ab.S, ABDOMEN.RX * breath, ABDOMEN.RY * breath, ABDOMEN.RZ * breath);
+      setBody(W.ceph, spider.cephCenter(), F, U, S, CEPH.RX, CEPH.RY, CEPH.RZ);
+      // Heartbeat: a quick double pulse, then rest.
+      const beat = spider.time * 1.6 - Math.floor(spider.time * 1.6);
+      const pulse = 1 + 0.18 * (Math.exp(-((beat - 0.1) ** 2) / 0.002) + 0.6 * Math.exp(-((beat - 0.28) ** 2) / 0.002));
+      setBody(W.core, add(add(ab.c, ab.U, ABDOMEN.RZ * 0.55), ab.F, ABDOMEN.RX * 0.12), ab.F, ab.U, ab.S, ABDOMEN.RX * 0.44, ABDOMEN.RY * 0.09 * pulse, ABDOMEN.RZ * 0.09 * pulse);
 
-    // Legs: all seven segments (coxa, femur, patella, tibia, metatarsus, tarsus,
-    // paired claws) as tapered 3D limbs with ball joints, and setae and spines.
-    const hb = W.hairBuf;
-    let hi = 0;
-    const cc = spider.cephCenter();
-    spider.legs.forEach((leg, i) => {
-      const { hip, knee, ankle, tip } = leg;
-      const coxa0 = lerp3(hip, cc, 0.32);
-      const pat = lerp3(knee, ankle, 0.16);
-      const tib = lerp3(knee, ankle, 0.6);
-      let li = i * LEG_SEGS;
-      // A real femur is bowed: bend its middle up and out a little.
-      const fl = len3(sub(knee, hip));
-      const out = norm(sub(hip, cc));
-      const fmid = add(add(lerp3(hip, knee, 0.5), U, fl * 0.07), out, fl * 0.04);
-      limb(li++, coxa0, hip, 2.4 * LR * SS);
-      limb(li++, hip, fmid, 2.05 * LR * SS);
-      limb(li++, fmid, knee, 1.75 * LR * SS);
-      limb(li++, knee, pat, 1.55 * LR * SS);
-      limb(li++, pat, tib, 1.36 * LR * SS);
-      limb(li++, tib, ankle, 0.98 * LR * SS);
-      limb(li++, ankle, tip, 0.66 * LR * SS);
-      const td = norm(sub(tip, ankle));
-      const side = norm(cross(td, U));
-      for (const sg of [-1, 1]) limb(li++, tip, add(add(add(tip, td, 1.2 * SS), side, sg * 0.55 * SS), U, -0.7 * SS), 0.26 * SS);
-      let ji = i * 6;
-      joint(ji++, hip, 2.25 * LR * SS);
-      joint(ji++, knee, 1.85 * LR * SS);
-      joint(ji++, pat, 1.5 * LR * SS);
-      joint(ji++, tib, 1.18 * LR * SS);
-      joint(ji++, ankle, 0.92 * LR * SS);
-      joint(ji++, tip, 0.55 * LR * SS);
-      // Setae along femur, patella-tibia and metatarsus; every 7th a long, stiffer spine.
-      // [from, to, radius, count, kind]: setae with a few spines, then the
-      // scopula: a dense pad of short hairs under the metatarsus and tarsus.
-      const groups = [
-        [hip, knee, 1.95 * LR * SS, 16, 0],
-        [knee, tib, 1.45 * LR * SS, 18, 0],
-        [tib, ankle, 1.0 * LR * SS, 14, 1],
-        [ankle, tip, 0.7 * LR * SS, 12, 1],
-      ];
-      let k = 0;
-      for (const [a, c, rad, count, kind] of groups) {
-        const dir = norm(sub(c, a));
-        const sd = norm(cross(dir, U));
-        for (let j = 0; j < count; j++, k++) {
-          const t = 0.08 + (j / count) * 0.86;
-          const p0 = add(a, sub(c, a), t);
-          const around = (k * 2.39996) % (Math.PI * 2);
-          // Setae all round (more on top); the scopula only underneath.
-          const radial = kind
-            ? norm(add(add([0, 0, 0], sd, Math.cos(around) * 0.6), U, -1))
-            : norm(add(add([0, 0, 0], sd, Math.cos(around)), U, Math.abs(Math.sin(around)) + 0.25));
-          const base = add(p0, radial, rad);
-          const spine = !kind && k % 7 === 3;
-          const tipDir = kind ? norm(add(radial, dir, 0.6)) : norm(add(radial, dir, spine ? -0.35 : -0.75));
-          const lenH = kind ? 1.1 + 0.4 * ((k * 0.618) % 1) : spine ? 4.6 : 2.4 + 0.8 * ((k * 0.618) % 1);
-          hb.set(base, hi);
-          hb.set(add(base, tipDir, lenH * SS), hi + 3);
-          hi += 6;
+      // Legs: all seven segments (coxa, femur, patella, tibia, metatarsus, tarsus,
+      // paired claws) as tapered 3D limbs with ball joints, and setae and spines.
+      const hb = W.hairBuf;
+      let hi = 0;
+      const cc = spider.cephCenter();
+      spider.legs.forEach((leg, i) => {
+        const { hip, knee, ankle, tip } = leg;
+        const coxa0 = lerp3(hip, cc, 0.32);
+        const pat = lerp3(knee, ankle, 0.16);
+        const tib = lerp3(knee, ankle, 0.6);
+        let li = i * LEG_SEGS;
+        // A real femur is bowed: bend its middle up and out a little.
+        const fl = len3(sub(knee, hip));
+        const out = norm(sub(hip, cc));
+        const fmid = add(add(lerp3(hip, knee, 0.5), U, fl * 0.07), out, fl * 0.04);
+        limb(li++, coxa0, hip, 2.4 * LR * SS);
+        limb(li++, hip, fmid, 2.05 * LR * SS);
+        limb(li++, fmid, knee, 1.75 * LR * SS);
+        limb(li++, knee, pat, 1.55 * LR * SS);
+        limb(li++, pat, tib, 1.36 * LR * SS);
+        limb(li++, tib, ankle, 0.98 * LR * SS);
+        limb(li++, ankle, tip, 0.66 * LR * SS);
+        const td = norm(sub(tip, ankle));
+        const side = norm(cross(td, U));
+        for (const sg of [-1, 1]) limb(li++, tip, add(add(add(tip, td, 1.2 * SS), side, sg * 0.55 * SS), U, -0.7 * SS), 0.26 * SS);
+        let ji = i * 6;
+        joint(ji++, hip, 2.25 * LR * SS);
+        joint(ji++, knee, 1.85 * LR * SS);
+        joint(ji++, pat, 1.5 * LR * SS);
+        joint(ji++, tib, 1.18 * LR * SS);
+        joint(ji++, ankle, 0.92 * LR * SS);
+        joint(ji++, tip, 0.55 * LR * SS);
+        // Setae along femur, patella-tibia and metatarsus; every 7th a long, stiffer spine.
+        // [from, to, radius, count, kind]: setae with a few spines, then the
+        // scopula: a dense pad of short hairs under the metatarsus and tarsus.
+        const groups = [
+          [hip, knee, 1.95 * LR * SS, 16, 0],
+          [knee, tib, 1.45 * LR * SS, 18, 0],
+          [tib, ankle, 1.0 * LR * SS, 14, 1],
+          [ankle, tip, 0.7 * LR * SS, 12, 1],
+        ];
+        let k = 0;
+        for (const [a, c, rad, count, kind] of groups) {
+          const dir = norm(sub(c, a));
+          const sd = norm(cross(dir, U));
+          for (let j = 0; j < count; j++, k++) {
+            const t = 0.08 + (j / count) * 0.86;
+            const p0 = add(a, sub(c, a), t);
+            const around = (k * 2.39996) % (Math.PI * 2);
+            // Setae all round (more on top); the scopula only underneath.
+            const radial = kind
+              ? norm(add(add([0, 0, 0], sd, Math.cos(around) * 0.6), U, -1))
+              : norm(add(add([0, 0, 0], sd, Math.cos(around)), U, Math.abs(Math.sin(around)) + 0.25));
+            const base = add(p0, radial, rad);
+            const spine = !kind && k % 7 === 3;
+            const tipDir = kind ? norm(add(radial, dir, 0.6)) : norm(add(radial, dir, spine ? -0.35 : -0.75));
+            const lenH = kind ? 1.1 + 0.4 * ((k * 0.618) % 1) : spine ? 4.6 : 2.4 + 0.8 * ((k * 0.618) % 1);
+            hb.set(base, hi);
+            hb.set(add(base, tipDir, lenH * SS), hi + 3);
+            hi += 6;
+          }
+        }
+      });
+      // The pedicel: the narrow waist joining cephalothorax and abdomen.
+      let li = LEG_COUNT * LEG_SEGS;
+      limb(li++, add(cc, F, -CEPH.RX * 0.8), add(ab.c, ab.F, ABDOMEN.RX * 0.88), 1.7 * SS);
+      // Fangs (chelicerae) and two jointed palps at the face.
+      const face = spider.face();
+      // Chelicerae: a stout base, and a curved fang folding in under it, flexing a little.
+      for (const sg of [-1, 1]) {
+        const base = add(add(face, S, sg * 2.2 * SS), U, -1.0 * SS);
+        const tipC = add(add(base, F, 2.4 * SS), U, -3.4 * SS);
+        const flex = 0.25 + 0.2 * Math.sin(spider.time * 2.3 + (sg > 0 ? 0.9 : 0));
+        limb(li++, base, tipC, 1.8 * SS);
+        limb(li++, tipC, add(add(add(tipC, S, -sg * (1.3 + flex) * SS), U, -1.0 * SS), F, 0.5 * SS), 0.42 * SS);
+      }
+      for (const sg of [-1, 1]) {
+        const tap = spider.palpTap ? spider.palpTap[sg > 0 ? 1 : 0] : Math.sin(spider.time * 3.1 + (sg > 0 ? 1.4 : 0)) * 0.35;
+        const p0 = add(add(face, S, sg * 3.8 * SS), U, -0.5 * SS);
+        const p1 = add(add(add(p0, F, 5 * SS), S, sg * 3.5 * SS), U, (3 + tap * 3) * SS);
+        const p2 = add(add(add(p1, F, 6 * SS), S, sg * 1.5 * SS), U, (-2 + tap * 2) * SS);
+        const p3 = add(add(p2, F, 4 * SS), U, -4 * SS);
+        limb(li++, p0, p1, 1.15 * SS);
+        limb(li++, p1, p2, 0.95 * SS);
+        limb(li++, p2, p3, 0.75 * SS);
+      }
+      // Spinnerets: three pairs of short finger-like spigots at the tip of the abdomen.
+      const spinTip = spider.spinneret();
+      for (let q = 0; q < 3; q++) {
+        for (const sg of [-1, 1]) {
+          const b0 = add(add(spinTip, ab.S, sg * (0.5 + 0.45 * q) * SS), ab.U, (-0.6 - 0.5 * q) * SS);
+          limb(li++, b0, add(add(add(b0, ab.F, -(1.6 - 0.3 * q) * SS), ab.S, sg * 0.5 * SS), ab.U, -0.4 * SS), (0.55 - 0.1 * q) * SS);
         }
       }
-    });
-    // The pedicel: the narrow waist joining cephalothorax and abdomen.
-    let li = LEG_COUNT * LEG_SEGS;
-    limb(li++, add(cc, F, -CEPH.RX * 0.8), add(ab.c, ab.F, ABDOMEN.RX * 0.88), 1.7 * SS);
-    // Fangs (chelicerae) and two jointed palps at the face.
-    const face = spider.face();
-    // Chelicerae: a stout base, and a curved fang folding in under it, flexing a little.
-    for (const sg of [-1, 1]) {
-      const base = add(add(face, S, sg * 2.2 * SS), U, -1.0 * SS);
-      const tipC = add(add(base, F, 2.4 * SS), U, -3.4 * SS);
-      const flex = 0.25 + 0.2 * Math.sin(spider.time * 2.3 + (sg > 0 ? 0.9 : 0));
-      limb(li++, base, tipC, 1.8 * SS);
-      limb(li++, tipC, add(add(add(tipC, S, -sg * (1.3 + flex) * SS), U, -1.0 * SS), F, 0.5 * SS), 0.42 * SS);
-    }
-    for (const sg of [-1, 1]) {
-      const tap = spider.palpTap ? spider.palpTap[sg > 0 ? 1 : 0] : Math.sin(spider.time * 3.1 + (sg > 0 ? 1.4 : 0)) * 0.35;
-      const p0 = add(add(face, S, sg * 3.8 * SS), U, -0.5 * SS);
-      const p1 = add(add(add(p0, F, 5 * SS), S, sg * 3.5 * SS), U, (3 + tap * 3) * SS);
-      const p2 = add(add(add(p1, F, 6 * SS), S, sg * 1.5 * SS), U, (-2 + tap * 2) * SS);
-      const p3 = add(add(p2, F, 4 * SS), U, -4 * SS);
-      limb(li++, p0, p1, 1.15 * SS);
-      limb(li++, p1, p2, 0.95 * SS);
-      limb(li++, p2, p3, 0.75 * SS);
-    }
-    // Spinnerets: three pairs of short finger-like spigots at the tip of the abdomen.
-    const spinTip = spider.spinneret();
-    for (let q = 0; q < 3; q++) {
-      for (const sg of [-1, 1]) {
-        const b0 = add(add(spinTip, ab.S, sg * (0.5 + 0.45 * q) * SS), ab.U, (-0.6 - 0.5 * q) * SS);
-        limb(li++, b0, add(add(add(b0, ab.F, -(1.6 - 0.3 * q) * SS), ab.S, sg * 0.5 * SS), ab.U, -0.4 * SS), (0.55 - 0.1 * q) * SS);
+      W.limbs.instanceMatrix.needsUpdate = true;
+      W.joints.instanceMatrix.needsUpdate = true;
+      writeSegments(W.hairs, hb);
+
+      // Eight eyes in two rows on the front of the cephalothorax: two big anterior median eyes.
+      const eyeAt = (sx, up) => add(add(add(face, S, sx * SS), U, (up - 2.5) * SS), F, -1.5 * SS);
+      const glint = (p, r) => add(add(p, F, r * 0.55), U, r * 0.45);
+      const ep = W.eyes.geometry.attributes.position.array;
+      const es = W.eyesSmall.geometry.attributes.position.array;
+      const eyeDefs = [[-1.5, 4.0, 0.95], [1.5, 4.0, 0.95], [-3.6, 3.4, 0.55], [3.6, 3.4, 0.55], [-2.4, 5.8, 0.45], [2.4, 5.8, 0.45], [-4.6, 4.9, 0.5], [4.6, 4.9, 0.5]];
+      eyeDefs.forEach(([sx, up, er], k) => {
+        const pe = eyeAt(sx, up);
+        const r = er * SS;
+        mat4.makeScale(r, r, r);
+        mat4.setPosition(pe[0], pe[1], pe[2]);
+        W.eyeBalls.setMatrixAt(k, mat4);
+        if (k < 2) ep.set(glint(pe, r), k * 3);
+        else es.set(glint(pe, r), (k - 2) * 3);
+      });
+      W.eyeBalls.instanceMatrix.needsUpdate = true;
+      for (const e of [W.eyes, W.eyesSmall]) {
+        e.geometry.attributes.position.needsUpdate = true;
+        e.geometry.computeBoundingSphere();
       }
+      const spin = spider.spinneret();
+      const sp3 = W.spinnerets.geometry.attributes.position.array;
+      for (let k = 0; k < 3; k++) sp3.set(add(add(spin, ab.S, (k - 1) * 2.2 * SS), ab.U, -1.5 * SS), k * 3);
+      W.spinnerets.geometry.attributes.position.needsUpdate = true;
+      W.spinnerets.geometry.computeBoundingSphere();
+      from = spider.cephCenter();
     }
-    W.limbs.instanceMatrix.needsUpdate = true;
-    W.joints.instanceMatrix.needsUpdate = true;
-    writeSegments(W.hairs, hb);
 
-    // Eight eyes in two rows on the front of the cephalothorax: two big anterior median eyes.
-    const eyeAt = (sx, up) => add(add(add(face, S, sx * SS), U, (up - 2.5) * SS), F, -1.5 * SS);
-    const glint = (p, r) => add(add(p, F, r * 0.55), U, r * 0.45);
-    const ep = W.eyes.geometry.attributes.position.array;
-    const es = W.eyesSmall.geometry.attributes.position.array;
-    const eyeDefs = [[-1.5, 4.0, 0.95], [1.5, 4.0, 0.95], [-3.6, 3.4, 0.55], [3.6, 3.4, 0.55], [-2.4, 5.8, 0.45], [2.4, 5.8, 0.45], [-4.6, 4.9, 0.5], [4.6, 4.9, 0.5]];
-    eyeDefs.forEach(([sx, up, er], k) => {
-      const pe = eyeAt(sx, up);
-      const r = er * SS;
-      mat4.makeScale(r, r, r);
-      mat4.setPosition(pe[0], pe[1], pe[2]);
-      W.eyeBalls.setMatrixAt(k, mat4);
-      if (k < 2) ep.set(glint(pe, r), k * 3);
-      else es.set(glint(pe, r), (k - 2) * 3);
-    });
-    W.eyeBalls.instanceMatrix.needsUpdate = true;
-    for (const e of [W.eyes, W.eyesSmall]) {
-      e.geometry.attributes.position.needsUpdate = true;
-      e.geometry.computeBoundingSphere();
-    }
-    const spin = spider.spinneret();
-    const sp3 = W.spinnerets.geometry.attributes.position.array;
-    for (let k = 0; k < 3; k++) sp3.set(add(add(spin, ab.S, (k - 1) * 2.2 * SS), ab.U, -1.5 * SS), k * 3);
-    W.spinnerets.geometry.attributes.position.needsUpdate = true;
-    W.spinnerets.geometry.computeBoundingSphere();
-
-    // Tentacles: dotted beziers to the words, rippling like tendrils.
+    // Tentacles: dotted beziers to the words, rippling like tendrils; for Iron
+    // Man, pulsar rays: straight beams from his nearer palm, bright pulses racing
+    // out along them and a hot tip where the beam is still reaching.
     const tp = W.tentacles.geometry.attributes.position.array;
+    const tcol = W.tentacles.geometry.attributes.color.array;
     let dots = 0;
     const wp = W.world.wordPos;
-    const p = spider.cephCenter();
     for (const tn of run.tentacles) {
       const tx = wp[tn.wordId * 3];
       const ty = wp[tn.wordId * 3 + 1];
       const tz = wp[tn.wordId * 3 + 2];
+      if (hero) {
+        const o0 = hero.palm([tx, ty, tz]);
+        const L = Math.hypot(tx - o0[0], ty - o0[1], tz - o0[2]) || 1;
+        const n = Math.min(TENTACLE_DOTS - 1, Math.max(2, Math.floor(L / 2.5)));
+        const m = Math.floor(n * tn.p);
+        for (let i = 0; i <= m && dots < MAX_TENTACLES * TENTACLE_DOTS; i++) {
+          const u = i / n;
+          const ph = (u * L) / 38 - t * 3.2 + tn.wordId * 0.37;
+          const pulse = Math.exp(-((ph - Math.floor(ph) - 0.5) ** 2) / 0.006);
+          const g = 0.3 + 0.75 * pulse + (m - i < 3 && tn.p < 1 ? 0.7 : 0);
+          tp[dots * 3] = o0[0] + (tx - o0[0]) * u;
+          tp[dots * 3 + 1] = o0[1] + (ty - o0[1]) * u;
+          tp[dots * 3 + 2] = o0[2] + (tz - o0[2]) * u;
+          tcol[dots * 3] = g * (0.5 + 0.35 * pulse);
+          tcol[dots * 3 + 1] = g * (0.82 + 0.1 * pulse);
+          tcol[dots * 3 + 2] = g;
+          dots++;
+        }
+        continue;
+      }
+      const p = from;
       const dx = tx - p[0];
       const dy = ty - p[1];
       const dz = tz - p[2];
@@ -987,56 +1031,61 @@ export function createView3D(canvas) {
         tp[dots * 3] = v * v * o0[0] + 2 * v * u * ctl[0] + u * u * tx + side[0] * wave;
         tp[dots * 3 + 1] = v * v * o0[1] + 2 * v * u * ctl[1] + u * u * ty + side[1] * wave;
         tp[dots * 3 + 2] = v * v * o0[2] + 2 * v * u * ctl[2] + u * u * tz + side[2] * wave;
+        tcol.set(TENTACLE_RGB, dots * 3);
         dots++;
       }
     }
     W.tentacles.geometry.setDrawRange(0, dots);
     W.tentacles.geometry.attributes.position.needsUpdate = true;
+    W.tentacles.geometry.attributes.color.needsUpdate = true;
     W.tentacles.geometry.computeBoundingSphere();
 
-    // Silk: sagging strands between anchors, older ones fading; the live dragline sways.
-    const sp = W.silk.geometry.attributes.position.array;
-    const sc = W.silk.geometry.attributes.color.array;
-    const anchors = run.silk.slice(-Math.floor((SILK_MAX - 24) / SILK_SUB));
-    let vi = 0;
-    const col = new THREE.Color();
-    const pushV = (x, y, z, s, a) => {
-      sp[vi * 3] = x;
-      sp[vi * 3 + 1] = y;
-      sp[vi * 3 + 2] = z;
-      col.set(analysis.sections[s]?.color ?? SPIDER);
-      sc[vi * 4] = col.r;
-      sc[vi * 4 + 1] = col.g;
-      sc[vi * 4 + 2] = col.b;
-      sc[vi * 4 + 3] = a;
-      vi++;
-    };
-    const strand = (a, b2, s, alpha, subs, swayAmp, sagK = 0.06) => {
-      const L = Math.hypot(b2[0] - a[0], b2[1] - a[1], b2[2] - a[2]);
-      for (let k = 1; k <= subs; k++) {
-        const u = k / subs;
-        const sag = Math.sin(Math.PI * u) * L * sagK;
-        const sw = Math.sin(Math.PI * u) * swayAmp;
-        pushV(a[0] + (b2[0] - a[0]) * u + sw, a[1] + (b2[1] - a[1]) * u - sag, a[2] + (b2[2] - a[2]) * u + sw * 0.6, s, alpha);
+    if (!hero) {
+      const spin = spider.spinneret();
+      // Silk: sagging strands between anchors, older ones fading; the live dragline sways.
+      const sp = W.silk.geometry.attributes.position.array;
+      const sc = W.silk.geometry.attributes.color.array;
+      const anchors = run.silk.slice(-Math.floor((SILK_MAX - 24) / SILK_SUB));
+      let vi = 0;
+      const col = new THREE.Color();
+      const pushV = (x, y, z, s, a) => {
+        sp[vi * 3] = x;
+        sp[vi * 3 + 1] = y;
+        sp[vi * 3 + 2] = z;
+        col.set(analysis.sections[s]?.color ?? SPIDER);
+        sc[vi * 4] = col.r;
+        sc[vi * 4 + 1] = col.g;
+        sc[vi * 4 + 2] = col.b;
+        sc[vi * 4 + 3] = a;
+        vi++;
+      };
+      const strand = (a, b2, s, alpha, subs, swayAmp, sagK = 0.06) => {
+        const L = Math.hypot(b2[0] - a[0], b2[1] - a[1], b2[2] - a[2]);
+        for (let k = 1; k <= subs; k++) {
+          const u = k / subs;
+          const sag = Math.sin(Math.PI * u) * L * sagK;
+          const sw = Math.sin(Math.PI * u) * swayAmp;
+          pushV(a[0] + (b2[0] - a[0]) * u + sw, a[1] + (b2[1] - a[1]) * u - sag, a[2] + (b2[2] - a[2]) * u + sw * 0.6, s, alpha);
+        }
+      };
+      if (anchors.length) {
+        const nA = anchors.length;
+        pushV(anchors[0].x, anchors[0].y, anchors[0].z, anchors[0].s, 0.1);
+        for (let i = 1; i < nA; i++) {
+          const a = anchors[i - 1];
+          const c = anchors[i];
+          strand([a.x, a.y, a.z], [c.x, c.y, c.z], c.s, 0.1 + 0.62 * (i / nA) ** 0.7, SILK_SUB, 0);
+        }
+        const last = anchors[nA - 1];
+        // The live dragline: slack and swaying at rest, pulled near straight by a leap.
+        const taut = spider.taut || 0;
+        strand([last.x, last.y, last.z], spin, run.silkSection, 0.85, 20, Math.sin(t * 1.3) * 3 * (1 - taut), 0.06 * (1 - 0.8 * taut));
       }
-    };
-    if (anchors.length) {
-      const nA = anchors.length;
-      pushV(anchors[0].x, anchors[0].y, anchors[0].z, anchors[0].s, 0.1);
-      for (let i = 1; i < nA; i++) {
-        const a = anchors[i - 1];
-        const c = anchors[i];
-        strand([a.x, a.y, a.z], [c.x, c.y, c.z], c.s, 0.1 + 0.62 * (i / nA) ** 0.7, SILK_SUB, 0);
-      }
-      const last = anchors[nA - 1];
-      // The live dragline: slack and swaying at rest, pulled near straight by a leap.
-      const taut = spider.taut || 0;
-      strand([last.x, last.y, last.z], spin, run.silkSection, 0.85, 20, Math.sin(t * 1.3) * 3 * (1 - taut), 0.06 * (1 - 0.8 * taut));
+      W.silk.geometry.setDrawRange(0, vi);
+      W.silk.geometry.attributes.position.needsUpdate = true;
+      W.silk.geometry.attributes.color.needsUpdate = true;
+      W.silk.geometry.computeBoundingSphere();
     }
-    W.silk.geometry.setDrawRange(0, vi);
-    W.silk.geometry.attributes.position.needsUpdate = true;
-    W.silk.geometry.attributes.color.needsUpdate = true;
-    W.silk.geometry.computeBoundingSphere();
 
     composer.render();
   }

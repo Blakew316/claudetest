@@ -46,13 +46,13 @@ const unit = (v) => {
   return v;
 };
 
-const POINTS = ['p', 'b', 'cC', 'fC', 'sC', 'aC'];
+const POINTS = ['p', 'b', 'v', 'cC', 'fC', 'sC', 'aC'];
 const AXES = ['F', 'U', 'S', 'aF', 'aU', 'aS'];
 const JOINTS = ['hip', 'knee', 'ankle', 'tip', 'foot'];
 
 /** What the renderer reads, at world scale (cC/fC/sC: cephalothorax centre, face, spinneret; a*: abdomen frame). */
 function pose(legs) {
-  const o = { time: 0, taut: 0, jolt: 0, palpTap: [0, 0], legs: Array.from({ length: legs }, () => Object.fromEntries(JOINTS.map((j) => [j, [0, 0, 0]]))) };
+  const o = { time: 0, taut: 0, jolt: 0, air: 0, crouch: 0, palpTap: [0, 0], legs: Array.from({ length: legs }, () => Object.fromEntries(JOINTS.map((j) => [j, [0, 0, 0]]))) };
   for (const k of [...POINTS, ...AXES]) o[k] = [0, 0, 0];
   return o;
 }
@@ -170,6 +170,7 @@ export class Spider {
     const m = this.sim;
     down(m.p, o.p);
     down(m.b, o.b);
+    down(m.v, o.v);
     copy(m.F, o.F);
     copy(m.U, o.U);
     copy(m.S, o.S);
@@ -182,6 +183,8 @@ export class Spider {
     copy(a.U, o.aU);
     copy(a.S, o.aS);
     o.time = m.time;
+    o.air = m.mode === 'jump' && m.launched ? 1 : 0; // off the web (leaping or abseiling)
+    o.crouch = m.mode === 'jump' && !m.launched ? 1 : 0; // aiming and winding up a leap
     o.taut = this.taut;
     o.jolt = -this.hit * Math.exp(-7 * this.hitAge) * Math.sin(38 * this.hitAge);
     o.palpTap[0] = m.palpTap[0];
@@ -204,6 +207,8 @@ export class Spider {
     for (const k of POINTS) mix(a[k], c[k], alpha, d[k]);
     for (const k of AXES) unit(mix(a[k], c[k], alpha, d[k]));
     d.time = a.time + (c.time - a.time) * alpha;
+    d.air = c.air;
+    d.crouch = c.crouch;
     d.taut = a.taut + (c.taut - a.taut) * alpha;
     d.jolt = a.jolt + (c.jolt - a.jolt) * alpha;
     d.palpTap[0] = a.palpTap[0] + (c.palpTap[0] - a.palpTap[0]) * alpha;
