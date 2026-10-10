@@ -930,7 +930,13 @@ export class Spider {
       const pitch = clamp(climb * 0.3, -0.3, 0.3) * (1 - land) - 0.16 * land * (1 - smooth(0.93, 1, u));
       this.orient(add(scale(flat, Math.cos(pitch)), UP, Math.sin(pitch)), dt, 4, MAX_TILT_AIR, 0.6);
     }
-    if (u >= 1) this.touchDown(run, tr);
+    if (u >= 1) {
+      this.touchDown(run, tr);
+      // The step that touches down carries on past the arc's end at the speed it came in (not
+      // stopping short at the end for a step, which would stall the body for a frame at contact).
+      this.landOff = scale(this.landV, Math.max(0, T - crouch - tr.air));
+      this.p = add(tr.to, this.landOff);
+    }
   }
 
   /** Feet that pushed off bunched together fan apart as they rise, so the swing into flight starts in order. */
@@ -956,11 +962,9 @@ export class Spider {
     this.mode = 'land';
     this.behaviour = 'land';
     this.landT = 0;
-    let vi = [...this.v];
-    const s = len(vi);
-    if (s > 110) vi = scale(vi, 110 / s);
+    const s = len(this.v);
     this.landOff = [0, 0, 0];
-    this.landV = vi;
+    this.landV = [...this.v]; // (all of it: a capped speed would halve a fast landing's in one step)
     // The impact: the nose dips, the body compresses, the abdomen swings on.
     const hit = clamp(s / 110, 0.4, 1);
     this.poseT = zeroPose();
@@ -985,9 +989,10 @@ export class Spider {
       this.landV[j] += (-K * this.landOff[j] - C * this.landV[j]) * dt;
       this.landOff[j] += this.landV[j] * dt;
     }
-    // Compress, rebound once, settle (a damped oscillation peaking near the first sixth).
+    // Compress, rebound once, settle (a damped oscillation peaking near the first sixth), the
+    // compression growing from contact rather than jumping in on top of the incoming speed.
     const A = this.abseil ? 2.5 : 5.5;
-    const dip = (A * Math.exp(-3.4 * k) * Math.sin(Math.PI * 2.1 * k)) / 0.5;
+    const dip = (A * Math.exp(-3.4 * k) * Math.sin(Math.PI * 2.1 * k) * smooth(0, 0.12, k)) / 0.5;
     this.p = add(add(tr.to, this.landOff), this.hU, -dip);
     this.orient([this.hF[0], 0, this.hF[2]], dt, 3);
     if (k >= 1) {
