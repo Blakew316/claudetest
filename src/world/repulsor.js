@@ -74,8 +74,13 @@ const MUZZLE_SPARKS = 6;
 const EXHAUST_GAS = 8; // gas venting back round the hand: the pushback
 const INTAKE_MOTES = 6;
 const PALM_LIGHT_RANGE = 20; // world units (at unit 1) a palm's light reaches: the hand, the forearm, a little of the chest
-const IMPACT_LIGHT = 9000; // candela at the peak of a blast striking a fighter (it lights both, and the dust)
-const BOLT_LIGHT = 650; // ... a bolt in flight (x unit^2)
+// Lights (candela). The scene's key light is a directional 2.4: an impact's flash, IMPACT_BACK units off the
+// armour toward the shooter, is ~50x that on the armour it strikes and ~1x on the shooter 60-80 units away.
+// (None may sit much closer to a glossy surface than its own few units: a half-float buffer overflows.)
+const IMPACT_LIGHT = 7000; // at the peak of a blast striking a fighter (it lights both, and the dust)
+const IMPACT_BACK = 10; // world units it stands off the struck armour, toward the shooter
+const BOLT_LIGHT = 280; // a bolt in flight (x unit), once clear of the hand
+const MUZZLE_LIGHT = 450; // the palm's flash as it fires (x power)
 const IMPACT_LIGHT_RANGE = 320; // world units
 const SIDES = ['L', 'R'];
 const NONE = [];
@@ -705,7 +710,8 @@ export function createRepulsors(palette = {}) {
   ];
   group.userData.flashes = flashes;
   group.userData.distort = distort.mesh;
-  registerFx({ group, mesh: distort.mesh, flashes });
+  const reg = { group, mesh: distort.mesh, flashes, active: false };
+  registerFx(reg);
 
   const shots = Array.from({ length: SHOTS }, () => ({
     live: false,
@@ -1477,7 +1483,7 @@ export function createRepulsors(palette = {}) {
         if (a < 0.2) {
           glow(e3, (1.8 + 1.6 * (1 - Math.exp(-a / 0.01))) * S * pk, CYAN[0] * 0.8 * f, CYAN[1] * 0.8 * f, CYAN[2] * 0.8 * f, 7 * f * pk);
           glare(e3, 14 * S * pk, CYAN[0] * 0.5 * f + 0.15 * f, CYAN[1] * 0.5 * f + 0.15 * f, CYAN[2] * 0.5 * f + 0.15 * f);
-          lightK[s.side] += (1500 * f + 160 * Math.exp(-a / 0.07)) * pk;
+          lightK[s.side] += (MUZZLE_LIGHT * f + 60 * Math.exp(-a / 0.07)) * pk;
           lightAt[s.side].copy(palm).addScaledVector(dir, 1.2 * S);
           light += 1.4 * f;
           flashAt(0, e3, 1.8 * f * pk, 24 * S);
@@ -1573,7 +1579,7 @@ export function createRepulsors(palette = {}) {
         // The slug seen through the lens, and the air round it lit.
         glow(b3, 2.4 * S * pk, CYAN[0] * 0.5 * k, CYAN[1] * 0.5 * k, CYAN[2] * 0.5 * k, 2.2 * k);
         wisp(b3, 9 * S * pk, CYAN[0] * 0.035 * k, CYAN[1] * 0.035 * k, CYAN[2] * 0.035 * k);
-        lightUp(b3, BOLT_LIGHT * S * S * k);
+        lightUp(b3, BOLT_LIGHT * S * k * smooth(3 * S, 12 * S, xHead));
       }
       // The ionised trail it leaves, and the heat haze in the air behind it, fading from the palm end
       // (each point by how long ago the bolt passed it).
@@ -1634,8 +1640,8 @@ export function createRepulsors(palette = {}) {
         if (ai < 0.6) distort.ring(P, (1.5 + (duel ? 26 : 9) * (1 - Math.exp(-ai / 0.13))) * SI * (heavy ? 1.25 : 1), (duel ? 1.1 : 0.4) * SI * hk * Math.exp(-ai / 0.16) * (1 - Math.exp(-ai / 0.006)), hash(seed + 4.4));
         if (duel) distort.heat(P, 7 * SI, 0.3 * SI * Math.exp(-ai / 0.45) * (1 - Math.exp(-ai / 0.03)), 3, hash(seed + 5.5));
         // Its light: blinding for a frame or two, a short afterglow; on the dust round it too.
-        a3.copy(P).addScaledVector(n3, 3 * SI / DUEL_IMPACT + 1);
-        lightUp(a3, (duel ? IMPACT_LIGHT * hk : 600) * (S * S) * (pf + 0.07 * Math.exp(-ai / 0.25)));
+        a3.copy(P).addScaledVector(n3, duel ? IMPACT_BACK : 4 * S);
+        lightUp(a3, (duel ? IMPACT_LIGHT * hk : 250 * S) * (pf + 0.07 * Math.exp(-ai / 0.25)));
         flashAt(1, P, (3.2 * pf + 0.4 * Math.exp(-ai / 0.12)) * (duel ? 2 * hk : 1), 30 * SI);
         // The Stone on a fighter: arcs crawling over the struck area for half a second.
         if (stone && duel && ai < 0.5) {
@@ -1833,6 +1839,8 @@ export function createRepulsors(palette = {}) {
     }
     blastLight.position.copy(blast.p);
     blastLight.intensity = blast.k;
+    // (Anything burning bright this frame: the pass guards the bloom against an overflowing pixel.)
+    reg.active = blast.k > 1 || lightK.L > 30 || lightK.R > 30 || streaks.count > 0 || beams.count > 0;
     out.light = Math.min(light, 2);
     return out;
   }

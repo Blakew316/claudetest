@@ -9,7 +9,9 @@
  * scene behind) into a half-resolution float buffer. A pass placed after the
  * scene's render and before the bloom looks the scene up through it, with a
  * touch of dispersion where it bends hardest, as a real lens of hot air would.
- * With nothing distorting the pass switches itself off and costs nothing.
+ * It also holds every pixel to a finite value before the bloom (an overflowing
+ * one would be smeared into a glowing square). With nothing distorting and
+ * nothing burning bright the pass switches itself off and costs nothing.
  *
  * Wiring (view3d.js): createDistortPass(renderer) -> { pass, setSize, render };
  * add `pass` to the composer right after the RenderPass, call setSize with the
@@ -188,7 +190,7 @@ export function createDistortPass(renderer) {
   rt.texture.minFilter = rt.texture.magFilter = THREE.LinearFilter;
   rt.texture.generateMipmaps = false;
   const material = new THREE.ShaderMaterial({
-    uniforms: { tDiffuse: { value: null }, tDistort: { value: rt.texture } },
+    uniforms: { tDiffuse: { value: null }, tDistort: { value: rt.texture }, uOn: { value: 0 } },
     vertexShader: /* glsl */ `
       varying vec2 vUv;
       void main() {
@@ -198,13 +200,22 @@ export function createDistortPass(renderer) {
     fragmentShader: /* glsl */ `
       uniform sampler2D tDiffuse;
       uniform sampler2D tDistort;
+      uniform float uOn;
       varying vec2 vUv;
       void main() {
-        vec2 o = 0.5 * texture2D(tDistort, vUv).rg; // device units -> uv
-        vec4 g = texture2D(tDiffuse, vUv - o);
-        float r = texture2D(tDiffuse, vUv - o * 1.06).r;
-        float b = texture2D(tDiffuse, vUv - o * 0.94).b;
-        gl_FragColor = vec4(r, g.g, b, g.a);
+        vec4 c;
+        if (uOn > 0.5) {
+          vec2 o = 0.5 * texture2D(tDistort, vUv).rg; // device units -> uv
+          c = texture2D(tDiffuse, vUv - o);
+          c.r = texture2D(tDiffuse, vUv - o * 1.06).r;
+          c.b = texture2D(tDiffuse, vUv - o * 0.94).b;
+        } else {
+          c = texture2D(tDiffuse, vUv);
+        }
+        // An overflowing pixel (inf or nan: a light too close to a mirror-like plate) would be smeared by
+        // the bloom into a glowing square: hold every pixel to a bright but finite value.
+        c.rgb = clamp(c.rgb, 0.0, 48.0);
+        gl_FragColor = c;
       }`,
     depthTest: false,
     depthWrite: false,
@@ -227,12 +238,14 @@ export function createDistortPass(renderer) {
      */
     render(camera, flashP, flashK) {
       let any = false;
+      let hot = false;
       best[0] = best[1] = null;
       for (const fx of fxs) {
         const on = shown(fx.group);
         fx.mesh.visible = on && fx.mesh.geometry.drawRange.count > 0;
         any = any || fx.mesh.visible;
         if (!on) continue;
+        hot = hot || !!fx.active;
         for (let i = 0; i < 2; i++) if (fx.flashes[i].k > (best[i] ? best[i].k : 0)) best[i] = fx.flashes[i];
       }
       if (flashP && flashK) {
@@ -242,7 +255,8 @@ export function createDistortPass(renderer) {
           flashK.setComponent(i, f ? f.k : 0);
         }
       }
-      pass.enabled = any;
+      pass.enabled = any || hot;
+      material.uniforms.uOn.value = any ? 1 : 0;
       if (!any) return;
       const prev = renderer.getRenderTarget();
       renderer.getClearColor(clear);
