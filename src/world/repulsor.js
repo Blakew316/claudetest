@@ -6,21 +6,26 @@
  * armour (a short-range light at each palm) and the dust round a flash.
  *
  * A repulsor fires discrete blasts in an unhurried, slightly irregular rhythm
- * (one every 0.6-1.0 s per hand; the two alternate when both are on a word).
+ * (one every 0.9-1.4 s per hand; the two alternate when both are on a word).
  * Each blast is the films' repulsor held to what light and plasma would do in
- * vacuum:
- * - charge: the palm emitter ramps from its idle glow to white-hot over a
- *   fifth of a second, a few motes of light spiralling into it, its light
- *   spilling onto the fingers and forearm;
- * - discharge: a beam crosses to the word in a frame or two, a white-hot core
- *   in a cyan sheath and a soft blue glow, thickest at the palm and flickering
- *   along its length; it burns for a few frames, then thins and draws away
- *   toward the word, leaving a faint channel that fades;
- * - muzzle: a concussive ripple in the palm plane, a brief hot flash and a few
- *   fast sparks; the flash lights the suit and the dust round him;
+ * vacuum, paced so the eye can follow it from the hand to the word:
+ * - charge: the palm emitter ramps from its idle glow to white-hot over 0.3 s,
+ *   a few motes of light spiralling into it, its light spilling onto the
+ *   fingers and forearm;
+ * - discharge (the frame `fired` reports, so the arm's recoil lands on it): a
+ *   small white-hot core just ahead of the palm, a short jet of plasma and a
+ *   shock ripple at the palm face, a few fast sparks; the flash lights the suit
+ *   and the dust round him;
+ * - pushback: the backwash, a thin ring blown back past the hand and gas
+ *   venting back round it;
+ * - bolt: a white-hot slug in a cyan sheath, flickering along its length,
+ *   crossing to the word in 0.15-0.35 s and leaving a faint ionised trail that
+ *   fades from the palm end;
  * - impact: a hot white point, an expanding shell of plasma, sparks and embers
  *   flying straight out (no gravity, no air to slow them) and cooling from
  *   white through cyan to nothing, and a faint wisp that dissipates.
+ * The hand stays readable throughout: every hot core is small and sits ahead
+ * of the palm, and the rings are wider than the hand, framing it.
  *
  * The firing schedule is a pure function of the animation clock (slot k of a
  * hand fires at a fixed, jittered time), so a seek shows exactly what live
@@ -32,22 +37,23 @@ import * as THREE from 'three';
 
 const SPARKS = 300; // exhaust accents
 const STREAKS = 640; // sparks' motion blur, intake motes, shock diamonds
-const BEAMS = 32; // repulsor beams and their channels, thruster plumes
+const BEAMS = 32; // bolts, muzzle jets and trails, thruster plumes
 const GLOWS = 192; // palm, flash, impact, ember and wisp glows
 const DISCS = 48; // muzzle ripples and impact shells
 const SHOTS = 24; // blasts alive at once (both hands)
 
-const PERIOD = 0.8; // seconds between one hand's blasts (jittered to 0.6-1.0 s); the other hand fires halfway between
-const JITTER = 0.25; // of a period
-const CHARGE = 0.22; // seconds the palm takes to come up to white-hot before a blast
-const SHOT_LIFE = 1.1; // seconds a blast's effects last (the last embers)
-const BEAM_SPEED = 4500; // world units a second (at unit 1): the beam crosses to a word in a frame or two
-const BEAM_HOLD = 0.04; // seconds the beam burns at full strength
-const BEAM_DECAY = 0.03; // ... then its brightness falls with this time constant
-const BEAM_RETRACT = 0.1; // ... while its palm end draws away to the word over this long
-const BEAM_W0 = 1.35; // the beam's half-width (its outer glow) at the palm, world units at unit 1 (the palm is about 2 wide)
-const BEAM_W1 = 0.8; // ... and at the word
-const MUZZLE_SPARKS = 7;
+const PERIOD = 1.15; // seconds between one hand's blasts (jittered to 0.9-1.4 s); the other hand fires halfway between
+const JITTER = 0.22; // of a period
+const CHARGE = 0.3; // seconds the palm takes to come up to white-hot before a blast
+const SHOT_LIFE = 1.4; // seconds a blast's effects last (the last embers)
+const BOLT_SPEED = 520; // world units a second (at unit 1): slow enough for the eye to follow it out of the hand
+const BOLT_MIN = 0.15; // ... though a near word still takes this long (seconds)
+const BOLT_MAX = 0.35; // ... and a far one no longer
+const BOLT_LEN = 9; // the bolt's motion-blurred length, world units at unit 1 (about a frame of travel)
+const BOLT_W = 0.8; // its half-width (outer glow) at the head; the palm is about 2 wide
+const TRAIL_TAU = 0.12; // seconds: how fast the ionised trail behind the bolt fades
+const MUZZLE_SPARKS = 5;
+const EXHAUST = 8; // gas venting back round the hand: the pushback
 const INTAKE_MOTES = 6;
 const IMPACT_SPARKS = 12;
 const IMPACT_EMBERS = 9;
@@ -635,11 +641,11 @@ export function createRepulsors() {
     s.dir.copy(at).sub(palm);
     s.dist = Math.max(1e-3, s.dir.length());
     s.dir.multiplyScalar(1 / s.dist);
-    // The beam leaves the emitter just off the palm's face.
+    // The bolt leaves the emitter just off the palm's face.
     s.from.copy(palm).addScaledVector(s.dir, Math.min(0.5 * S, 0.5 * s.dist));
     s.to.copy(at);
     s.dist = Math.max(1e-3, s.from.distanceTo(s.to));
-    s.tau = clamp(s.dist / (BEAM_SPEED * S), 0.008, 0.03); // the beam front's crossing time
+    s.tau = clamp(s.dist / (BOLT_SPEED * S), BOLT_MIN, BOLT_MAX); // the bolt's flight time
   }
 
   /**
@@ -737,7 +743,7 @@ export function createRepulsors() {
         const l = d3.length();
         if (l > 1e-3) {
           d3.multiplyScalar(1 / l);
-          c3.addScaledVector(d3, 0.35 * S); // just off the palm's face
+          c3.addScaledVector(d3, 0.6 * S); // just off the palm's face, so the hand stays in view behind it
           lightAt[n].copy(palms[n]).addScaledVector(d3, 0.9 * S);
           if (q > 0.02) {
             // Intake: motes drawn in from round the palm, swirling as they come.
@@ -765,7 +771,7 @@ export function createRepulsors() {
       if (up > 0.01 || q > 0.01) {
         const fl = 0.94 + 0.06 * Math.sin(time * 61 + (n === 'L' ? 0 : 2));
         const h = (0.12 * up + 0.55 * q) * fl;
-        glow(c3, (1.2 + 1.3 * q) * S, CYAN[0] * h, CYAN[1] * h, h, (0.15 * up + 2.4 * q * q) * fl);
+        glow(c3, (1.1 + 0.9 * q) * S, CYAN[0] * h, CYAN[1] * h, h, (0.15 * up + 2 * q * q) * fl);
       }
       lightK[n] += 45 * q;
       light += 0.08 * up + 0.3 * q;
@@ -781,87 +787,115 @@ export function createRepulsors() {
       }
       const palm = palms[s.side];
       const { dir, dist, tau, seed } = s;
-      // The beam's energy: full while it burns, then falling away.
-      const burn = a < BEAM_HOLD ? 1 : Math.exp(-(a - BEAM_HOLD) / BEAM_DECAY);
 
-      // Muzzle: a brief hot flash just off the palm, a shock ripple in the palm plane and a few fast sparks.
-      if (a < 0.16) {
-        const f = Math.exp(-a / 0.022);
-        e3.copy(palm).addScaledVector(dir, 0.6 * S);
-        glow(e3, (2 + 1.4 * (1 - Math.exp(-a / 0.01))) * S, CYAN[0] * 0.6 * f, CYAN[1] * 0.6 * f, 0.6 * f, 3.2 * f);
-        lightK[s.side] += 320 * f;
-        lightAt[s.side].copy(palm).addScaledVector(dir, 0.9 * S);
+      // Muzzle: the cannon going off at the palm face. A small white-hot core just ahead of the
+      // palm (never a glare over the hand), a short jet of plasma down the line of fire, a shock
+      // ripple in the palm plane and a few fast sparks; the flash lights the hand, suit and dust.
+      if (a < 0.24) {
+        const f = Math.exp(-a / 0.03);
+        e3.copy(palm).addScaledVector(dir, 1.1 * S);
+        glow(e3, (1.3 + 0.9 * (1 - Math.exp(-a / 0.012))) * S, CYAN[0] * 0.45 * f, CYAN[1] * 0.45 * f, 0.45 * f, 2.6 * f);
+        lightK[s.side] += 260 * f;
+        lightAt[s.side].copy(palm).addScaledVector(dir, 1.2 * S);
         light += 1.1 * f;
         flashAt(0, e3, 1.4 * f, 22 * S);
-        // The ripple lies in the palm plane, turned a touch toward the camera so it never quite collapses to a line.
+        const fj = Math.exp(-a / 0.045);
+        if (fj > 0.02) {
+          a3.copy(palm).addScaledVector(dir, 0.4 * S);
+          b3.copy(palm).addScaledVector(dir, (0.4 + 5.5 * (1 - Math.exp(-a / 0.015))) * S);
+          beam(a3, b3, 0.85 * S, 0.3 * S, CYAN[0] * 0.5 * fj, CYAN[1] * 0.5 * fj, 0.5 * fj, 1.6 * fj, CYAN[0] * 0.2 * fj, CYAN[1] * 0.2 * fj, 0.2 * fj, 0.3 * fj, seed + 7, 1, 0.3);
+        }
+        // The rings lie across the line of fire, turned a touch toward the camera so they never quite collapse to a line.
         d3.copy(camPos).sub(palm).normalize();
         n3.copy(dir).addScaledVector(d3, 0.15).normalize();
         basis(n3, u3, v3);
-        for (let j = 0; j < 2; j++) {
-          const aj = a - 0.018 * j;
-          if (aj < 0 || aj > 0.06) continue;
-          const fr = Math.exp(-aj / (0.018 - 0.004 * j));
-          const R = (0.6 - 0.15 * j + (2.4 - 0.9 * j) * (1 - Math.exp(-aj / 0.022))) * S;
-          e3.copy(palm).addScaledVector(dir, (0.5 + 1.1 * j + (10 + 24 * j) * aj) * S);
-          disc(e3, u3, v3, R, 0.14 * R, CYAN[0], CYAN[1], CYAN[2], (0.8 - 0.25 * j) * fr, 0.06 * fr, RIPPLE, seed + j * 5.3);
+        if (a < 0.1) {
+          const fr = Math.exp(-a / 0.026);
+          const R = (0.6 + 2.2 * (1 - Math.exp(-a / 0.025))) * S;
+          e3.copy(palm).addScaledVector(dir, (0.5 + 8 * a) * S);
+          disc(e3, u3, v3, R, 0.14 * R, CYAN[0], CYAN[1], CYAN[2], 0.8 * fr, 0.05 * fr, RIPPLE, seed);
         }
-        if (a < 0.14) {
-          basis(dir, u3, v3);
-          for (let i = 0; i < MUZZLE_SPARKS; i++) {
-            const life = 0.05 + 0.08 * hash(seed + i * 5.7);
-            if (a > life) continue;
-            // Mostly down the line of fire, a few flung wide.
-            const th = 2 * Math.PI * hash(seed + i * 3.1);
-            const spread = 0.25 + 1.1 * hash(seed + i * 9.2) ** 2;
-            c3.copy(u3).multiplyScalar(Math.cos(th) * spread).addScaledVector(v3, Math.sin(th) * spread).add(dir).normalize();
-            const spd = (110 + 260 * hash(seed + i * 7.3)) * S;
-            a3.copy(palm).addScaledVector(dir, 0.5 * S).addScaledVector(c3, spd * Math.max(0, a - 0.012));
-            b3.copy(palm).addScaledVector(dir, 0.5 * S).addScaledVector(c3, spd * a + 0.4 * S);
-            const u = a / life;
-            const k = (1 - u) * (1 - u);
-            streak(a3, b3, 0.05 * S, 0.12 * S, CYAN[0] * 0.3 * k, CYAN[1] * 0.3 * k, 0.3 * k, 0, CYAN[0] * 1.1 * k, CYAN[1] * 1.1 * k, 1.1 * k, 1.6 * k);
-          }
+        // Pushback: the blast's backwash, a thin ring blown back past the hand and wrist, wider
+        // than the hand so it frames it rather than covering it, and gas venting back round it.
+        if (a < 0.2) {
+          const fb = (1 - Math.exp(-a / 0.012)) * Math.exp(-a / 0.05);
+          const back = 4.5 * (1 - Math.exp(-a / 0.05)) * S;
+          const R = (1.4 + 2.4 * (1 - Math.exp(-a / 0.04))) * S;
+          e3.copy(palm).addScaledVector(dir, 0.3 * S - back);
+          disc(e3, u3, v3, R, 0.07 * R, CYAN[0], CYAN[1], CYAN[2], 0.75 * fb, 0, RIPPLE, seed + 5.3);
         }
-      }
-
-      // The beam: its front races to the word; it burns, then thins and its palm end draws away to the word.
-      const headU = Math.min(1, a / tau);
-      const tailU = a < BEAM_HOLD ? 0 : Math.min(1, ((a - BEAM_HOLD) / BEAM_RETRACT) ** 1.5);
-      if (burn > 0.012 && tailU < headU - 0.005) {
-        a3.copy(s.from).addScaledVector(dir, tailU * dist);
-        b3.copy(s.from).addScaledVector(dir, headU * dist);
-        const surge = 1 + 0.5 * Math.exp(-a / 0.012); // the first instant is the hottest
-        const k = burn * surge;
-        const thin = 0.2 + 0.8 * burn;
-        const wA = (BEAM_W0 + (BEAM_W1 - BEAM_W0) * tailU) * S * thin; // thickest at the palm, tapering to the word
-        const wB = (BEAM_W0 + (BEAM_W1 - BEAM_W0) * headU) * S * thin;
-        const kB = headU < 1 ? 1.5 : 1; // the racing front burns hottest
-        const kA = 1 - 0.8 * clamp(tailU / 0.12, 0, 1); // the pulse's tail, drawing away, is its faint end
-        beam(a3, b3, wA, wB, CYAN[0] * 0.55 * k * kA, CYAN[1] * 0.55 * k * kA, 0.55 * k * kA, 2.3 * k * kA, CYAN[0] * 0.48 * k * kB, CYAN[1] * 0.48 * k * kB, 0.48 * k * kB, 1.9 * k * kB, seed, 1, 0.55);
-      }
-      // The channel it leaves: a faint blue trace that spreads a little and fades from the palm end.
-      if (a > BEAM_HOLD) {
-        const ac = a - BEAM_HOLD;
-        const kc = 0.06 * (1 - Math.exp(-ac / 0.025)) * Math.exp(-ac / 0.06);
-        if (kc > 0.004) {
-          const w = (0.7 + 2.5 * ac) * S;
-          const kA = kc * Math.exp(-ac / 0.04);
-          beam(s.from, s.to, w, 0.8 * w, BLUE[0] * kA, BLUE[1] * kA, BLUE[2] * kA, 0, BLUE[0] * kc, BLUE[1] * kc, BLUE[2] * kc, 0, seed + 3, 0.6, 1.2);
+        basis(dir, u3, v3);
+        for (let i = 0; i < EXHAUST; i++) {
+          const life = 0.12 + 0.1 * hash(seed + i * 6.1);
+          if (a > life) continue;
+          // Out from the rim of the palm, swept back past the hand.
+          const th = 2 * Math.PI * ((i + 0.5 * hash(seed + i * 2.7)) / EXHAUST);
+          c3.copy(u3).multiplyScalar(Math.cos(th)).addScaledVector(v3, Math.sin(th));
+          e3.copy(palm).addScaledVector(c3, 1.1 * S);
+          c3.multiplyScalar(0.8 + 0.4 * hash(seed + i * 4.9)).addScaledVector(dir, -0.9).normalize();
+          const spd = (35 + 35 * hash(seed + i * 8.3)) * S;
+          const kd = 9; // the gas spreads and slows
+          const x1 = (spd * (1 - Math.exp(-kd * a))) / kd;
+          const x0 = (spd * (1 - Math.exp(-kd * Math.max(0, a - 0.025)))) / kd;
+          a3.copy(e3).addScaledVector(c3, x0);
+          b3.copy(e3).addScaledVector(c3, x1);
+          const u = a / life;
+          const k = 0.45 * (1 - u) * (1 - u);
+          streak(a3, b3, 0.05 * S, 0.16 * S, BLUE[0] * 0.3 * k, BLUE[1] * 0.3 * k, BLUE[2] * 0.3 * k, 0, CYAN[0] * k, CYAN[1] * k, k, 0.4 * k);
+        }
+        for (let i = 0; i < MUZZLE_SPARKS; i++) {
+          const life = 0.06 + 0.08 * hash(seed + i * 5.7);
+          if (a > life) continue;
+          // Mostly down the line of fire, a few flung wide.
+          const th = 2 * Math.PI * hash(seed + i * 3.1);
+          const spread = 0.25 + 1.1 * hash(seed + i * 9.2) ** 2;
+          c3.copy(u3).multiplyScalar(Math.cos(th) * spread).addScaledVector(v3, Math.sin(th) * spread).add(dir).normalize();
+          const spd = (90 + 200 * hash(seed + i * 7.3)) * S;
+          a3.copy(palm).addScaledVector(dir, 0.6 * S).addScaledVector(c3, spd * Math.max(0, a - 0.012));
+          b3.copy(palm).addScaledVector(dir, 0.6 * S).addScaledVector(c3, spd * a + 0.4 * S);
+          const u = a / life;
+          const k = (1 - u) * (1 - u);
+          streak(a3, b3, 0.05 * S, 0.12 * S, CYAN[0] * 0.3 * k, CYAN[1] * 0.3 * k, 0.3 * k, 0, CYAN[0] * k, CYAN[1] * k, k, 1.4 * k);
         }
       }
 
-      // Impact: a hot white point fed while the beam burns, an expanding shell of plasma,
+      // The bolt: a white-hot slug in a cyan sheath, motion-blurred to about a frame of its travel,
+      // leaving the palm along its line of fire and crossing to the word at a speed the eye can follow.
+      const v = dist / tau;
+      const x = v * a;
+      const xHead = Math.min(x, dist);
+      const xTail = Math.min(Math.max(0, x - BOLT_LEN * S), dist);
+      if (xHead - xTail > 0.01 * S) {
+        a3.copy(s.from).addScaledVector(dir, xTail);
+        b3.copy(s.from).addScaledVector(dir, xHead);
+        const k = 1 + 0.4 * Math.exp(-a / 0.03); // hottest as it leaves the hand
+        beam(a3, b3, 0.25 * S, BOLT_W * S, CYAN[0] * 0.08 * k, CYAN[1] * 0.08 * k, 0.08 * k, 0.15 * k, CYAN[0] * 0.55 * k, CYAN[1] * 0.55 * k, 0.55 * k, 2.6 * k, seed, 1, 0.5);
+        if (x < dist) glow(b3, 2.2 * S, CYAN[0] * 0.35 * k, CYAN[1] * 0.35 * k, 0.35 * k, 1.3 * k);
+      }
+      // The ionised trail it leaves: faint, spreading a little, fading from the palm end
+      // (each point by how long ago the bolt passed it).
+      {
+        const ageA = a;
+        const ageB = Math.max(0, a - xTail / v);
+        const kB = 0.09 * Math.exp(-ageB / TRAIL_TAU);
+        if (kB > 0.003 && xTail > 0.01 * S) {
+          const kA = 0.09 * Math.exp(-ageA / TRAIL_TAU);
+          b3.copy(s.from).addScaledVector(dir, xTail);
+          beam(s.from, b3, (0.35 + 2.5 * ageA) * S, (0.35 + 2.5 * ageB) * S, BLUE[0] * kA, BLUE[1] * kA, BLUE[2] * kA, 0, CYAN[0] * kB, CYAN[1] * kB, kB, 0.25 * kB, seed + 3, 0.6, 1.1);
+        }
+      }
+
+      // Impact: a hot white point as the bolt dumps its energy, an expanding shell of plasma,
       // sparks and embers flying straight out and cooling, a faint wisp dissipating.
       const ai = a - tau;
       if (ai >= 0) {
-        const pk = Math.exp(-ai / 0.018);
-        const hot = Math.max(burn, pk);
-        const hk = 0.85 * hot + 0.1 * Math.exp(-ai / 0.15);
-        glow(s.to, (3 + 2.4 * (1 - Math.exp(-ai / 0.015))) * S, CYAN[0] * hk, CYAN[1] * hk, hk, 4 * pk + 2 * burn);
-        flashAt(1, s.to, 2.6 * hot + 0.3 * Math.exp(-ai / 0.1), 26 * S);
-        if (ai < 0.08) {
-          const R = (0.6 + 4.4 * (1 - Math.exp(-ai / 0.022))) * S;
-          const fs = Math.exp(-ai / 0.017);
+        const pk = Math.exp(-ai / 0.03);
+        const hk = 0.85 * pk + 0.1 * Math.exp(-ai / 0.18);
+        glow(s.to, (2.8 + 2.4 * (1 - Math.exp(-ai / 0.02))) * S, CYAN[0] * hk, CYAN[1] * hk, hk, 4 * pk);
+        flashAt(1, s.to, 2.6 * pk + 0.3 * Math.exp(-ai / 0.12), 26 * S);
+        if (ai < 0.12) {
+          const R = (0.6 + 4.6 * (1 - Math.exp(-ai / 0.03))) * S;
+          const fs = Math.exp(-ai / 0.025);
           disc(s.to, camR, camU, R, 0.08 * R, CYAN[0], CYAN[1], CYAN[2], 1.1 * fs, 0.12 * fs * pk, SHELL, seed);
         }
         // Flung back toward the shooter and out sideways, in straight lines (no gravity, no air);
