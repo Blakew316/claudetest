@@ -199,6 +199,7 @@ export function drawLabels(ctx, world, run, view, analysis) {
 }
 
 const ringPos = {};
+const TAG_BELOW = 14; // world units: the crawler tag sits this far below the crawler point (under Iron Man's feet)
 
 /**
  * Screen-space extras around the spider: rings on the words being held and
@@ -226,13 +227,15 @@ export function drawSpiderOverlay(ctx, world, run, view, analysis) {
   ctx.stroke();
   const sec = analysis.sections[run.active];
   if (sec && run.phase !== 'ship') {
+    // Under his feet, not across him: the camera films him close up.
     const [x, y, z] = view.spider ?? [run.spider.x, run.spider.y, run.spider.z];
-    view.project(x, y, z, ringPos);
+    view.project(x, y - TAG_BELOW, z, ringPos);
     if (ringPos.vis) {
       ctx.font = LABEL_FONT;
       ctx.textBaseline = 'middle';
+      ctx.textAlign = 'center';
       ctx.fillStyle = withAlpha(sec.color, 0.9);
-      ctx.fillText(`crawler · ${sec.name}`, ringPos.x + 24, ringPos.y + 28);
+      ctx.fillText(`crawler · ${sec.name}`, ringPos.x, ringPos.y + 12);
     }
   }
   ctx.restore();
