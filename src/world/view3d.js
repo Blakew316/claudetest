@@ -460,6 +460,22 @@ function fresnel(core, rim, band = 9) {
 /**
  * @param {HTMLCanvasElement} canvas
  */
+/** A round point sprite with a soft rim (white; vertex colours tint it). */
+function dotTexture(n = 32) {
+  const d = new Uint8Array(n * n * 4);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const r = Math.hypot(x + 0.5 - n / 2, y + 0.5 - n / 2) / (n / 2);
+      const a = Math.round(255 * Math.min(1, Math.max(0, (1 - r) * 3)));
+      d.set([a, a, a, a], (y * n + x) * 4);
+    }
+  }
+  const t = new THREE.DataTexture(d, n, n);
+  t.magFilter = t.minFilter = THREE.LinearFilter;
+  t.needsUpdate = true;
+  return t;
+}
+
 export function createView3D(canvas) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.setClearColor(BG, 1);
@@ -647,7 +663,8 @@ export function createView3D(canvas) {
     wg.setAttribute('position', new THREE.BufferAttribute(world.wordPos, 3));
     const wcol = new THREE.BufferAttribute(new Float32Array(nw * 3), 3);
     wg.setAttribute('color', wcol);
-    const words = new THREE.Points(wg, new THREE.PointsMaterial({ size: 5, sizeAttenuation: false, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    // Round dots: plain point squares read as glowing tiles once the bloom spreads them over his suit.
+    const words = new THREE.Points(wg, new THREE.PointsMaterial({ size: 6, map: dotTexture(), sizeAttenuation: false, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
     root.add(words);
 
     // Spider: real geometry throughout.
