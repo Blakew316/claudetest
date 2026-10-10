@@ -98,7 +98,7 @@ const LAND_EL = -0.1; // low, looking up at him
 // The superhero landing (world/ironman.js): he drops into a kneel, holds it and rises out of it over the
 // last KNEEL_RISE of the land phase (LAND_TIME), his middle KNEEL_MID above the crawler point meanwhile.
 const KNEEL_RISE = 0.9;
-const KNEEL_MID = 7;
+const KNEEL_MID = 1;
 const LAND_HOLD = LAND_TIME - KNEEL_RISE; // s after touchdown the landing shot holds (he rises then)...
 const LAND_BLEND = 2.2; // ...then hands back to the two-shot over this long, pushing in as he stands
 const SHOT_Y = -0.06; // he sits a little below the middle of the frame (NDC): headroom
