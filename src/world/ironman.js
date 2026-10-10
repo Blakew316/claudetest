@@ -215,7 +215,7 @@ const LAND_BLEND = 0.035; // landing, the legs settle from where they reached on
  * crawler's body is.
  */
 const CM_LEAD = 0.7;
-const PUSH_T = 0.24;
+const PUSH_T = 0.36;
 const CM_BOTTOM = 0.6 * PUSH_T; // the dip bottoms out as the drive gets going
 const CM_DROP = 0.3; // the countermovement takes the pelvis this much lower (at most) ...
 const CM_BACK = 0.06; // ... and back
@@ -228,8 +228,8 @@ const DRIVE_FWD = 0.1; // the drive takes the hips forward this much (at a level
 const PIVOT_W = 5; // winding up, a planted foot turns on its ball at most this fast (rad/s) ...
 const PIVOT_CAP = 0.5; // ... and, both feet down in the dip, at most this far (rad): more takes a step
 const CM_PITCH = [0.2, 0.35, 0.2]; // pelvis, spine and chest pitched forward (rad)
-const CM_ARMS = 0.95; // the arms swung back (rad) ...
-const PUSH_ARMS = 0.55; // ... and through, forward and up, by the launch
+const CM_ARMS = 0.8; // the arms swung back (rad) ...
+const PUSH_ARMS = 0.45; // ... and through, forward and up, by the launch
 const PUSH_ROLL = 1.0; // the heels up off the ground by the launch (rad)
 const TK_HAND = 0.35; // ... and hands back to the flight's own path over this long (s)
 const TAKEOFF_W = 2.6; // the flight takes him over from where he left at this rate (rad/s): about a gravity's pull, not a yank
@@ -247,7 +247,7 @@ const LEAVE_W = 28;
  * touchdown, and reached for; then held: nothing slides.
  */
 const LAND_RIDE = 0.7; // the crawler lands riding this far above the surface it lands on
-const LAND_G = 0.22; // the flight's pose hands over to the landing's this fast (the jets cut at once)
+const LAND_G = 0.4; // the flight's pose hands over to the landing's over this long (s): an impact, not a snap
 const LAND_RISE = 0.9; // the rise takes this long, ending as the crawler walks on
 // The drop into the kneel takes this long (s), less the faster he comes in (s per unit/s of his drop),
 // never so short a body would brake harder than its legs can, nor so long it would go past the kneel.
@@ -737,10 +737,11 @@ export function createIronMan(renderer) {
     LW.on = smooth(0, LAND_G, t);
     // (Rising: the head comes up first and the fist leaves the ground; the chest stays over the front foot
     // until the legs are well into their push, and comes up with it; the rear foot steps in under him.)
-    LW.torso = smooth(0, 0.3, t) * (1 - riseAt(t, 0.25, 0.8));
-    LW.head = smooth(0.05, 0.35, t) * (1 - riseAt(t, 0.1, 0.55));
-    LW.fist = smooth(0.05, 0.19, t) * (1 - riseAt(t, 0.15, 0.5));
-    LW.arm = smooth(0, 0.42, t) * (1 - riseAt(t, 0.15, 0.7));
+    // (Spread so nothing is snapped: the fist took 0.14 s from the flight pose to the ground, ~20 g.)
+    LW.torso = smooth(0, 0.45, t) * (1 - riseAt(t, 0.25, 0.8));
+    LW.head = smooth(0.05, 0.5, t) * (1 - riseAt(t, 0.1, 0.55));
+    LW.fist = smooth(0, 0.36, t) * (1 - riseAt(t, 0.1, 0.6));
+    LW.arm = smooth(0, 0.6, t) * (1 - riseAt(t, 0.15, 0.75));
     LW.rise = minJerk(clamp((t - (LAND_TIME - 0.75 * LAND_RISE)) / (0.75 * LAND_RISE), 0, 1));
     LW.step = clamp((t - (LAND_TIME - 0.55 * LAND_RISE)) / (0.55 * LAND_RISE - 0.08), 0, 1);
     return LW;
