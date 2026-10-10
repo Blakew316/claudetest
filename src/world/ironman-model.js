@@ -44,6 +44,8 @@ const CAVITY_STRENGTH = 0.85; // ... and the panel lines, which shade the direct
 // The brightest the suit's shading may get: above 1 it rolls off toward this. A point light's glint on the
 // near-mirror clear coat is otherwise thousands of times white, and blooms into a square halo.
 const HIGHLIGHT_CAP = 3;
+// The lights' emission at their white cores (linear): well over the bloom threshold, so even the eye slits glow.
+const LIGHT_GLOW = 3.5;
 
 /*
  * The environment the armour reflects, drawn on the GPU into an equirect: deep space with faint nebulae and
@@ -283,19 +285,20 @@ function materials(renderer) {
       }),
       { brushed: { scale: 2600, amp: 0.6 } },
     ),
-    // The eyes, arc reactor and the palm and vent lights behind glass: hot white cores falling off to cyan
-    // (baked into the emissive map), blooming.
+    // The eyes, arc reactor and the palm and vent lights behind glass: every light, the thin eye slits too,
+    // has a hot white core falling off to cyan at its edges (baked into the emissive map), bright enough to
+    // bloom; a thin glass coat, so the studio's reflections do not milk them over.
     Light: detail(
       new THREE.MeshPhysicalMaterial({
         ...common,
         color: 0x060a0c,
         roughness: 0.15,
         metalness: 0,
-        clearcoat: 0.6,
+        clearcoat: 0.25,
         clearcoatRoughness: 0.05,
         emissive: 0xffffff,
         emissiveMap: tex(LIGHT_EMISSIVE, true),
-        emissiveIntensity: 1.7,
+        emissiveIntensity: LIGHT_GLOW,
       }),
     ),
   };
