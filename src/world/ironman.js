@@ -186,7 +186,7 @@ const SWING_FOOT = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 
 // The swinging toes stay at least this far off the ground (leg lengths; about a centimetre), the
 // ankle turning them up as far as it must, eased in over about this much.
 const TOE_CLEAR = 0.012;
-const TOE_CLEAR_SOFT = 0.003;
+const TOE_CLEAR_SOFT = 0.008;
 // Setting off briskly the trailing foot leaves the ground before it is further behind the pelvis
 // than this (leg lengths; ~0.4 in a steady walk): the steps come quicker, at most this much.
 const HURRY_REACH = 0.5;
@@ -625,7 +625,7 @@ export function createIronMan(renderer) {
     // point), how high the kneel holds his pelvis over the ground (kneelH), the feet's places (fp: foot states,
     // planted), and his horizontal path into the kneel (a cubic from his way in to rest on K: no rebound).
     // (approached: the legs reached their places before touchdown; drop: the pelvis over the kneel, for the rear leg.)
-    plan: false, approached: false, K: new THREE.Vector3(), kneelH: 0, fp: null, ap: null, a0: new THREE.Vector3(), av: new THREE.Vector3(), aT0: 0, aT: 1, drop: 0 };
+    plan: false, approached: false, K: new THREE.Vector3(), rStand: new THREE.Vector3(), kneelH: 0, fp: null, ap: null, a0: new THREE.Vector3(), av: new THREE.Vector3(), aT0: 0, aT: 1, drop: 0 };
   // The leap: how deep in the countermovement (cm), how far through the drive (push), the heels'
   // roll, the arms' swing; and, from the launch, the flight taking him over from where he left.
   // (t0: the countdown when the dip began, -1 before; depth: how deep it goes (leg lengths); drive: how hard
@@ -705,7 +705,7 @@ export function createIronMan(renderer) {
   }
 
   // How far into the pose each part is (0..1), by time from touchdown (see landWeights).
-  const LW = { on: 0, torso: 0, head: 0, fist: 0, arm: 0, rise: 0, roll: 0 };
+  const LW = { on: 0, torso: 0, head: 0, fist: 0, arm: 0, rise: 0, step: 0 };
 
   /**
    * The landing's parts in time: the trunk folds and the head bows as he takes the impact, the fist
@@ -715,16 +715,18 @@ export function createIronMan(renderer) {
    */
   function landWeights(t) {
     if (t < 0) {
-      LW.on = LW.torso = LW.head = LW.fist = LW.arm = LW.rise = LW.roll = 0;
+      LW.on = LW.torso = LW.head = LW.fist = LW.arm = LW.rise = LW.step = 0;
       return LW;
     }
     LW.on = smooth(0, LAND_G, t);
-    LW.torso = smooth(0, 0.3, t) * (1 - riseAt(t, 0.1, 0.65));
-    LW.head = smooth(0.05, 0.35, t) * (1 - riseAt(t, 0, 0.45));
-    LW.fist = smooth(0.05, 0.19, t) * (1 - riseAt(t, 0.08, 0.45));
+    // (Rising: the head comes up first and the fist leaves the ground; the chest stays over the front foot
+    // until the legs are well into their push, and comes up with it; the rear foot steps in under him.)
+    LW.torso = smooth(0, 0.3, t) * (1 - riseAt(t, 0.25, 0.8));
+    LW.head = smooth(0.05, 0.35, t) * (1 - riseAt(t, 0.1, 0.55));
+    LW.fist = smooth(0.05, 0.19, t) * (1 - riseAt(t, 0.15, 0.5));
     LW.arm = smooth(0, 0.42, t) * (1 - riseAt(t, 0.15, 0.7));
     LW.rise = minJerk(clamp((t - (LAND_TIME - 0.75 * LAND_RISE)) / (0.75 * LAND_RISE), 0, 1));
-    LW.roll = 1 - riseAt(t, 0.5, 1);
+    LW.step = clamp((t - (LAND_TIME - 0.55 * LAND_RISE)) / (0.55 * LAND_RISE - 0.08), 0, 1);
     return LW;
   }
 
@@ -818,6 +820,8 @@ export function createIronMan(renderer) {
     sk.limbs.L.hip.getWorldPosition(hipW);
     fL.pos.set(hipW.x, ld.ground, hipW.z).addScaledVector(ld.h, KNEEL_FRONT * lam).addScaledVector(ld.l, KNEEL_WIDE * lam);
     fL.rho = fL.rhoHi = fL.toe = 0;
+    // (Where the rear foot steps in to as he rises: under him, beside and a little behind the front foot.)
+    ld.rStand.set(at[0], ld.ground, at[2]).addScaledVector(ld.l, -HIP_W * W_STAND * Ks).addScaledVector(ld.h, -0.06 * lam);
     fL.pole.copy(ld.h).addScaledVector(UP, 1.5).addScaledVector(ld.l, 0.8).normalize();
     for (const n of SIDES) {
       ld.fp[n].poleW = 1;
@@ -1252,9 +1256,9 @@ export function createIronMan(renderer) {
     const f = st.feet[n];
     const sw = st.swings[n];
     sw.u = 0;
-    // (From where the ankle is drawn: a leg that could not quite reach its planted foot at the last has
-    // already let its toes up.)
-    sk.limbs[n].ankle.getWorldPosition(sw.a0);
+    // (From where the ankle is drawn, carried on this frame as it was moving: a leg that could not quite
+    // reach its planted foot at the last has already let its toes up.)
+    sk.limbs[n].ankle.getWorldPosition(sw.a0).addScaledVector(f.vel, ctx.dt);
     sw.yaw0 = f.yaw;
     sw.rho0 = f.rho;
     sw.toe0 = f.toe;
@@ -2055,9 +2059,12 @@ export function createIronMan(renderer) {
           poseStance(f, Ks);
         }
       } else {
-        // Kneeling: the rear foot up on its toes, its heel coming down as he rises; the kneeling knee to the front.
+        // Kneeling: the rear foot up on its toes, the kneeling knee to the front; rising, the rear foot
+        // pushes and then steps in under him, landing flat beside and a little behind the front one.
         if (n === 'R') {
-          f.rho = f.rhoHi = KNEEL_ROLL * LW.roll;
+          const u = LW.step;
+          f.pos.lerpVectors(ld.fp.R.pos, ld.rStand, minJerk(u));
+          f.rho = f.rhoHi = KNEEL_ROLL * (1 - smooth(0.05, 0.8, u));
           f.toe = Math.min(f.rho, TOE_MAX);
           f.pole.copy(ld.h);
         } else f.pole.copy(ld.h).addScaledVector(UP, 1.5).addScaledVector(ld.l, 0.8).normalize(); // (the front knee up and open, beside the chest)
@@ -2334,7 +2341,7 @@ export function createIronMan(renderer) {
       f.rhoDrawn = f.rho;
       if (g < 0.999 && !ld.on) leaveGround(gL, f, Ks, dt);
       // (Kneeling: the rear leg comes down folded as it kneels, its knee and toes meeting the ground together as the drop ends.)
-      if (ld.on && n === 'R') rearRaise(f.raise, ld.drop);
+      if (ld.on && n === 'R') rearRaise(f.raise, ld.drop).y += 0.06 * lam * Math.sin(Math.PI * smooth(0, 1, LW.step)); // (and lifts clear as it steps in)
       // (Once down from an approach, the legs are on their places: no flight pose left to hand over from.)
       const gl = ld.on && ld.approached ? 0 : g;
       if (gl < 0.999) solveLeg(gL, f, Ks);
