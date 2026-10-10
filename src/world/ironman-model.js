@@ -41,9 +41,14 @@ export const MODEL_HEIGHT = 3.585;
 const ENV_W = 1024; // the environment's equirect width (PMREM cube faces of a quarter of that)
 const AO_STRENGTH = 1; // the baked occlusion: crevices and joints (indirect light)
 const CAVITY_STRENGTH = 0.85; // ... and the panel lines, which shade the direct light too (micro-shadowing)
-// The brightest the suit's shading may get: above 1 it rolls off toward this. A point light's glint on the
-// near-mirror clear coat is otherwise thousands of times white, and blooms into a square halo.
-const HIGHLIGHT_CAP = 3;
+const POLISHED_ROUGHNESS = 0.17; // the faceplate's gold
+const HEAD_BONE = 'DEF-spine006'; // what carries the faceplate
+// The brightest the suit's reflected light may get: above the knee it rolls off toward the cap, its channels
+// scaled together so hot gold keeps its colour (there is no tone mapping after: per-channel clipping turned
+// the brightest plates into a flat yellow-white haze that bloomed). A point light's glint on the near-mirror
+// clear coat is otherwise thousands of times white. The lights' own emission is left alone: they should burn.
+const HIGHLIGHT_KNEE = 0.8;
+const HIGHLIGHT_CAP = 1.3;
 // The lights' emission at their white cores (linear): well over the bloom threshold, so even the eye slits glow.
 const LIGHT_GLOW = 3.5;
 
@@ -98,10 +103,10 @@ void main() {
     col += mix(vec3(0.75, 0.85, 1.0), vec3(1.0, 0.85, 0.65), hash13(cell + 1.7)) * (1.5 + 4.0 * hash13(cell + 9.2)) * exp(-r * r * 9.0);
   }
   // The studio.
-  col += vec3(1.00, 0.93, 0.84) * 2.6 * softbox(d, vec3(-0.55, 0.55, 0.65), Y, vec2(0.42, 0.7), 0.22); // key
-  col += vec3(0.86, 0.92, 1.00) * 2.2 * softbox(d, vec3(0.85, 0.22, 0.48), Y, vec2(0.05, 1.1), 0.04); // strip
+  col += vec3(1.00, 0.93, 0.84) * 2.2 * softbox(d, vec3(-0.55, 0.55, 0.65), Y, vec2(0.42, 0.7), 0.22); // key
+  col += vec3(0.86, 0.92, 1.00) * 2.2 * softbox(d, vec3(0.85, 0.22, 0.48), Y, vec2(0.06, 1.1), 0.12); // strip
   col += vec3(0.80, 0.86, 1.00) * 0.5 * softbox(d, vec3(0.0, 1.0, 0.12), vec3(0.0, 0.0, 1.0), vec2(0.9, 0.35), 0.4); // top
-  col += vec3(0.45, 0.82, 1.00) * 2.6 * softbox(d, vec3(-0.85, 0.25, -0.55), Y, vec2(0.10, 0.9), 0.08); // cyan rim
+  col += vec3(0.45, 0.82, 1.00) * 2.0 * softbox(d, vec3(-0.85, 0.25, -0.55), Y, vec2(0.10, 0.9), 0.08); // cyan rim
   col += vec3(0.66, 0.72, 1.00) * 2.0 * softbox(d, vec3(0.85, 0.15, -0.55), Y, vec2(0.08, 0.8), 0.08); // blue-white rim
   gl_FragColor = vec4(col, 1.0);
 }`;
@@ -140,6 +145,7 @@ function spaceEnvironment(renderer) {
 const NOISE_GLSL = /* glsl */ `
 varying vec2 vOcclusion;
 varying vec3 vRest;
+varying float vHead;
 float sdHash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 vec3 sdHash33(vec3 p) { p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.xxy + p.yxx) * p.zyx); }
 float sdNoise1(float x) { float i = floor(x), f = fract(x); return mix(sdHash12(vec2(i, 0.37)), sdHash12(vec2(i + 1.0, 0.37)), f * f * (3.0 - 2.0 * f)); }
@@ -163,8 +169,13 @@ reflectedLight.directSpecular *= cavity;
 `;
 const CAP_GLSL = /* glsl */ `
 {
-  vec3 over = max(outgoingLight - 1.0, 0.0);
-  outgoingLight = min(outgoingLight, 1.0) + over / (1.0 + over / ${(HIGHLIGHT_CAP - 1).toFixed(2)});
+  vec3 refl = max(outgoingLight - totalEmissiveRadiance, 0.0);
+  float peak = max(max(refl.r, refl.g), refl.b);
+  if (peak > ${HIGHLIGHT_KNEE.toFixed(2)}) {
+    float over = peak - ${HIGHLIGHT_KNEE.toFixed(2)};
+    refl *= (${HIGHLIGHT_KNEE.toFixed(2)} + over / (1.0 + over / ${(HIGHLIGHT_CAP - HIGHLIGHT_KNEE).toFixed(2)})) / peak;
+  }
+  outgoingLight = refl + totalEmissiveRadiance;
 }
 #include <opaque_fragment>
 `;
@@ -176,25 +187,39 @@ const CANDY_GLSL = /* glsl */ `
 `;
 const FLAKES_GLSL = /* glsl */ `
 {
-  // One round flake per cell of the suit's own (rest-pose) space, so they sit still on it and are not
-  // stretched by the UV layout.
-  vec3 fp = vRest * FLAKE_SCALE;
-  vec3 cell = floor(fp);
-  vec3 fh = sdHash33(cell);
-  float inFlake = 1.0 - smoothstep(0.3, 0.42, length(fp - cell - 0.5 - 0.3 * (sdHash33(cell + 17.0) - 0.5)));
-  float vis = 1.0 - smoothstep(0.25, 0.9, length(fwidth(fp)));
-  vec3 tilt = (fh - 0.5) * (2.0 * FLAKE_TILT * vis * inFlake);
+  // Round flakes in the suit's own (rest-pose) space, so they sit still on it and are not stretched by the
+  // UV layout: two lattices of different pitch, each cell holding a flake or not, anywhere it fits in the
+  // cell, so no grid shows.
+  vec3 tilt = vec3(0.0);
+  for (int k = 0; k < 2; k++) {
+    float fk = float(k);
+    vec3 fp = vRest * (FLAKE_SCALE * (1.0 + 0.37 * fk)) + fk * vec3(0.43, 0.29, 0.61);
+    vec3 cell = floor(fp) + fk * 101.0;
+    vec3 fh = sdHash33(cell);
+    vec3 jit = sdHash33(cell + 17.0);
+    float inFlake = step(0.3, sdHash33(cell + 53.0).x) * (1.0 - smoothstep(0.22, 0.3, length(fract(fp) - 0.5 - 0.4 * (jit - 0.5))));
+    float vis = 1.0 - smoothstep(0.25, 0.9, length(fwidth(fp)));
+    tilt += (fh - 0.5) * (2.0 * FLAKE_TILT * vis * inFlake);
+  }
   normal = normalize(normal + tilt - dot(tilt, normal) * normal);
 }
 `;
 const BRUSHED_GLSL = /* glsl */ `
+// The faceplate (the plates the head carries) is polished, not brushed: no streaks, no anisotropy.
+float suitBrushed = 1.0 - smoothstep(0.5, 0.9, vHead);
 {
   float s = vUv.y * BRUSH_SCALE;
-  float fade = 1.0 - smoothstep(0.3, 1.0, fwidth(s));
+  float fade = suitBrushed * (1.0 - smoothstep(0.3, 1.0, fwidth(s)));
   float streak = 0.6 * sdNoise1(s) + 0.4 * sdNoise1(s * 3.7 + 11.0);
   roughnessFactor = clamp(roughnessFactor * (1.0 + BRUSH_AMP * fade * (streak - 0.5)), 0.0, 1.0);
+  roughnessFactor = mix(${POLISHED_ROUGHNESS.toFixed(3)}, roughnessFactor, suitBrushed);
 }
 `;
+/** three's physical lighting set-up, with the anisotropy scaled by how brushed the surface is. */
+const BRUSHED_LIGHTS_GLSL = THREE.ShaderChunk.lights_physical_fragment.replace(
+  'vec2 anisotropyV = anisotropyVector;',
+  'vec2 anisotropyV = anisotropyVector * max(suitBrushed, 1e-3);',
+);
 
 /**
  * Give a material the suit's shader additions.
@@ -207,15 +232,24 @@ function detail(m, o = {}) {
   if (o.flakes) defs.push(`#define FLAKE_SCALE ${o.flakes.scale.toFixed(1)}`, `#define FLAKE_TILT ${o.flakes.tilt.toFixed(3)}`);
   if (o.brushed) defs.push(`#define BRUSH_SCALE ${o.brushed.scale.toFixed(1)}`, `#define BRUSH_AMP ${o.brushed.amp.toFixed(3)}`);
   if (o.brushed) m.defines = { ...m.defines, USE_UV: '' };
+  // (The head bone's index in the mesh's skeleton, set once the model is parsed: see loadModel.)
+  m.userData.headBone = { value: -1 };
   m.onBeforeCompile = (sh) => {
+    // How much of a vertex the head carries (for the faceplate).
+    const head = '#ifdef USE_SKINNING\nvHead = dot(skinWeight, vec4(equal(skinIndex, vec4(uHeadBone))));\n#else\nvHead = 0.0;\n#endif';
+    sh.uniforms.uHeadBone = m.userData.headBone;
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec2 occlusion;\nvarying vec2 vOcclusion;\nvarying vec3 vRest;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOcclusion = occlusion;\nvRest = position;');
+      .replace('#include <common>', '#include <common>\nattribute vec2 occlusion;\nvarying vec2 vOcclusion;\nvarying vec3 vRest;\nuniform float uHeadBone;\nvarying float vHead;')
+      .replace('#include <begin_vertex>', `#include <begin_vertex>\nvOcclusion = occlusion;\nvRest = position;\n${head}`);
     let fs = sh.fragmentShader
       .replace('#include <common>', `#include <common>\n${defs.join('\n')}\n${NOISE_GLSL}`)
       .replace('#include <aomap_fragment>', AO_GLSL)
       .replace('#include <opaque_fragment>', CAP_GLSL);
-    if (o.brushed) fs = fs.replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${BRUSHED_GLSL}`);
+    if (o.brushed) {
+      fs = fs
+        .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>\n${BRUSHED_GLSL}`)
+        .replace('#include <lights_physical_fragment>', BRUSHED_LIGHTS_GLSL);
+    }
     if (o.flakes) fs = fs.replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>\n${FLAKES_GLSL}`);
     if (o.candy) fs = fs.replace('#include <lights_physical_fragment>', `${CANDY_GLSL}\n#include <lights_physical_fragment>`);
     sh.fragmentShader = fs;
@@ -252,7 +286,7 @@ function materials(renderer) {
         metalness: 0.7,
         roughness: 0.38,
         clearcoat: 1,
-        clearcoatRoughness: 0.03,
+        clearcoatRoughness: 0.1, // (a touch soft: a mirror coat traces every facet of the mesh in its highlights)
         envMapIntensity: 0.75,
       }),
       { candy: [0.93, 0.5, 0.52], flakes: { scale: 650, tilt: 0.09 } },
@@ -381,6 +415,7 @@ export function loadModel(renderer, onReady, anchor) {
       gltf.scene.traverse((o) => {
         if (o.isMesh) {
           o.material = mats[o.material.name] || o.material;
+          if (o.isSkinnedMesh && o.material.userData.headBone) o.material.userData.headBone.value = o.skeleton.bones.findIndex((b) => b.name === HEAD_BONE);
           o.frustumCulled = false; // skinned: its bounds move with the pose
           o.castShadow = o.receiveShadow = true;
           const occ = o.geometry.getAttribute('_occlusion');
