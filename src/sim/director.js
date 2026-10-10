@@ -87,6 +87,8 @@ const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const readSeconds = (count) => (count ? clamp(5.5 + 1.5 * Math.sqrt(count), MIN_READ, MAX_READ) : 2.5);
 /** Floaty, unhurried leaps; long gaps take longer and arc higher. */
 const airTime = (L) => clamp(1.7 + L / 380, 2.0, 3.6);
+const AIR_LEAD = 0.45; // s: the in-flight shot aims this far ahead of him along his velocity
+const AIR_FIT = 0.42; // the in-flight shot frames at least this share of the destination ball
 
 /** Elevation classes, radians of pitch (> 0 looks down). */
 const ELEV = { top: 1.12, high: 0.8, three: 0.5, side: 0.12, low: -0.3 };
@@ -675,11 +677,17 @@ export function createDirector(analysis, world, getStage, seed = 1) {
    * for, far enough back that both (and the legs streaming behind) are in shot.
    */
   function airFrame(s, g, c) {
-    tgt.x = s.x * 0.5 + g.x * 0.25 + c.cx * 0.25;
-    tgt.y = s.y * 0.5 + g.y * 0.25 + c.cy * 0.25;
-    tgt.z = s.z * 0.5 + g.z * 0.25 + c.cz * 0.25;
+    // Close on him in flight (led along his velocity, so the following camera keeps him
+    // centred rather than trailing), with a little of where he is heading.
+    const lead = AIR_LEAD;
+    const sx = s.x + (s.vx || 0) * lead;
+    const sy = s.y + (s.vy || 0) * lead;
+    const sz = s.z + (s.vz || 0) * lead;
+    tgt.x = sx * 0.82 + g.x * 0.1 + c.cx * 0.08;
+    tgt.y = sy * 0.82 + g.y * 0.1 + c.cy * 0.08;
+    tgt.z = sz * 0.82 + g.z * 0.1 + c.cz * 0.08;
     const reach = Math.hypot(s.x - c.cx, s.y - c.cy, s.z - c.cz);
-    tgt.dist = fitDistance(Math.max(c.r * 0.9, reach * 0.6 + 70), aspect(), 50, 1.0);
+    tgt.dist = fitDistance(Math.max(c.r * AIR_FIT, reach * 0.22 + 60), aspect(), 50, 1.0);
     return tgt;
   }
 
@@ -928,7 +936,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       crouch,
       aim,
       air,
-      apex: first ? 16 : Math.max(60, L * range(cadence, 0.3, 0.4)),
+      apex: first ? 16 : Math.max(24, L * range(cadence, 0.1, 0.15)), // low: he flies through the stars, not over them
       dur: crouch + air + LAND,
     };
   }

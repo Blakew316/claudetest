@@ -28,7 +28,6 @@ import { JOINT, POSE, MODEL_HEIGHT, loadModel } from './ironman-model.js';
 const HEIGHT = 46; // world units: he reads at the distances the camera keeps from the crawler
 const K = HEIGHT / MODEL_HEIGHT; // world units per model unit (feet at y = 0)
 const U = HEIGHT / 2.02; // a body-proportional unit for the gait's distances (step sizes, thresholds, sway)
-const FLY_SCALE = 1.9; // drawn this much larger in flight, so a leap reads at the camera's distance
 const UP = new THREE.Vector3(0, 1, 0);
 
 /*
@@ -174,13 +173,12 @@ export function createIronMan(renderer) {
   // State.
   const st = { phase: 0, feet: null, lastFoot: 'R', landAt: -9, grounded: true, time: 0, landedAt: -9, leapt: false };
   const ez = {
-    walk: spring(7), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), scale: spring(6), hover: spring(6),
+    walk: spring(7), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), tilt: spring(5), hover: spring(6),
     pelvisY: spring(16, 0.85), sway: spring(10), yawP: spring(12), roll: spring(12),
     twist: spring(9, 0.9), lookY: spring(10, 0.9), lookP: spring(10, 0.9),
     arm: { L: spring(9, 0.55), R: spring(9, 0.55) }, aim: { L: spring(11, 0.85), R: spring(11, 0.85) },
     recoil: { L: spring(26, 0.45), R: spring(26, 0.45) },
   };
-  ez.scale.x = 1;
   const aimAt = { L: new THREE.Vector3(), R: new THREE.Vector3() };
   const heading = new THREE.Vector3(0, 0, 1);
   const leftV = new THREE.Vector3(1, 0, 0);
@@ -312,8 +310,6 @@ export function createIronMan(renderer) {
     // Firing: the artist's repulsor hand (the left in the pose; mirrored for the right).
     for (const n of ['L', 'R']) blend(POSE['Fire Pose'], clamp(o.aim[n].x, 0, 1), (e) => e.hand && e.side === n, n === 'R');
     blend(POSE['Fly Pose'], 0.9 * o.hover);
-    const t = o.land;
-    blend(POSE['Landing Pose'], smooth(0, 0.12, t) * (1 - smooth(0.45, 1.1, t)));
   }
 
   /** Centre of a palm, just off its face (world): where the repulsor fires from. */
@@ -445,8 +441,11 @@ export function createIronMan(renderer) {
     const air = ez.air.to(spider.air || 0, sdt);
     const crouch = clamp(ez.crouch.to(spider.crouch && !spider.air ? 1 : 0, sdt), 0, 1.1);
     const g = clamp(Math.max(air, fly), 0, 1); // off the ground
-    const scale = ez.scale.to(1 + (FLY_SCALE - 1) * (spider.taut || 0), sdt);
-    group.scale.setScalar(scale);
+    const scale = 1; // true size in flight too: the in-flight shot comes in close instead
+    // Flight attitude: he leaves upright on his thrusters, pitches forward into the flight,
+    // and swings back upright to brake with his boots before he lands.
+    const u = spider.airU || 0;
+    const tilt = clamp(ez.tilt.to((spider.taut || 0) * smooth(0, 0.24, u) * (1 - smooth(0.62, 0.88, u)), sdt), 0, 1);
 
     // Ground: where the spider's feet are.
     let gy = 0;
@@ -467,7 +466,10 @@ export function createIronMan(renderer) {
     if (fly > 0.5) st.leapt = true;
     if (!st.grounded && g < 0.35) {
       st.grounded = true;
-      if (st.leapt) st.landedAt = st.time;
+      if (st.leapt) {
+        st.landedAt = st.time;
+        ez.pelvisY.v -= 5 * U; // the knees take the landing
+      }
       for (const n of ['L', 'R']) {
         sk.limbs[n].sole.getWorldPosition(b3);
         Object.assign(st.feet[n], { pos: b3.clone().setY(gy), yaw, roll: 0, swing: null });
@@ -503,13 +505,13 @@ export function createIronMan(renderer) {
     // Orientation: upright on the ground (a slight lean into the walk); head-first, chest down, in flight.
     H.copy(UP).addScaledVector(heading, 0.06 * walk + 0.12 * crouch).normalize();
     C.copy(heading);
-    if (fly > 0.01 && speed > 5) {
+    if (tilt > 0.01 && speed > 5) {
       a3.copy(v).divideScalar(speed);
-      H.lerp(a3, clamp(fly, 0, 1)).normalize();
-      C.lerp(UP, -clamp(fly, 0, 1));
+      H.lerp(a3, tilt).normalize();
+      C.lerp(UP, -tilt);
     }
     perp(C, H, heading);
-    const k = 1 - Math.exp(-8 * dt);
+    const k = 1 - Math.exp(-6 * dt);
     head.lerp(H, k).normalize();
     chestDir.lerp(C, k);
     perp(chestDir, head, heading);
@@ -565,7 +567,7 @@ export function createIronMan(renderer) {
     const cr = clamp(crouch, 0, 1);
     sk.spine.rotation.set(0.05 * walk + 0.32 * cr + 0.012 * breath, -pelvisYaw * 0.5 + twist * 0.4, -pelvisRoll * 0.6);
     sk.chest.rotation.set(0.1 * cr + 0.015 * breath, -pelvisYaw * 0.45 + twist * 0.6, -pelvisRoll * 0.3);
-    sk.neck.rotation.set(-0.06 * cr - 0.75 * fly + neckP, neckY - twist * 0.5, 0);
+    sk.neck.rotation.set(-0.06 * cr - 0.75 * tilt + neckP, neckY - twist * 0.5, 0);
 
     // Legs: IK on the planted and stepping feet, blended toward the flight pose off the ground.
     group.updateMatrixWorld(true);
@@ -575,7 +577,7 @@ export function createIronMan(renderer) {
       const gL = sk.limbs[n];
       if (g < 0.999) solveLeg(gL, st.feet[n], rootQ);
       if (g > 0.001) {
-        const legs = [[gL.hip, 0.12 * fly - 0.15 * air * (1 - fly), 0, -gL.s * 0.03 * fly], [gL.knee, 0.18 * fly + 0.35 * air * (1 - fly), 0, 0], [gL.ankle, 0.5 * fly + 0.2 * air * (1 - fly), 0, 0]];
+        const legs = [[gL.hip, 0.12 * tilt - 0.15 * air * (1 - tilt), 0, -gL.s * 0.03 * tilt], [gL.knee, 0.18 * tilt + 0.35 * air * (1 - tilt), 0, 0], [gL.ankle, 0.5 * tilt + 0.2 * air * (1 - tilt), 0, 0]];
         for (const [bone, x, y, z] of legs) {
           if (g >= 0.999) bone.quaternion.setFromEuler(euler.set(x, y, z));
           else bone.quaternion.slerp(flightQ.setFromEuler(euler.set(x, y, z)), g);
@@ -588,10 +590,10 @@ export function createIronMan(renderer) {
       const gA = sk.limbs[n];
       const otherLead = n === 'L' ? -lead : lead; // the opposite foot leads this arm forward
       const swing = ez.arm[n].to(-0.4 * otherLead * walk, sdt);
-      const adduct = -gA.s * ((1.41 - ARM_DROP) * (1 - fly) + (2.02 - ARM_DROP) * fly); // from the bind pose down to the sides
-      gA.sh.rotation.set(swing * (1 - fly) + 0.45 * cr * (1 - fly) + 0.3 * fly, 0, adduct);
-      gA.el.rotation.set(-(0.28 + 0.3 * Math.max(0, -swing)) * (1 - fly), 0, 0);
-      gA.wr.rotation.set(0.9 * fly, 0, 0);
+      const adduct = -gA.s * ((1.41 - ARM_DROP) * (1 - tilt) + (2.02 - ARM_DROP) * tilt); // from the bind pose down to the sides
+      gA.sh.rotation.set(swing * (1 - tilt) + 0.45 * cr * (1 - tilt) + 0.3 * tilt, 0, adduct);
+      gA.el.rotation.set(-(0.28 + 0.3 * Math.max(0, -swing)) * (1 - tilt), 0, 0);
+      gA.wr.rotation.set(0.9 * tilt, 0, 0); // palms back: the repulsors push him along
       const a = clamp(ez.aim[n].x, 0, 1);
       if (a > 1e-3) {
         // Aim: the arm swung from rest onto the target in the chest's frame, elbow soft, palm out; recoil kicks it up.
@@ -608,8 +610,8 @@ export function createIronMan(renderer) {
     }
 
     // The model follows the rig, then the artist's poses blend in.
-    const hover = clamp(ez.hover.to(air * (1 - clamp(fly * 3, 0, 1)), sdt), 0, 1);
-    if (model) drive(model, { hover, land: st.time - st.landedAt, aim: ez.aim, fly, walk });
+    const hover = clamp(ez.hover.to(air * (1 - tilt), sdt), 0, 1); // upright in the air: the artist's hover
+    if (model) drive(model, { hover, aim: ez.aim, fly: tilt, walk });
     group.updateMatrixWorld(true);
 
     // Key over the camera's shoulder, rim from behind him.

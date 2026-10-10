@@ -917,8 +917,10 @@ export class Spider {
       this.behaviour = 'air';
       // A slight roll and correction in the air, as the dragline steadies it.
       this.poseT.roll = 0.07 * Math.sin(u * Math.PI * 2 + 0.6) * (1 - u);
-      // A true ballistic arc: steady speed across, height a parabola.
-      this.p = add(lerp3(this.launchAt, tr.to, u), UP, tr.apex * 4 * u * (1 - u));
+      // Powered flight: away with the push's momentum, accelerating to the middle of
+      // the leap and braking into the landing; height a low arc through the stars.
+      const h = 0.35 * u + 0.65 * ease(u);
+      this.p = add(lerp3(this.launchAt, tr.to, h), UP, tr.apex * 4 * u * (1 - u));
       // The dragline steadies the body, so it stays near level rather than tracking
       // its path like an arrow: nose a little up off the push, a little down to land
       // front feet first, and no turning (there is nothing to turn against).
