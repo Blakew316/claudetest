@@ -164,6 +164,9 @@ const GLANCE_GAP = 1.2;
 const GUN_LEAD = 0.3;
 // Motion capture: the firing arm turned onto its target by at most AIM_FIX rad as a clip thrusts it out.
 const AIM_FIX = 0.6;
+// The share of the hand's twist (about the forearm) each model forearm bone takes, from the elbow down
+// (Iron Man's DEF-forearm, DEF-forearm001; Thanos's Elbow, ElbowPart1, ElbowPart2): see forearmTwist.
+const FOREARM_TWIST = { 'DEF-forearm': 0.2, 'DEF-forearm001': 0.6, Elbow: 0, Part1: 0.33, Part2: 0.67 };
 
 /*
  * The thumb. The model's rest thumb juts out of the palm, which reads as stuck on, so it is posed in the
@@ -1856,8 +1859,9 @@ export function createIronMan(renderer, opts = {}) {
       if (!b.isBone) return;
       const parent = b === root ? null : byBone.get(b.parent);
       const restQ = (parent ? parent.restQ.clone() : new THREE.Quaternion()).multiply(b.quaternion);
-      const side = b.name.endsWith('L') ? 'L' : 'R';
-      const e = { bone: b, parent, restQ, q: new THREE.Quaternion(), drv: drv[b.name] || sk.limbs[side].wr, side };
+      const sm = /([LR])(\d{3})?$/.exec(b.name); // (his side: the L or R before any numbered part)
+      const side = sm && sm[1] === 'L' ? 'L' : 'R';
+      const e = { bone: b, parent, restQ, q: new THREE.Quaternion(), drv: drv[b.name] || sk.limbs[side].wr, side, twist: FOREARM_TWIST[b.name.replace(/[LR](\d{3})?$/, '$1')] || 0 };
       // The finger joints past the knuckle curl further on their own (the rig bends only the knuckle).
       e.distal = /^DEF-f_.*0[23][LR]$/.test(b.name);
       const th = /^DEF-thumb0([123])[LR]$/.exec(b.name);
@@ -1867,6 +1871,25 @@ export function createIronMan(renderer, opts = {}) {
     });
     return { m, order, root, rootRest: root.position.clone() };
   }
+
+  /*
+   * The hand's twist about the forearm (pronation) is the forearm's, not the wrist's: the rig turns it at the
+   * wrist, so the model's forearm bones each take their share of it (FOREARM_TWIST), and the skin twists
+   * along the forearm instead of wringing at the wrist (a captured hand can turn 120 degrees).
+   */
+  const twistAng = { L: 0, R: 0 };
+  function forearmTwist() {
+    for (const n of SIDES) {
+      const g = sk.limbs[n];
+      const q4 = g.wr.quaternion;
+      const a = g.restFore;
+      twistAng[n] = 2 * Math.atan2(q4.x * a.x + q4.y * a.y + q4.z * a.z, q4.w);
+      if (twistAng[n] > Math.PI) twistAng[n] -= 2 * Math.PI;
+      if (twistAng[n] < -Math.PI) twistAng[n] += 2 * Math.PI;
+    }
+  }
+  const _tq = new THREE.Quaternion();
+  const twistQ = (n, frac) => _tq.setFromAxisAngle(sk.limbs[n].restFore, frac * twistAng[n]);
 
   /** The rig's orientation of each bone in model space. */
   function rigQuats() {
@@ -1885,8 +1908,10 @@ export function createIronMan(renderer, opts = {}) {
    */
   function drive(md, hover) {
     rigQuats();
+    forearmTwist();
     for (const e of md.order) {
       e.q.copy(PQ.get(e.drv));
+      if (e.twist) e.q.multiply(twistQ(e.side, e.twist));
       if (e.thumb) {
         const w = thumbW[e.side];
         e.q.multiply(qT.copy(e.thumb[0]).slerp(e.thumb[1], w.open).slerp(e.thumb[2], w.flat));
@@ -1993,7 +2018,8 @@ export function createIronMan(renderer, opts = {}) {
       const name = b.name.replace(/_\d+$/, '');
       const parent = b === root ? null : byBone.get(b.parent);
       const restQ = (parent ? parent.restQ.clone() : baseQ.clone()).multiply(b.quaternion);
-      const e = { bone: b, parent, restQ, q: new THREE.Quaternion(), drv: map[name] || (parent ? parent.drv : sk.root), C: corr[name] || (parent ? parent.C : ID) };
+      const tw = /^Elbow(Part[12])?_([LR])$/.exec(name);
+      const e = { bone: b, parent, restQ, q: new THREE.Quaternion(), drv: map[name] || (parent ? parent.drv : sk.root), C: corr[name] || (parent ? parent.C : ID), side: tw ? tw[2] : 'L', twist: tw ? FOREARM_TWIST[tw[1] || 'Elbow'] : 0 };
       byBone.set(b, e);
       order.push(e);
     });
@@ -2003,8 +2029,11 @@ export function createIronMan(renderer, opts = {}) {
   /** Pose Thanos from the rig (see rigThanos): each bone turned onto the rig's rest, then as the rig's bone has turned. */
   function driveThanos(md) {
     rigQuats();
+    forearmTwist();
     for (const e of md.order) {
-      e.q.copy(PQ.get(e.drv)).multiply(e.C).multiply(e.restQ);
+      e.q.copy(PQ.get(e.drv));
+      if (e.twist) e.q.multiply(twistQ(e.side, e.twist));
+      e.q.multiply(e.C).multiply(e.restQ);
       if (e.parent) e.bone.quaternion.copy(e.parent.q).invert().multiply(e.q);
       else e.bone.quaternion.copy(md.baseInv).multiply(e.q);
     }
