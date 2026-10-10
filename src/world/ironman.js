@@ -26,13 +26,12 @@ import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import OBJ from '../../assets/ironman/hero_ironman01.obj';
 import TEX_BODY from '../../assets/ironman/hero_ironman01_S04.png';
 import TEX_PACK from '../../assets/ironman/hero_ironman01_S04_wp4.png';
+import { createSuit } from './suit.js';
+import { createRepulsors } from './repulsor.js';
 
 const HEIGHT = 46; // world units: he reads at the distances the camera keeps from the crawler
 const K = HEIGHT / 2.02; // world units per mesh unit (the mesh stands 2.02 tall, feet at y = 0)
 const FLY_SCALE = 1.9; // drawn this much larger in flight, so a leap reads at the camera's distance
-const MAX_BEAMS = 32;
-const SPARKS = 900;
-const FLARES = 48;
 const UP = new THREE.Vector3(0, 1, 0);
 
 /*
@@ -192,170 +191,6 @@ function skin(geo, segs) {
 }
 
 /**
- * Surface maps from the colour texture, once it has loaded: metalness and
- * roughness (green: roughness, blue: metalness, as three reads them), relief
- * (luminance: the silver and gold trim stands proud of the red panels) and
- * glow (the cyan lights: arc reactor, eyes, palms, vents).
- */
-function deriveMaps(img) {
-  const w = img.width;
-  const h = img.height;
-  const cv = (fn) => {
-    const c = document.createElement('canvas');
-    c.width = w;
-    c.height = h;
-    const g = c.getContext('2d');
-    g.drawImage(img, 0, 0);
-    const d = g.getImageData(0, 0, w, h);
-    const a = d.data;
-    for (let i = 0; i < a.length; i += 4) fn(a, i, a[i] / 255, a[i + 1] / 255, a[i + 2] / 255);
-    g.putImageData(d, 0, 0);
-    const t = new THREE.CanvasTexture(c);
-    t.anisotropy = 4;
-    return t;
-  };
-  const glowOf = (r, g, b) => smooth(0.45, 0.7, b) * smooth(0.4, 0.65, g) * smooth(0.95, 0.6, r - b + 0.3);
-  const mr = cv((a, i, r, g, b) => {
-    const mx = Math.max(r, g, b);
-    const mn = Math.min(r, g, b);
-    const gold = smooth(0.35, 0.55, r) * smooth(0.22, 0.4, g) * smooth(0.3, 0.12, b) * smooth(0.45, 0.65, g / Math.max(r, 1e-3));
-    const silver = smooth(0.14, 0.06, mx - mn) * smooth(0.2, 0.45, mx);
-    const dark = smooth(0.12, 0.03, mx);
-    // The red is paint (a dielectric base under the clear coat); gold and silver trim is bare metal.
-    const metal = 0.22 + 0.78 * Math.max(gold, silver) - 0.15 * dark;
-    const rough = 0.38 - 0.16 * gold - 0.2 * silver + 0.4 * dark;
-    a[i] = 0;
-    a[i + 1] = clamp(rough, 0.05, 1) * 255;
-    a[i + 2] = clamp(metal, 0, 1) * 255;
-    a[i + 3] = 255;
-  });
-  const bump = cv((a, i, r, g, b) => {
-    const l = (0.3 * r + 0.59 * g + 0.11 * b) * 255;
-    a[i] = a[i + 1] = a[i + 2] = l;
-    a[i + 3] = 255;
-  });
-  const glow = cv((a, i, r, g, b) => {
-    const k = glowOf(r, g, b);
-    a[i] = r * k * 255;
-    a[i + 1] = g * k * 255;
-    a[i + 2] = b * k * 255;
-    a[i + 3] = 255;
-  });
-  glow.colorSpace = THREE.SRGBColorSpace;
-  return { mr, bump, glow };
-}
-
-/** A small space environment for the suit to reflect: dark, with cool and warm nebula light and stars. */
-function spaceEnvironment(renderer) {
-  const env = new THREE.Scene();
-  env.background = new THREE.Color(0x04050a);
-  const panel = (color, intensity, pos, size) => {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), side: THREE.DoubleSide }));
-    m.position.set(...pos);
-    m.lookAt(0, 0, 0);
-    env.add(m);
-  };
-  panel(0x7d9bff, 2.2, [0, 9, 2], 9); // a cool sky above
-  panel(0xffb46a, 1.6, [-8, -3, 4], 7); // a warm cluster low on one side
-  panel(0xff4f9a, 1.1, [8, 1, -5], 6); // magenta on the other
-  panel(0x9fe8ff, 3.0, [3, 4, 9], 2.2); // a hard key reflection
-  const sg = new THREE.SphereGeometry(0.06, 6, 4);
-  let s = 7;
-  const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
-  for (let i = 0; i < 160; i++) {
-    const m = new THREE.Mesh(sg, new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 1, 1).multiplyScalar(1 + 4 * rnd()) }));
-    const u = rnd() * 2 - 1;
-    const th = rnd() * Math.PI * 2;
-    const r = Math.sqrt(1 - u * u);
-    m.position.set(r * Math.cos(th) * 12, u * 12, r * Math.sin(th) * 12);
-    env.add(m);
-  }
-  const pm = new THREE.PMREMGenerator(renderer);
-  const tex = pm.fromScene(env, 0.02).texture;
-  pm.dispose();
-  return tex;
-}
-
-/** Soft round sprites (flares and sparks): additive, sized in world units, with faint cross rays. */
-function spriteMaterial(rays) {
-  return new THREE.ShaderMaterial({
-    uniforms: { uHalfH: { value: 450 }, uRays: { value: rays } },
-    transparent: true,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    vertexShader: /* glsl */ `
-      attribute vec3 color;
-      attribute float size;
-      uniform float uHalfH;
-      varying vec3 vColor;
-      void main() {
-        vec4 mv = modelViewMatrix * vec4(position, 1.0);
-        gl_PointSize = clamp(size * projectionMatrix[1][1] * uHalfH / max(1.0, -mv.z), 0.0, 220.0);
-        gl_Position = projectionMatrix * mv;
-        vColor = color;
-      }`,
-    fragmentShader: /* glsl */ `
-      uniform float uRays;
-      varying vec3 vColor;
-      void main() {
-        vec2 d = gl_PointCoord * 2.0 - 1.0;
-        float r2 = dot(d, d);
-        if (r2 > 1.0) discard;
-        float a = exp(-r2 * 7.0) + 0.25 * exp(-r2 * 2.2);
-        float rays = exp(-abs(d.x) * 22.0) * exp(-abs(d.y) * 2.4) + exp(-abs(d.y) * 22.0) * exp(-abs(d.x) * 2.4);
-        gl_FragColor = vec4(vColor * (a + uRays * rays * (1.0 - r2)), 1.0);
-      }`,
-  });
-}
-
-/** The repulsor ray: a camera-facing ribbon, white-hot core in a cyan sheath, pulsing and flickering. */
-function beamMaterial() {
-  return new THREE.ShaderMaterial({
-    uniforms: { uTime: { value: 0 } },
-    transparent: true,
-    depthWrite: false,
-    blending: THREE.AdditiveBlending,
-    side: THREE.DoubleSide,
-    vertexShader: /* glsl */ `
-      attribute vec2 aUv;
-      attribute vec3 aInfo; // length, seed, power
-      varying vec2 vUv;
-      varying vec3 vInfo;
-      void main() {
-        vUv = aUv;
-        vInfo = aInfo;
-        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
-      }`,
-    fragmentShader: /* glsl */ `
-      uniform float uTime;
-      varying vec2 vUv;
-      varying vec3 vInfo;
-      void main() {
-        float L = vInfo.x;
-        float x = vUv.x * L;
-        float v = vUv.y;
-        float seed = vInfo.y;
-        float power = vInfo.z;
-        // Energy packets racing out from the palm, and a fast shimmer along the beam.
-        float pulse = pow(0.5 + 0.5 * sin(x * 0.32 - uTime * 42.0 + seed * 6.3), 8.0);
-        float shimmer = 0.82 + 0.18 * sin(x * 1.9 + uTime * 71.0 + seed * 13.0) * sin(x * 0.47 - uTime * 29.0);
-        // The core trembles very slightly across the beam.
-        float wob = 0.012 * sin(x * 0.11 - uTime * 37.0 + seed * 3.0);
-        float vv = v - wob;
-        float core = exp(-vv * vv / 0.01);
-        float sheath = exp(-vv * vv / 0.12);
-        float halo = exp(-abs(vv) * 2.6) * 0.22;
-        // A gentle flare where it leaves the palm, fading to full strength a little way out.
-        float mouth = 1.0 + 1.6 * exp(-x * 0.45);
-        vec3 c = vec3(1.0, 1.0, 1.0) * core * (1.3 + 1.1 * pulse) + vec3(0.32, 0.72, 1.0) * (sheath * (0.75 + 0.7 * pulse) + halo);
-        c *= shimmer * mouth * power;
-        float fade = smoothstep(1.0, 0.86, abs(v));
-        gl_FragColor = vec4(c * fade, 1.0);
-      }`,
-  });
-}
-
-/**
  * @param {THREE.WebGLRenderer} renderer for the suit's reflections
  * @returns {{group: THREE.Group, fx: THREE.Group, update: Function, chest: Function, up: Function}}
  */
@@ -363,31 +198,18 @@ export function createIronMan(renderer) {
   const group = new THREE.Group(); // at his pelvis
   const body = new THREE.Group(); // oriented: +y his head, +z his chest
   group.add(body);
-  const fx = new THREE.Group(); // world-space effects: rays, flares, sparks
+  const repulsors = createRepulsors();
+  const fx = repulsors.group; // world-space effects: rays, flares, sparks
 
-  const envMap = renderer ? spaceEnvironment(renderer) : null;
-  const loadTex = (url, onImage) => {
-    const t = new THREE.TextureLoader().load(url, (tt) => onImage && onImage(tt.image));
-    t.colorSpace = THREE.SRGBColorSpace;
-    t.anisotropy = 8;
-    return t;
-  };
-  // Clear-coated metal (the red is a metallic paint); its maps follow once the texture has loaded.
-  const suit = (url, sideMode) => {
-    const m = new THREE.MeshPhysicalMaterial({ metalness: 0.4, roughness: 0.35, clearcoat: 0.8, clearcoatRoughness: 0.12, envMap, envMapIntensity: 1.7, emissive: 0xffffff, emissiveIntensity: 0, side: sideMode, fog: false });
-    m.map = loadTex(url, (img) => {
-      const d = deriveMaps(img);
-      Object.assign(m, { metalnessMap: d.mr, roughnessMap: d.mr, metalness: 1, roughness: 1, bumpMap: d.bump, bumpScale: 1.6, emissiveMap: d.glow, emissiveIntensity: 2.6 });
-      m.needsUpdate = true;
-    });
-    return m;
-  };
+  const suitOf = createSuit(renderer);
+  const suit = (url, sideMode) => suitOf.material(url, sideMode);
 
   const parts = {};
   new OBJLoader().parse(OBJ).traverse((o) => {
     if (o.isMesh) parts[['wp2', 'wp4', 'wp5'].find((k) => o.name.includes(k)) || 'body'] = o.geometry;
   });
   const sk = buildSkeleton();
+  parts.body = suitOf.refine(parts.body);
   skin(parts.body, sk.segs);
   const mesh = new THREE.SkinnedMesh(parts.body, suit(TEX_BODY, THREE.FrontSide));
   mesh.add(sk.root);
@@ -416,43 +238,14 @@ export function createIronMan(renderer) {
   rim.target = body;
   group.add(hemi, key, rim, repulsorLight);
 
-  // Effects: rays, flares (palms, boots, impacts) and sparks (exhaust, impacts).
-  const beamGeo = new THREE.BufferGeometry();
-  const bPos = new Float32Array(MAX_BEAMS * 4 * 3);
-  const bUv = new Float32Array(MAX_BEAMS * 4 * 2);
-  const bInfo = new Float32Array(MAX_BEAMS * 4 * 3);
-  const bIdx = new Uint16Array(MAX_BEAMS * 6);
-  for (let i = 0; i < MAX_BEAMS; i++) bIdx.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4 + 2, i * 4 + 1, i * 4 + 3], i * 6);
-  beamGeo.setAttribute('position', new THREE.BufferAttribute(bPos, 3).setUsage(THREE.DynamicDrawUsage));
-  beamGeo.setAttribute('aUv', new THREE.BufferAttribute(bUv, 2).setUsage(THREE.DynamicDrawUsage));
-  beamGeo.setAttribute('aInfo', new THREE.BufferAttribute(bInfo, 3).setUsage(THREE.DynamicDrawUsage));
-  beamGeo.setIndex(new THREE.BufferAttribute(bIdx, 1));
-  const beams = new THREE.Mesh(beamGeo, beamMaterial());
-  beams.frustumCulled = false;
-  beams.renderOrder = 16;
-  const pointsOf = (n, mat) => {
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
-    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
-    g.setAttribute('size', new THREE.BufferAttribute(new Float32Array(n), 1).setUsage(THREE.DynamicDrawUsage));
-    const p = new THREE.Points(g, mat);
-    p.frustumCulled = false;
-    p.renderOrder = 17;
-    return p;
-  };
-  const flares = pointsOf(FLARES, spriteMaterial(1));
-  const sparks = pointsOf(SPARKS, spriteMaterial(0));
-  fx.add(beams, flares, sparks);
-  const sp = { vel: new Float32Array(SPARKS * 3), age: new Float32Array(SPARKS).fill(9), life: new Float32Array(SPARKS).fill(1), tint: new Float32Array(SPARKS * 3), size: new Float32Array(SPARKS), next: 0, acc: 0 };
-
   // State.
-  const st = { phase: 0, feet: null, lastFoot: 'R', landAt: -9, grounded: true, seen: new Map(), time: 0 };
+  const st = { phase: 0, feet: null, lastFoot: 'R', landAt: -9, grounded: true, time: 0 };
   const ez = {
     walk: spring(7), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), pack: spring(7, 0.6), scale: spring(6),
     pelvisY: spring(16, 0.85), sway: spring(10), yawP: spring(12), roll: spring(12),
     twist: spring(9, 0.9), lookY: spring(10, 0.9), lookP: spring(10, 0.9),
     arm: { L: spring(9, 0.55), R: spring(9, 0.55) }, aim: { L: spring(11, 0.85), R: spring(11, 0.85) },
-    recoil: { L: spring(26, 0.45), R: spring(26, 0.45) }, charge: { L: spring(14), R: spring(14) },
+    recoil: { L: spring(26, 0.45), R: spring(26, 0.45) },
   };
   ez.scale.x = 1;
   const aimAt = { L: new THREE.Vector3(), R: new THREE.Vector3() };
@@ -480,25 +273,6 @@ export function createIronMan(renderer) {
     if (a.lengthSq() < 1e-6) a.copy(fallback).addScaledVector(n, -fallback.dot(n));
     return a.normalize();
   };
-
-  /** Emit a spark. */
-  function spark(p, vx, vy, vz, life, r, g, b, size) {
-    const i = sp.next;
-    sp.next = (sp.next + 1) % SPARKS;
-    const pa = sparks.geometry.attributes.position.array;
-    pa[i * 3] = p.x;
-    pa[i * 3 + 1] = p.y;
-    pa[i * 3 + 2] = p.z;
-    sp.vel[i * 3] = vx;
-    sp.vel[i * 3 + 1] = vy;
-    sp.vel[i * 3 + 2] = vz;
-    sp.age[i] = 0;
-    sp.life[i] = life;
-    sp.tint[i * 3] = r;
-    sp.tint[i * 3 + 1] = g;
-    sp.tint[i * 3 + 2] = b;
-    sp.size[i] = size;
-  }
 
   /* ---------------- feet: planner and IK ---------------- */
 
@@ -605,12 +379,9 @@ export function createIronMan(renderer) {
     // A jump in time (a seek) lands every spring and replants the feet; otherwise steps are capped.
     const jumped = frameDt > 0.3;
     if (jumped) st.feet = null;
-    let dt = clamp(frameDt, 0, 0.1);
+    const dt = clamp(frameDt, 0, 0.1);
     const sdt = jumped ? frameDt : dt;
     st.time += dt;
-    flares.material.uniforms.uHalfH.value = halfH;
-    sparks.material.uniforms.uHalfH.value = halfH;
-    beams.material.uniforms.uTime.value = spider.time;
     v.set(spider.v[0], spider.v[1], spider.v[2]);
     const speed = v.length();
     a3.set(spider.F[0], 0, spider.F[2]);
@@ -697,22 +468,14 @@ export function createIronMan(renderer) {
     sk.root.rotation.set(0, pelvisYaw, pelvisRoll);
     group.updateMatrixWorld(true);
 
-    // Targets: each side's nearest word; a new ray kicks that arm back and charges the palm.
+    // Targets: each side's nearest word, fired at by the hand on that side.
     const tgt = { L: null, R: null };
-    const ids = new Set();
     for (const t of targets) {
       a3.set(t.at[0] - group.position.x, t.at[1] - group.position.y, t.at[2] - group.position.z);
       const n = a3.dot(leftV) > 0 ? 'L' : 'R';
       t.side = n;
-      ids.add(t.id);
-      if (!st.seen.has(t.id)) {
-        st.seen.set(t.id, n);
-        ez.recoil[n].v += 9;
-        ez.charge[n].v += 30;
-      }
       if (!tgt[n] || a3.lengthSq() < tgt[n].lengthSq()) tgt[n] = a3.clone();
     }
-    for (const id of [...st.seen.keys()]) if (!ids.has(id)) st.seen.delete(id);
     let twistTo = 0;
     let lookY = 0;
     let lookP = 0;
@@ -720,7 +483,6 @@ export function createIronMan(renderer) {
     for (const n of ['L', 'R']) {
       ez.aim[n].to((tgt[n] ? 1 : 0) * (1 - g), sdt);
       ez.recoil[n].to(0, sdt);
-      ez.charge[n].to(0, sdt);
       if (tgt[n]) {
         aimAt[n].copy(tgt[n]).add(group.position);
         // Torso and head turn toward the target (the head further).
@@ -801,108 +563,26 @@ export function createIronMan(renderer) {
 
     /* ---- effects ---- */
     const L = sk.limbs;
-    const palmW = { L: L.L.palm.getWorldPosition(new THREE.Vector3()), R: L.R.palm.getWorldPosition(new THREE.Vector3()) };
-    const soleW = [L.L.sole.getWorldPosition(new THREE.Vector3()), L.R.sole.getWorldPosition(new THREE.Vector3())];
-    const thrust = Math.max(air, fly);
-
-    // Rays.
-    let nb = 0;
-    camera.getWorldPosition(c3);
-    for (const t of targets) {
-      if (nb >= MAX_BEAMS) break;
-      const from = palmW[t.side || 'R'];
-      a3.set(t.at[0], t.at[1], t.at[2]);
-      const to = b3.copy(from).lerp(a3, clamp(t.p, 0, 1));
-      const len = from.distanceTo(to);
-      if (len < 0.5) continue;
-      const toCam = a3.copy(from).add(to).multiplyScalar(0.5).sub(c3).multiplyScalar(-1);
-      const dir = to.clone().sub(from).normalize();
-      const w = (1.5 + 0.6 * Math.min(1, len / 150)) * (K / 22.8); // half-width: the cyan sheath; the white core is a fifth of it
-      const sideV = dir.clone().cross(toCam).normalize().multiplyScalar(w);
-      const o = nb * 4;
-      const corners = [[from, 1], [from, -1], [to, 1], [to, -1]];
-      corners.forEach(([p, s], k2) => {
-        bPos[(o + k2) * 3] = p.x + sideV.x * s;
-        bPos[(o + k2) * 3 + 1] = p.y + sideV.y * s;
-        bPos[(o + k2) * 3 + 2] = p.z + sideV.z * s;
-        bUv[(o + k2) * 2] = k2 < 2 ? 0 : 1;
-        bUv[(o + k2) * 2 + 1] = s;
-        bInfo[(o + k2) * 3] = len;
-        bInfo[(o + k2) * 3 + 1] = (t.id * 0.618) % 1;
-        bInfo[(o + k2) * 3 + 2] = 0.9 + 0.1 * Math.sin(spider.time * 31 + t.id);
-      });
-      nb++;
-      // Where it hits: sparks thrown back off the star.
-      if (t.p >= 1 && Math.random() < dt * 40) {
-        const sv = 25 + 35 * Math.random();
-        spark(to, -dir.x * sv + (Math.random() - 0.5) * 40, -dir.y * sv + (Math.random() - 0.5) * 40, -dir.z * sv + (Math.random() - 0.5) * 40, 0.2 + 0.25 * Math.random(), 1, 0.85, 0.6, 0.9);
-      }
-    }
-    beamGeo.setDrawRange(0, nb * 6);
-    for (const name of ['position', 'aUv', 'aInfo']) beamGeo.attributes[name].needsUpdate = true;
-
-    // Flares: palms (charging and firing), boots (in the air), and each ray's point of impact.
-    const fp = flares.geometry.attributes.position.array;
-    const fc = flares.geometry.attributes.color.array;
-    const fs = flares.geometry.attributes.size.array;
-    let nf = 0;
-    const flare = (p, r, g2, b, size) => {
-      if (nf >= FLARES) return;
-      fp[nf * 3] = p.x;
-      fp[nf * 3 + 1] = p.y;
-      fp[nf * 3 + 2] = p.z;
-      fc[nf * 3] = r;
-      fc[nf * 3 + 1] = g2;
-      fc[nf * 3 + 2] = b;
-      fs[nf] = size * (K / 22.8) * scale;
-      nf++;
-    };
-    const flick = 0.85 + 0.15 * Math.sin(spider.time * 47);
-    let lightP = 0;
-    for (const n of ['L', 'R']) {
-      const fire = clamp(ez.aim[n].x, 0, 1) * (tgt[n] ? 1 : 0);
-      const ch = Math.max(0, ez.charge[n].x);
-      const pw = Math.max(fire * 0.7 + Math.min(1.5, ch * 1.4), thrust * 0.8); // the charge flashes up, then holds while firing
-      if (pw > 0.02) flare(palmW[n], 0.75 * pw * flick, 0.9 * pw * flick, 1.0 * pw * flick, 3.2 + 3 * Math.min(1, ch));
-      lightP += pw;
-    }
-    if (thrust > 0.05) for (const s of soleW) flare(s, 0.8 * thrust * flick, 0.9 * thrust * flick, thrust * flick, 4.2);
-    for (const t of targets) if (t.p >= 1) flare(a3.set(t.at[0], t.at[1], t.at[2]), 0.9 * flick, 0.95 * flick, 1.0 * flick, 3.4 + 0.6 * Math.sin(spider.time * 23 + t.id));
-    flares.geometry.setDrawRange(0, nf);
-    for (const name of ['position', 'color', 'size']) flares.geometry.attributes[name].needsUpdate = true;
-    repulsorLight.intensity = 40 * Math.min(2, lightP);
+    const out = repulsors.update({
+      dt,
+      time: spider.time,
+      camera,
+      halfH,
+      unit: K / 22.8,
+      scale,
+      palms: { L: L.L.palm.getWorldPosition(new THREE.Vector3()), R: L.R.palm.getWorldPosition(new THREE.Vector3()) },
+      soles: [L.L.sole.getWorldPosition(new THREE.Vector3()), L.R.sole.getWorldPosition(new THREE.Vector3())],
+      head,
+      vel: v,
+      thrust: Math.max(air, fly),
+      fly,
+      targets,
+      aim: { L: clamp(ez.aim.L.x, 0, 1), R: clamp(ez.aim.R.x, 0, 1) },
+    });
+    // A shot kicks that arm back; the repulsors light up his own armour.
+    for (const n of ['L', 'R']) if (out.fired[n]) ez.recoil[n].v += 9 * out.fired[n];
+    repulsorLight.intensity = 40 * Math.min(2, out.light);
     repulsorLight.position.copy(head).multiplyScalar(0.2 * K);
-
-    // Exhaust: sparks shooting back from boots (and palms in flight).
-    sp.acc += dt * 500 * thrust;
-    while (sp.acc >= 1) {
-      sp.acc -= 1;
-      const n = Math.random() < (fly > 0.3 ? 0.5 : 1) ? Math.floor(Math.random() * 2) : 2 + Math.floor(Math.random() * 2);
-      const p = n < 2 ? soleW[n] : palmW[n === 2 ? 'L' : 'R'];
-      const s = (70 + 60 * fly) * scale;
-      spark(p, -head.x * s + (Math.random() - 0.5) * 16 + v.x * 0.6, -head.y * s + (Math.random() - 0.5) * 16 + v.y * 0.6, -head.z * s + (Math.random() - 0.5) * 16 + v.z * 0.6, 0.16 + Math.random() * 0.2, 0.8, 0.9, 1, 1.0 * scale);
-    }
-    const pa = sparks.geometry.attributes.position.array;
-    const ca = sparks.geometry.attributes.color.array;
-    const sa = sparks.geometry.attributes.size.array;
-    for (let i = 0; i < SPARKS; i++) {
-      sp.age[i] += dt;
-      const u = sp.age[i] / sp.life[i];
-      if (u >= 1) {
-        sa[i] = 0;
-        continue;
-      }
-      pa[i * 3] += sp.vel[i * 3] * dt;
-      pa[i * 3 + 1] += sp.vel[i * 3 + 1] * dt;
-      pa[i * 3 + 2] += sp.vel[i * 3 + 2] * dt;
-      // White-blue at birth, cooling to amber as it fades.
-      const a = (1 - u) * (1 - u);
-      ca[i * 3] = a * sp.tint[i * 3] * (0.8 + 0.4 * u);
-      ca[i * 3 + 1] = a * sp.tint[i * 3 + 1] * (1 - 0.35 * u);
-      ca[i * 3 + 2] = a * sp.tint[i * 3 + 2] * (1 - 0.75 * u);
-      sa[i] = sp.size[i] * (K / 22.8) * (1 - 0.4 * u);
-    }
-    for (const name of ['position', 'color', 'size']) sparks.geometry.attributes[name].needsUpdate = true;
   }
 
   return {
