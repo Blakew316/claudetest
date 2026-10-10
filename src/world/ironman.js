@@ -108,11 +108,12 @@ const ARM_HANG = 0.6; // walking arms hang this much along the world's down rath
 const ARM_OUT = 0.14; // the arms hang this far out from the sides (rad), clear of the suit
 const ARM_PRONATE = 0.3; // ... the palms turned this far from facing the thighs toward the back (rad)
 const ELBOW_REST = 0.33; // a relaxed elbow's bend (rad)
-// A look round to a new word is paced as a person's head turns deliberately (at most ~200 degrees a
-// second), not snapped there however far it is; and once on a word it stays at least LOOK_HOLD (s) before
-// another word draws it (the head does not dart between words). The arm comes up for a word only once the
-// eyes are on it: it starts after LOOK_LEAD[0] and is on its way by LOOK_LEAD[1] (s).
-const LOOK_RATE = 3.5;
+// A look somewhere new (more than LOOK_NEW rad away) is one head turn, as a person's is: easing out and in
+// (minimum jerk) over LOOK_T[0] + LOOK_T[1] s per rad (a glance ~0.25 s, a big turn ~0.6 s), not a
+// constant-speed sweep; once on a word it stays at least LOOK_HOLD (s) before another draws it. The arm
+// comes up for a word only once the eyes are on it: it starts after LOOK_LEAD[0], on its way by LOOK_LEAD[1] (s).
+const LOOK_NEW = 0.15;
+const LOOK_T = [0.22, 0.24];
 const LOOK_HOLD = 0.6;
 const LOOK_LEAD = [0.1, 0.3];
 // Recoil. The hand's kick (spring rad/s, damping) and how far it drives the hand back along the beam
@@ -276,15 +277,27 @@ const FIST_REACH = 0.97; // the fist's arm this straight (share of its reach)
 const FIST_H = 0.2; // its wrist this high over the ground the curled fingers are on (mesh units)
 const BLOW = 0.03; // seconds over which a blow (a blast's kick) is delivered
 const LAND_BLOW = 0.1; // ... and the landing's, taken by the knees over this long (in a frame it jolted his whole body)
-const AIM_W = 13; // how quickly an arm sweeps onto a new word (rad/s, critically damped: ~0.3 s)
-const AIM_GAP = 0.8; // ... chasing a point at most this far (rad) ahead of where it points: a brisk swing, not a whip
-const AIM_UP = 0.87; // ... and never higher than this over the horizontal (rad): the trunk leans back to what is higher
+const AIM_W = 13; // an arm whose word has gone coasts to rest at this rate (rad/s, critically damped)
+// Onto a new word (more than AIM_NEW rad from the last) the arm makes one decisive move, easing out and in,
+// over AIM_T[0] + AIM_T[1] s per rad (at most AIM_T[2]), then holds on it rather than tracking it like a turret.
+const AIM_NEW = 0.15;
+const AIM_T = [0.22, 0.2, 0.55];
+// Proximal to distal: the elbow joins a raise a beat after the shoulder (its spring rad/s raising, lowering),
+// bent as the arm comes up (RAISE_FLEX of the reach at most) and straightening to punch out at the end, and
+// lets go first as the arm lowers; the wrist follows the elbow. The palm fires once the elbow is AIM_EXT out.
+const RAISE_EL_W = [6, 18];
+const AIM_RAISE_W = 7; // the shoulder's raise and drop (spring rad/s)
+const AIM_DROP_W = 11;
+const RAISE_WR_W = [7, 14];
+const RAISE_FLEX = 0.3;
+const AIM_EXT = 0.8;
+const AIM_UP = 0.45; // ... and never higher than this over the horizontal (rad): higher reads as a wave; the trunk leans back and the palm tips up for the rest
 // The words a hand will shoot at (rad, from his heading): across the chest at most REACH_IN, out to its side at most
 // REACH_OUT (just past square to the shoulders: further back the arm would wrap behind him), up to REACH_UP over
 // AIM_UP and down at most REACH_DOWN. Anything else he only looks at. REACH_HOLD widens it for the word a hand is on.
 const REACH_IN = 0.35;
 const REACH_OUT = 1.6;
-const REACH_UP = 0.4;
+const REACH_UP = 0.35;
 const REACH_DOWN = 0.8;
 const REACH_HOLD = 0.2;
 const AIM_ON = 0.25; // the arm counts as on its word within this (rad): only then does the palm fire
@@ -583,7 +596,7 @@ export function createIronMan(renderer) {
     aim: { L: { id: -1, fresh: -9, born: -9, has: false, dir: new THREE.Vector3(0, 0, 1), dirS: new THREE.Vector3(), dirV: new THREE.Vector3(), seen: 0 }, R: { id: -1, fresh: -9, born: -9, has: false, dir: new THREE.Vector3(0, 0, 1), dirS: new THREE.Vector3(), dirV: new THREE.Vector3(), seen: 0 } },
     seen: new Map(), // word id -> {t: first seen, p: last reach}
     landDipArmed: false,
-    look: { y: 0, p: 0 }, // where the head is headed for, moving at most LOOK_RATE
+    look: { y: 0, p: 0, y0: 0, p0: 0, y1: 0, p1: 0, T0: -9, T: 0.3 }, // the head's look, and the turn it is making (from y0/p0 to y1/p1 since T0, over T)
     lookId: -1, // the word the head is on, since lookT
     lookT: -9,
     aimHigh: { L: 0, R: 0 }, // how far over AIM_UP each arm's word is (rad, by its aim's weight)
@@ -593,7 +606,7 @@ export function createIronMan(renderer) {
     speed: spring(6), active: spring(6), pelvisY: spring(PELVIS_W), sway: spring(9, 0.9), land: spring(9, 0.55, LAND_BLOW),
     hips: spring(5, 0.9), twist: spring(7, 0.9), lookY: spring(8, 0.9), lookP: spring(8, 0.9),
     shift: spring(1.6, 0.9), brace: spring(4, 0.9), wide: spring(4, 0.9), lean: spring(5, 0.9),
-    arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(7, 0.75), R: spring(7, 0.75) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
+    arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(7, 0.75), R: spring(7, 0.75) }, aimEl: { L: spring(6, 0.85), R: spring(6, 0.85) }, aimWr: { L: spring(7, 0.9), R: spring(7, 0.9) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
     gx: spring(GRADE_W), gz: spring(GRADE_W), gOff: spring(GROUND_W), hV: spring(40), pushX: spring(11, 0.9), pushZ: spring(11, 0.9), apa: spring(10),
     hurry: spring(10), elev: spring(7), go: spring(14), ext: spring(6),
     // A blast's kick through the arm: back along the beam within ~50 ms, a touch past rest on the
@@ -942,6 +955,9 @@ export function createIronMan(renderer) {
   const aimW = { L: 0, R: 0 };
   const aimGoal = { L: new THREE.Vector3(0, 0, 1), R: new THREE.Vector3(0, 0, 1) }; // where each arm is heading
   const aimOn = { L: false, R: false }; // each arm on its word (it may fire)
+  for (const n of SIDES) Object.assign(st.aim[n], { mFrom: new THREE.Vector3(0, 0, 1), mTo: new THREE.Vector3(0, 0, 1), mT0: -9, mT: 0.3 }); // the arm's move onto its word
+  const _m1 = new THREE.Vector3();
+  const _m2 = new THREE.Vector3();
   const fxIn = { palms, soles, head, vel: v, aim: aimW };
   const AX = new THREE.Vector3(1, 0, 0);
   const AY = new THREE.Vector3(0, 1, 0);
@@ -1610,7 +1626,7 @@ export function createIronMan(renderer) {
   const qPar = new THREE.Quaternion();
   const qAim = new THREE.Quaternion();
   const qAim2 = new THREE.Quaternion();
-  function aimPose(gA, dir, rec, tipUp = 0) {
+  function aimPose(gA, dir, rec, tipUp = 0, bend = 0) {
     const s = gA.s;
     // Up, as the arm sees it: the world's, square to the arm.
     const upv = d3.copy(UP).addScaledVector(dir, -dir.dot(UP));
@@ -1621,7 +1637,7 @@ export function createIronMan(renderer) {
     perp(upv, d, heading);
     // Elbow: soft, folding as the blast drives the hand back along the beam (out in front of him,
     // never back into the chest).
-    const ext = clamp(0.985 - RECOIL_BACK * rec, 0.72, 0.99);
+    const ext = clamp(0.95 - RECOIL_BACK * rec - bend, 0.6, 0.99); // (a soft elbow, never locked)
     const r = ext * (LU + LF);
     const cosA = clamp((LU * LU + r * r - LF * LF) / (2 * LU * r), -1, 1);
     const ang = Math.acos(cosA);
@@ -2174,9 +2190,26 @@ export function createIronMan(renderer) {
     }
     const twist = ez.twist.to(clamp(nT ? twistTo / nT : 0, -0.75, 0.75) * (1 - g), sdt);
     const lk = st.look;
-    const lkStep = sdt > 0.3 ? Infinity : LOOK_RATE * sdt;
-    lk.y += clamp(clamp(lookY, -1.25, 1.25) * (1 - g) - lk.y, -lkStep, lkStep);
-    lk.p += clamp(clamp(lookP, -0.5, 0.45) * (1 - g) - lk.p, -lkStep, lkStep);
+    const ty = clamp(lookY, -1.25, 1.25) * (1 - g);
+    const tp = clamp(lookP, -0.5, 0.45) * (1 - g);
+    if (sdt > 0.3) {
+      lk.y = lk.y0 = lk.y1 = ty;
+      lk.p = lk.p0 = lk.p1 = tp;
+      lk.T0 = -9;
+    } else {
+      // Somewhere new: one head turn from where it is (see LOOK_T); drifts of the same target are followed.
+      if (Math.hypot(ty - lk.y1, tp - lk.p1) > LOOK_NEW) {
+        lk.y0 = lk.y;
+        lk.p0 = lk.p;
+        lk.T0 = st.time;
+        lk.T = LOOK_T[0] + LOOK_T[1] * Math.hypot(ty - lk.y, tp - lk.p);
+      }
+      lk.y1 = ty;
+      lk.p1 = tp;
+      const m = minJerk(lk.T0 < 0 ? 1 : clamp((st.time - lk.T0) / lk.T, 0, 1));
+      lk.y = lk.y0 + (lk.y1 - lk.y0) * m;
+      lk.p = lk.p0 + (lk.p1 - lk.p0) * m;
+    }
     const neckY = ez.lookY.to(lk.y, sdt);
     const neckP = ez.lookP.to(lk.p, sdt);
 
@@ -2533,7 +2566,15 @@ export function createIronMan(renderer) {
       }
       // Aim: on its word, the direction eased (a quick, smooth move between words).
       const lead = ez.aim[n].x > 0.3 ? 1 : smooth(LOOK_LEAD[0], LOOK_LEAD[1], now - A.seen);
-      const a = clamp(ez.aim[n].to((A.has ? lead : 0) * (1 - g) * (1 - cr) * (1 - LW.on), sdt), 0, 1);
+      const aimTo = (A.has ? lead : 0) * (1 - g) * (1 - cr) * (1 - LW.on);
+      ez.aim[n].w = aimTo < ez.aim[n].x ? AIM_DROP_W : AIM_RAISE_W; // (it comes up deliberately and drops sooner, relaxing)
+      const a = clamp(ez.aim[n].to(aimTo, sdt), 0, 1);
+      const elA = ez.aimEl[n];
+      elA.w = a > elA.x ? RAISE_EL_W[0] : RAISE_EL_W[1];
+      const aEl = clamp(elA.to(a, sdt), 0, 1);
+      const wrA = ez.aimWr[n];
+      wrA.w = aEl > wrA.x ? RAISE_WR_W[0] : RAISE_WR_W[1];
+      const aWr = clamp(wrA.to(aEl, sdt), 0, 1);
       aimW[n] = a;
       const rec = ez.recoil[n].to(0, sdt);
       const kb = ez.kick[n].to(0, sdt);
@@ -2556,29 +2597,27 @@ export function createIronMan(renderer) {
           a3.set((a3.x / h) * Math.cos(AIM_UP), Math.sin(AIM_UP), (a3.z / h) * Math.cos(AIM_UP));
         }
         aimGoal[n].copy(a3);
-        // Onto a new word the arm sweeps over as a reach does: setting off and arriving gently.
+        // Onto a new word: one decisive move (see AIM_T), then it holds on the word, following it only as he moves.
         if (A.dirS.lengthSq() < 1e-6 || a < 0.02 || jumped) {
           A.dirS.copy(a3);
           A.dirV.set(0, 0, 0);
+          A.mFrom.copy(a3);
+          A.mTo.copy(a3);
+          A.mT0 = -9;
         } else {
-          // (A word far round: the arm swings briskly but no faster than an arm does: it chases a
-          // point at most AIM_GAP ahead of where it is pointing.)
-          b3.copy(A.dirS).normalize();
-          const gap = b3.angleTo(a3);
-          if (gap > AIM_GAP) {
-            qAim2.setFromUnitVectors(b3, a3);
-            a3.copy(b3).applyQuaternion(qAim.identity().slerp(qAim2, AIM_GAP / gap));
+          if (A.mTo.angleTo(a3) > AIM_NEW) {
+            A.mFrom.copy(A.dir);
+            A.mT0 = now;
+            A.mT = Math.min(AIM_T[2], AIM_T[0] + AIM_T[1] * A.dir.angleTo(a3));
           }
-          for (const k of XYZ) {
-            _sv.x = A.dirS[k];
-            _sv.v = A.dirV[k];
-            springStep(_sv, a3[k], AIM_W, 1, dt);
-            A.dirS[k] = _sv.x;
-            A.dirV[k] = _sv.v;
-          }
+          A.mTo.copy(a3);
+          const u = A.mT0 < 0 ? 1 : clamp((now - A.mT0) / A.mT, 0, 1);
+          qAim2.setFromUnitVectors(_m1.copy(A.mFrom).normalize(), _m2.copy(A.mTo).normalize());
+          A.dirS.copy(_m1).applyQuaternion(qAim.identity().slerp(qAim2, minJerk(u)));
+          A.dirV.set(0, 0, 0);
         }
         A.dir.copy(A.dirS).normalize();
-        aimOn[n] = a > 0.5 && A.dir.angleTo(aimGoal[n]) < AIM_ON;
+        aimOn[n] = aEl > AIM_EXT && A.dir.angleTo(aimGoal[n]) < AIM_ON;
       } else {
         aimOn[n] = false;
         // Its word gone, the arm does not stop dead mid-sweep: it carries on a little and comes to rest
@@ -2600,10 +2639,10 @@ export function createIronMan(renderer) {
         const raise = clamp(A.dir.y * 1.5 + 0.3, 0, 1);
         gA.clav.rotation.set(0, clavY + a * (-s * (0.12 - 0.18 * kb) - clavY), clavZ + a * (s * (0.1 * raise + 0.04 * kb) - clavZ));
         gA.clav.updateMatrixWorld(true);
-        aimPose(gA, A.dir, rec, 0.5 * st.aimHigh[n]);
+        aimPose(gA, A.dir, rec, 0.5 * st.aimHigh[n], RAISE_FLEX * clamp(2 * (a - aEl), 0, 1));
         gA.sh.quaternion.slerp(aimQ.sh, a);
-        gA.el.quaternion.slerp(aimQ.el, a);
-        gA.wr.quaternion.slerp(aimQ.wr, a);
+        gA.el.quaternion.slerp(aimQ.el, aEl);
+        gA.wr.quaternion.slerp(aimQ.wr, aWr);
       }
       // Fingers: loosely curled at rest, open and back to fire (flicked further by each blast), straight in flight.
       const curl = (0.42 * (1 - a) - 0.14 * a - 0.18 * rec * a + 0.14 * guard) * (1 - att) + 0.04 * att;
