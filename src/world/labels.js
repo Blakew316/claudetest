@@ -51,6 +51,17 @@ const SHIP_ALPHA = 0.8;
 const SETTLE = 0.8;
 
 const LABEL_FILL = withAlpha(BG, 0.8);
+/**
+ * The camera films Iron Man close, so many of the words he reads are off
+ * screen: a label of the section being read that is still recent (PIN_AGE s)
+ * is pinned to the frame's edge, inside this margin (CSS px: the HUD's
+ * title block across the top), with a chevron pointing the way to its word.
+ */
+const PIN_AGE = 4;
+const INSET = { top: 112, right: 12, bottom: 18, left: 12 };
+const CHEVRON = 6;
+/** A label that would sit over him while its word is behind him moves aside, this far clear, on a leader. */
+const CLEAR = 8;
 
 /** Text-width cache for the 11px label font; cleared when web fonts finish loading. */
 const widthCache = new Map();
@@ -78,6 +89,64 @@ export function labelText(word) {
   if (word.vague) return `${word.text} · ⚑ vague`;
   if (word.kind) return `${word.text} · ${word.kind}`;
   return word.text;
+}
+
+/**
+ * Where on the frame's edge (inside `rect`, {left, top, right, bottom} in px)
+ * a ray from (ox, oy) (its middle by default) in direction (dx, dy) leaves it.
+ * @returns {{x:number, y:number}}
+ */
+export function edgePoint(rect, dx, dy, ox = (rect.left + rect.right) / 2, oy = (rect.top + rect.bottom) / 2) {
+  const cx = Math.max(rect.left, Math.min(rect.right, ox));
+  const cy = Math.max(rect.top, Math.min(rect.bottom, oy));
+  const l = Math.hypot(dx, dy) || 1;
+  const ux = dx / l;
+  const uy = dy / l;
+  let t = Infinity;
+  if (ux > 1e-6) t = Math.min(t, (rect.right - cx) / ux);
+  if (ux < -1e-6) t = Math.min(t, (rect.left - cx) / ux);
+  if (uy > 1e-6) t = Math.min(t, (rect.bottom - cy) / uy);
+  if (uy < -1e-6) t = Math.min(t, (rect.top - cy) / uy);
+  if (!Number.isFinite(t)) t = 0;
+  return { x: cx + ux * t, y: cy + uy * t };
+}
+
+/**
+ * Calls fn(x, y, r) for points along each of his silhouette's segments (see
+ * view3d silhouette), close enough that their discs cover it; stops early
+ * once fn returns true. Returns whether it did.
+ */
+function eachHeroDisc(hero, fn) {
+  const g = hero.seg;
+  for (let i = 0; i < hero.n; i++) {
+    const x0 = g[i * 5];
+    const y0 = g[i * 5 + 1];
+    const x1 = g[i * 5 + 2];
+    const y1 = g[i * 5 + 3];
+    const r = g[i * 5 + 4];
+    const k = Math.min(16, Math.max(1, Math.ceil(Math.hypot(x1 - x0, y1 - y0) / Math.max(2, r))));
+    for (let j = 0; j <= k; j++) if (fn(x0 + ((x1 - x0) * j) / k, y0 + ((y1 - y0) * j) / k, r)) return true;
+  }
+  return false;
+}
+
+/** Whether a box (x, y, w, h) overlaps his silhouette. */
+function overHero(hero, x, y, w, h) {
+  return eachHeroDisc(hero, (px, py, r) => Math.hypot(px - Math.max(x, Math.min(x + w, px)), py - Math.max(y, Math.min(y + h, py))) < r);
+}
+
+/** How far across the screen his silhouette reaches between heights y0 and y1: [left, right] (px). */
+function heroSpan(hero, y0, y1) {
+  let lo = Infinity;
+  let hi = -Infinity;
+  eachHeroDisc(hero, (px, py, r) => {
+    if (py + r >= y0 && py - r <= y1) {
+      lo = Math.min(lo, px - r);
+      hi = Math.max(hi, px + r);
+    }
+    return false;
+  });
+  return [lo, hi];
 }
 
 /**
@@ -136,6 +205,9 @@ export function drawLabels(ctx, world, run, view, analysis) {
 
   const words = analysis.words;
   const pos = world.wordPos;
+  const hero = view.hero && view.hero.on ? view.hero : null;
+  const rect = { left: INSET.left, top: Math.min(INSET.top, height * 0.2), right: width - INSET.right, bottom: height - INSET.bottom };
+  const pinned = []; // boxes already pinned to the edge, [x, y, w] each
   for (const sec of order) {
     const isActive = !ship && sec.index === run.active;
     const status = run.status[sec.index];
@@ -171,15 +243,68 @@ export function drawLabels(ctx, world, run, view, analysis) {
       const a = secAlpha * fade * fade * (3 - 2 * fade) * out;
       if (a <= 0.01) continue;
       view.project(pos[id * 3], pos[id * 3 + 1], pos[id * 3 + 2], p);
-      if (!p.vis) continue;
-      // Farther labels recede, like the web behind them.
-      const depthA = Math.max(0.3, Math.min(1, 1.5 - p.d / (view.camDist * 1.6)));
       const text = labelText(word);
       const w = measure(ctx, text) + PAD_X * 2;
-      const bx = Math.round(p.x) + 4;
-      const by = Math.round(p.y) - 4 - BOX_H;
-      if (bx > width || by > height || bx + w < 0 || by + BOX_H < 0) continue;
+      let bx = Math.round(p.x) + 4;
+      let by = Math.round(p.y) - 4 - BOX_H;
+      // Farther labels recede, like the web behind them.
+      let depthA = Math.max(0.3, Math.min(1, 1.5 - p.d / (view.camDist * 1.6)));
+      let lead = false; // a leader line from the word to its moved label
+      let chev = null; // the way to a pinned label's word
+      if (!p.vis || bx > width || by > height || bx + w < 0 || by + BOX_H < 0) {
+        // Off screen: a recent label of the section being read is pinned to the edge, where the line from
+        // him to its word (his beam's way) leaves the frame.
+        if (!isActive || age > PIN_AGE) continue;
+        const ox = p.vis && hero ? hero.chestX : width / 2;
+        const oy = p.vis && hero ? hero.chestY : height / 2;
+        let dx = p.x - ox;
+        let dy = p.y - oy;
+        if (!p.vis) [dx, dy] = [-dx, -dy]; // (behind the lens the projection is mirrored)
+        const l = Math.hypot(dx, dy) || 1;
+        chev = { x: dx / l, y: dy / l };
+        const e = edgePoint(rect, dx, dy, ox, oy);
+        const pin = (ex, ey) => [Math.round(Math.max(rect.left, Math.min(rect.right - w, ex - w / 2 - chev.x * (w / 2 + CHEVRON + 2)))), Math.round(Math.max(rect.top, Math.min(rect.bottom - BOX_H, ey - BOX_H / 2 - chev.y * (BOX_H / 2 + CHEVRON + 2))))];
+        [bx, by] = pin(e.x, e.y);
+        // Stacked along the edge, clear of the labels already pinned there.
+        const side = Math.abs(chev.x) * height > Math.abs(chev.y) * width; // a left or right edge
+        for (let k = 1; k < 12 && pinned.some(([x, y, pw]) => bx < x + pw + 3 && x < bx + w + 3 && by < y + BOX_H + 3 && y < by + BOX_H + 3); k++) {
+          const step = (k % 2 ? 1 : -1) * Math.ceil(k / 2);
+          [bx, by] = pin(e.x + (side ? 0 : step * (w + 6)), e.y + (side ? step * (BOX_H + 4) : 0));
+        }
+        pinned.push([bx, by, w]);
+        depthA = 0.9;
+      } else if (hero && p.d > hero.d && overHero(hero, bx, by, w, BOX_H)) {
+        // Behind him, it would sit on his body: aside, on whichever side of him is nearer, on a leader.
+        const [lo, hi] = heroSpan(hero, by - 2, by + BOX_H + 2);
+        const left = Math.round(lo - CLEAR - w);
+        const right = Math.round(hi + CLEAR);
+        bx = (p.x - lo < hi - p.x && left > 0) || right + w > width ? left : right;
+        lead = true;
+      }
       ctx.globalAlpha = a * depthA;
+      if (lead) {
+        ctx.strokeStyle = border;
+        ctx.globalAlpha = a * depthA * 0.6;
+        ctx.beginPath();
+        ctx.moveTo(Math.round(p.x) + 0.5, Math.round(p.y) + 0.5);
+        ctx.lineTo(bx < p.x ? bx + w : bx, by + BOX_H / 2);
+        ctx.stroke();
+        ctx.globalAlpha = a * depthA;
+      }
+      if (chev) {
+        // The chevron, just outside the label on the side of its word.
+        const cx = bx + w / 2 + chev.x * (w / 2 + 3);
+        const cy = by + BOX_H / 2 + chev.y * (BOX_H / 2 + 3);
+        const tx = cx + chev.x * CHEVRON;
+        const ty = cy + chev.y * CHEVRON;
+        ctx.fillStyle = word.vague ? FLAG : color;
+        ctx.beginPath();
+        ctx.moveTo(tx, ty);
+        ctx.lineTo(cx - chev.y * CHEVRON * 0.6, cy + chev.x * CHEVRON * 0.6);
+        ctx.lineTo(cx + chev.y * CHEVRON * 0.6, cy - chev.x * CHEVRON * 0.6);
+        ctx.closePath();
+        ctx.fill();
+      }
       if (word.vague) {
         ctx.fillStyle = FLAG;
         ctx.fillRect(bx, by, w, BOX_H);
@@ -227,9 +352,15 @@ export function drawSpiderOverlay(ctx, world, run, view, analysis) {
   ctx.stroke();
   const sec = analysis.sections[run.active];
   if (sec && run.phase !== 'ship') {
-    // Under his feet, not across him: the camera films him close up.
+    // Under his feet, not across him: the camera films him close up (below his lowest foot on screen, when it is known).
     const [x, y, z] = view.spider ?? [run.spider.x, run.spider.y, run.spider.z];
     view.project(x, y - TAG_BELOW, z, ringPos);
+    const hero = view.hero;
+    if (hero && hero.on && Number.isFinite(hero.footY)) {
+      ringPos.x = hero.footX;
+      ringPos.y = hero.footY + 2;
+      ringPos.vis = true;
+    }
     if (ringPos.vis) {
       ctx.font = LABEL_FONT;
       ctx.textBaseline = 'middle';

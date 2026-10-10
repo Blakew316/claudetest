@@ -41,7 +41,7 @@ let scripted = false; // captures drive the frames (crawler.step)
 let acc = 0;
 // The camera and clock one step back, so frames between 60 Hz steps are drawn
 // in between (see Spider.at); `fresh` after a jump in time draws the latest step as is.
-const camPrev = { x: 0, y: 0, z: 0, dist: 1, yaw: 0, pitch: 0 };
+const camPrev = { x: 0, y: 0, z: 0, dist: 1, yaw: 0, pitch: 0, roll: 0, cut: 0 };
 const camDrawn = { ...camPrev };
 let tPrev = 0;
 let fresh = true;
@@ -105,12 +105,15 @@ function render(dt, force = false) {
   if (view3d) {
     const k = fresh ? 1 : Math.min(1, acc / SIM_DT);
     const c = run.camera;
+    // (Across a cut the camera is drawn as cut to, never part way between the two shots.)
+    const kc = c.cut !== camPrev.cut ? 1 : k;
     const turn = c.yaw - camPrev.yaw;
-    camDrawn.yaw = camPrev.yaw + (turn - 2 * Math.PI * Math.round(turn / (2 * Math.PI))) * k;
-    for (const f of ['x', 'y', 'z', 'dist', 'pitch']) camDrawn[f] = camPrev[f] + (c[f] - camPrev[f]) * k;
+    camDrawn.yaw = camPrev.yaw + (turn - 2 * Math.PI * Math.round(turn / (2 * Math.PI))) * kc;
+    for (const f of ['x', 'y', 'z', 'dist', 'pitch', 'roll']) camDrawn[f] = (camPrev[f] || 0) + ((c[f] || 0) - (camPrev[f] || 0)) * kc;
+    camDrawn.cut = c.cut;
     const spider = director.spider.at(k);
     view3d.render(run, analysis, spider, dt, { camera: camDrawn, t: tPrev + (run.t - tPrev) * k });
-    const view = { width: stage.width, height: stage.height, dpr: stage.dpr, project: view3d.project, camDist: camDrawn.dist, spider: spider.p };
+    const view = { width: stage.width, height: stage.height, dpr: stage.dpr, project: view3d.project, camDist: camDrawn.dist, spider: spider.p, hero: view3d.silhouette };
     octx.setTransform(1, 0, 0, 1, 0, 0);
     octx.clearRect(0, 0, overlay.width, overlay.height);
     drawLabels(octx, world, run, view, analysis);

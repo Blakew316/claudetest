@@ -756,25 +756,35 @@ export function createView3D(canvas) {
 
   let bank = 0;
   let lastYaw = null;
+  let lastCut = 0;
   function placeCamera(run, spider, c, t, dt) {
     const focus = spider.b;
-    // A slow handheld drift so the view breathes even when the shot is still.
-    const hy = 0.006 * Math.sin(t * 0.37) + 0.004 * Math.sin(t * 0.83 + 1.3);
-    const hp = 0.004 * Math.sin(t * 0.49 + 0.7) + 0.003 * Math.sin(t * 0.97);
-    const yaw = c.yaw + orbit.yaw + hy;
-    const pitch = Math.max(-1.3, Math.min(1.4, c.pitch + orbit.pitch + hp));
+    const yaw = c.yaw + orbit.yaw;
+    const pitch = Math.max(-1.3, Math.min(1.4, c.pitch + orbit.pitch));
     // The camera rides a landing's impact: a quick, damped bounce.
     const jolt = (spider.jolt || 0) * c.dist * 0.008;
     camera.position.set(c.x + c.dist * Math.cos(pitch) * Math.sin(yaw), c.y + c.dist * Math.sin(pitch) + jolt, c.z + c.dist * Math.cos(pitch) * Math.cos(yaw));
     camera.lookAt(c.x, c.y + jolt * 0.4, c.z);
-    // Banking into a sweep like a drone, a few degrees at most.
+    // A cut (the director's) starts the bank afresh, rather than reading the cut as a sudden swing.
+    if (c.cut !== lastCut) {
+      lastCut = c.cut;
+      lastYaw = null;
+      bank = 0;
+    }
+    // Banking into a sweep like a drone, a few degrees at most; plus the bank the shot asks for (the chase).
     if (dt > 1e-3) {
       const turn = lastYaw === null ? 0 : yaw - lastYaw;
       const rate = Math.atan2(Math.sin(turn), Math.cos(turn)) / dt;
       bank += (Math.max(-0.06, Math.min(0.06, -0.15 * rate)) - bank) * (1 - Math.exp(-2.5 * dt));
       lastYaw = yaw;
     }
-    camera.rotateZ(bank);
+    // A slow handheld drift so the view breathes even when the shot is still: the lens turning a touch in
+    // place (as a camera operator's would), not circling him.
+    const hy = 0.0045 * Math.sin(t * 0.37) + 0.003 * Math.sin(t * 0.83 + 1.3) + 0.0012 * Math.sin(t * 1.91 + 0.4);
+    const hp = 0.0035 * Math.sin(t * 0.49 + 0.7) + 0.0022 * Math.sin(t * 0.97) + 0.001 * Math.sin(t * 2.27 + 2.1);
+    camera.rotateY(hy);
+    camera.rotateX(hp);
+    camera.rotateZ(bank + (c.roll || 0) + 0.002 * Math.sin(t * 0.61 + 0.9));
     camera.updateMatrixWorld();
     // Haze by the scale of the scene, not by how close the shot is: filming him close up
     // must not fog out his own ball behind him.
@@ -1126,7 +1136,79 @@ export function createView3D(canvas) {
     }
 
     composer.render();
+    silhouette();
   }
 
-  return { resize, setWorld, render, project, orbit, camera, hero };
+  // Iron Man's silhouette on screen, for the labels (world/labels.js): his trunk, head and limbs as thick
+  // segments [x0, y0, x1, y1, radius] in stage CSS px; his chest on screen and how far it is from the
+  // lens; and the lowest point of his feet on screen.
+  const SIL = [
+    ['DEF-spine', 'DEF-spine003', 7],
+    ['DEF-spine003', 'DEF-spine005', 9],
+    ['DEF-spine005', 'DEF-spine006', 5.5],
+    ...['L', 'R'].flatMap((n) => [
+      [`DEF-shoulder${n}`, `DEF-upper_arm${n}`, 4],
+      [`DEF-upper_arm${n}`, `DEF-forearm${n}`, 3.6],
+      [`DEF-forearm${n}`, `DEF-hand${n}`, 3.2],
+      [`DEF-hand${n}`, `DEF-f_middle03${n}`, 2.6],
+      [`DEF-thigh${n}`, `DEF-shin${n}`, 4.6],
+      [`DEF-shin${n}`, `DEF-foot${n}`, 3.8],
+      [`DEF-foot${n}`, `DEF-toe${n}`, 3],
+    ]),
+  ];
+  const HEAD_UP = 7; // the crown this far on along the neck from the head bone
+  const sil = { on: false, n: 0, seg: new Float32Array((SIL.length + 1) * 5), d: Infinity, chestX: 0, chestY: 0, footX: 0, footY: 0 };
+  let silBones = null;
+  const sa = new THREE.Vector3();
+  const sb = new THREE.Vector3();
+  function silhouette() {
+    sil.on = false;
+    if (!hero || !hero.group.visible) return;
+    if (!silBones) {
+      const by = {};
+      hero.group.traverse((o) => {
+        if (o.isBone) by[o.name] = o;
+      });
+      silBones = { segs: SIL.filter(([a, b]) => by[a] && by[b]).map(([a, b, r]) => [by[a], by[b], r]), neck: by['DEF-spine004'], head: by['DEF-spine006'] };
+    }
+    const k = size.h / (2 * Math.tan((FOV * Math.PI) / 360));
+    const put = (i, a, b, r) => {
+      const da = a.distanceTo(camera.position);
+      const db = b.distanceTo(camera.position);
+      a.project(camera);
+      b.project(camera);
+      if (a.z > 1 || b.z > 1) return false; // behind the lens
+      sil.seg.set([((a.x + 1) / 2) * size.w, ((1 - a.y) / 2) * size.h, ((b.x + 1) / 2) * size.w, ((1 - b.y) / 2) * size.h, (r * k) / Math.max(1, Math.min(da, db))], i * 5);
+      return true;
+    };
+    let n = 0;
+    let footY = -Infinity;
+    for (const [A, Bn, r] of silBones.segs) {
+      sa.setFromMatrixPosition(A.matrixWorld);
+      sb.setFromMatrixPosition(Bn.matrixWorld);
+      if (!put(n, sa, sb, r)) continue;
+      // (The feet: the lowest point on screen, for the crawler tag.)
+      if (/foot|toe/.test(Bn.name) && sil.seg[n * 5 + 3] + sil.seg[n * 5 + 4] > footY) {
+        footY = sil.seg[n * 5 + 3] + sil.seg[n * 5 + 4];
+        sil.footX = sil.seg[n * 5 + 2];
+      }
+      n++;
+    }
+    if (silBones.neck && silBones.head) {
+      sa.setFromMatrixPosition(silBones.head.matrixWorld);
+      sb.setFromMatrixPosition(silBones.neck.matrixWorld);
+      sb.subVectors(sa, sb).setLength(HEAD_UP).add(sa);
+      if (put(n, sa, sb, 5)) n++;
+    }
+    sil.n = n;
+    sil.footY = footY;
+    tmp.fromArray(hero.chest());
+    sil.d = tmp.distanceTo(camera.position);
+    tmp.project(camera);
+    sil.chestX = ((tmp.x + 1) / 2) * size.w;
+    sil.chestY = ((1 - tmp.y) / 2) * size.h;
+    sil.on = n > 0;
+  }
+
+  return { resize, setWorld, render, project, orbit, camera, hero, silhouette: sil };
 }

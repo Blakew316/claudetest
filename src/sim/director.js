@@ -5,23 +5,31 @@
  * seek(t) reproduces exactly what live playback would show.
  *
  * It is also the cinematographer, and Iron Man is its subject: every shot is
- * framed on him (his size on screen, where he sits in the frame), and every
- * move is spring smoothed (world/camera.js), so there are no cuts:
- *  - intro: a brief wide look at the first ball, pushing in onto him;
- *  - walking, reading, firing: a medium two-shot (he fills about half the view
- *    height) re-planned a few times a second from where the words he is firing
- *    at, and the next few, would sit on screen: the camera circles him slowly
- *    to keep them and his firing hand in frame (over the shoulder, a
- *    three-quarter view), with lead room toward them or the way he walks;
- *  - takeoff: as the last words go it drifts round toward a rear
- *    three-quarter view of the leap, and holds it through the crouch;
- *  - flight: a chase camera close behind him and to one side, looking a little
- *    down and ahead along his path through the stars;
- *  - landing: it flies on ahead and settles low in front of where he lands,
- *    looking up, before he touches down; it holds the landing, pushes in as he
- *    rises, and hands back to the two-shot. The camera stays on one side of
- *    the leap throughout, so the screen direction never flips;
- *  - finale: after his last leap a rising orbit of the whole nebula, then a
+ * framed on him (his size on screen, where he sits in the frame, his eyes high
+ * in it), and every move is spring smoothed (world/camera.js); the one cut is
+ * the deliberate one into each landing:
+ *  - intro: a brief wide look at the first ball, pushing in onto a front
+ *    three-quarter view of him;
+ *  - walking, reading, firing: a full-figure two-shot (he fills about half the
+ *    view height), from in front of him or his side, rarely and briefly from
+ *    behind, with his firing palm and its beam toward the lens's side (the
+ *    words they hit are often off screen then: their labels are pinned to the
+ *    frame's edge, see world/labels.js); re-planned a few times a second from
+ *    where the words he fires at, and the next few, are, but a shot once
+ *    settled is held for a few seconds, moves are deliberate, and walking it
+ *    turns with him like a tracking shot. Beats: now and then, as a linked
+ *    word goes, a push in to a medium shot (the suit and the firing hand up
+ *    close); as a flag goes, a moment wider so the flagged word shares the
+ *    frame;
+ *  - takeoff: as the last words go it goes round to a view of the leap from
+ *    behind and to the side it is already on, and holds it through the crouch;
+ *  - flight: a chase camera close behind him and to that side, banking a
+ *    little, looking down and ahead along his path through the stars;
+ *  - landing: mid-flight, a cut to a locked-off lens low and almost straight
+ *    in front of where he lands; he flies down into the shot and lands in
+ *    the superhero kneel filling half the frame; it pushes in through the
+ *    hold, tilts up with him as he rises, then hands back to the two-shot;
+ *  - finale: after his last landing a rising orbit of the whole nebula, then a
  *    slow drift back onto him resting with the nebula behind him.
  * The lens keeps out of every ball's blinding nucleus and clear of him, and
  * shots that would sit in other balls or look through a nucleus cost more.
@@ -76,32 +84,51 @@ const ROAM_REACH = 0.1; // the goal moves on to the next waypoint once it is thi
 const ZOOM_MAX = 1.0; // camera zoom rate cap, log distance per second (~1.7% a frame)
 
 // The hero camera. Iron Man (world/ironman.js) stands HERO_H tall with his feet
-// about 10 below the crawler's body point, so his middle is HERO_MID above it.
+// about 10 below the crawler's body point, so his middle is HERO_MID above it
+// and his eyes EYE_UP above that.
 const HERO_H = 46;
 const HERO_MID = 13;
+const EYE_UP = 19;
 const LENS_TAN = Math.tan((50 * Math.PI) / 360); // half the vertical field of view (view3d FOV)
 // Shot sizes, as the share of the view height he fills standing.
-const SIZE_MEDIUM = 0.48; // walking, reading, firing: a medium two-shot
-const SIZE_WIDE = 0.41; // the two-shot may pull back this far to keep his words in frame
+const SIZE_MEDIUM = 0.48; // walking, reading, firing: a full-figure two-shot
+const SIZE_WIDE = 0.41; // the two-shot may pull back this far to keep his words in frame...
+const SIZE_REVEAL = 0.34; // ...and eases out to this for a moment as a flag lands, so the flagged word shares the frame
+const SIZE_TIGHT = 0.86; // now and then, as a linked word goes, in to a medium shot: the suit, the firing hand and its beam up close
+const SIZE_VISIT = 0.56; // crossing a ball with no words: a slow push in on him
 const SIZE_LAUNCH = 0.46; // the takeoff
-const SIZE_LAND = 0.47; // the landing as he touches down (crouched he is about half that)...
-const SIZE_RISE = 0.54; // ...pushing in to this as he rises
 const SIZE_OPEN = 0.09; // the brief wide look the run opens on
 const SIZE_REST = 0.42; // the finale's last shot of him
 const NARROW = 0.8; // aspect (width / height) below which the shots pull back a little (see shotDist)
 const SIZE_CHASE = 0.41; // in flight, close behind him (standing size: lying along his path he reads at about a third)
-const CHASE_AZ = 0.72; // rad off straight behind him, to one side
+const EYES_TOP = 0.28; // his eyes this far down the frame (of its height) in a full-figure shot, a little lower closer in
+// Takeoff and flight are filmed from his side of the camera: from behind and off to one side (rad off straight
+// behind him), as near as may be to where the camera already is, so it never has far to swing.
+const LAUNCH_OFF = [0.95, 1.9]; // the takeoff: a rear three-quarter view to a side view
+const CHASE_OFF = [0.75, 1.35]; // the chase
 const CHASE_EL = 0.16; // a little above, looking down and ahead along his path
-const LAUNCH_AZ = 1.2; // rad off straight behind: a rear three-quarter view of the takeoff
-const LAND_AZ = 0.75; // rad off straight ahead: a front three-quarter view of the landing
-const LAND_EL = -0.1; // low, looking up at him
+const CHASE_ROLL = 0.05; // rad: the chase camera banks this much into his side of the frame
 // The superhero landing (world/ironman.js): he drops into a kneel, holds it and rises out of it over the
-// last KNEEL_RISE of the land phase (LAND_TIME), his middle KNEEL_MID above the crawler point meanwhile.
+// last KNEEL_RISE of the land phase (LAND_TIME) (world/ironman.js LAND_RISE: it cannot be imported here, as
+// that module needs three.js and the suit's model). Kneeling he is KNEEL_H tall, his middle KNEEL_MID above
+// the crawler point; risen, he stands RISE_SINK lower than when walking, settling over SINK_SETTLE after.
 const KNEEL_RISE = 0.9;
-const KNEEL_MID = 1;
-const LAND_HOLD = LAND_TIME - KNEEL_RISE; // s after touchdown the landing shot holds (he rises then)...
-const LAND_BLEND = 2.2; // ...then hands back to the two-shot over this long, pushing in as he stands
-const SHOT_Y = -0.06; // he sits a little below the middle of the frame (NDC): headroom
+const KNEEL_H = 28;
+const KNEEL_MID = -5;
+const RISE_SINK = 8.5;
+const SINK_SETTLE = 0.9;
+const LAND_HOLD = LAND_TIME - KNEEL_RISE; // s after touchdown that he holds the kneel
+const LAND_BLEND = 2.2; // once he is up, the landing shot hands back to the two-shot over this long
+// Mid-flight the camera cuts to the landing: a locked-off view, low and almost straight in front of where he
+// will land, that he flies down into; it pushes in through the kneel and tilts up with him as he rises.
+const CUT_U = 0.55; // share of the flight flown when it cuts
+const LAND_AZ = 0.38; // rad off straight in front of him
+const LAND_EL = -0.3; // rad below his kneeling middle: near his boots, looking up
+const SIZE_KNEEL = 0.5; // the kneeling hero fills this much of the view height as he lands...
+const SIZE_KNEEL_IN = 0.58; // ...pushing in to this through the hold
+const SIZE_RISE = 0.62; // standing, as he rises (the lens holds its place and tilts up with him)
+const SHOT_Y_KNEEL = -0.04; // where the kneeling hero's middle sits on screen (NDC)
+const LAND_LOOK = 0.4; // at the cut it looks this far from him toward where he lands
 const PANS = [-0.3, -0.15, 0, 0.15, 0.3]; // where across the frame the two-shot may put him (NDC)
 const ELS = [-0.07, 0.09, 0.25]; // two-shot elevations it chooses between (rad, > 0 looks down)
 const PLAN_EVERY = 0.2; // s between re-plans of the two-shot
@@ -111,13 +138,38 @@ const AHEAD_N = Math.round(AHEAD / AHEAD_DT) + 1;
 const AHEAD_BINS = 32; // ...over this many angles round him...
 const AHEAD_EVERY = 0.75; // ...again this often...
 const AHEAD_LOOK = 1.1; // ...and the camera aims this far along it (its springs lag about that much)
-const AZ_RATE = 0.5; // rad/s: the two-shot circles him no faster than this
-const SHOT_TURN = 0.4; // s: the two-shot's angle round him eases onto its plan this fast
-const BACK_W = 0.3; // what seeing him from behind costs a two-shot (over the shoulder is fine, but not for long)
+const AZ_RATE = 0.6; // rad/s: the two-shot circles him no faster than this
+const MOVE_W = 0.2; // what moving round him costs the look-ahead, per AHEAD_BINS step (so it moves seldom, and not far)
+const TRAVEL_W = 0.5; // ...and a re-plan, per rad
+const TRACK = 0.75; // walking, the two-shot turns round with him this much of the way he turns (see stepShot)
+const SHOT_TURN = 0.5; // s: the two-shot's angle round him eases onto its plan this fast (a move takes 1-1.5 s)
+// Holds: once a move settles the two-shot stays put for at least HOLD_MIN, unless keeping it would cost
+// KEEP_HELD more than the best shot (it is losing him or his words); afterwards KEEP more.
+const HOLD_MIN = 3;
+const KEEP_HELD = 0.55;
+const KEEP = 0.25;
+const HOLD_V = 0.04; // rad/s: settled
+const REVERSE_T = 4; // s after a move during which going back the other way costs REVERSE_W
+const REVERSE_W = 0.6;
+// What a two-shot costs, by how it sees him (his chest, as world/ironman.js turns it toward the words he fires
+// at: ARM_OFF to the firing arm's side of the word, at most TWIST_MAX off his heading). A front three-quarter
+// view is free; a side view costs FACE_W; a view from behind BACK_W, doubling every BACK_T it has lasted.
+const ARM_OFF = 0.45;
+const TWIST_MAX = 0.75;
+const FACE_W = 0.3;
+const BACK_W = 1.3;
+const BACK_T = 2;
+const PALM_W = 0.6; // the back of his firing hand to the lens, the beam going away from it
+const WORD_W = 1.5; // losing his words off screen (their labels are then pinned to the frame's edge, see world/labels.js)
 const HAND_W = 0.5; // ...and his body hiding the firing hand
+// Beats: a tight shot at most every TIGHT_EVERY, held until TIGHT_HOLD after its word goes; a reveal held REVEAL_HOLD.
+const TIGHT_EVERY = 10;
+const TIGHT_HOLD = 2.2;
+const REVEAL_EVERY = 4;
+const REVEAL_HOLD = 1.6;
 const MIN_GAP = 40; // the lens never comes nearer his middle than this
 const NUCLEUS = 0.2; // ...nor into a ball's blinding nucleus (radii)
-const PRE_LEAP = 1.6; // s over which it drifts round toward the takeoff view once the last words go
+const PRE_LEAP = 2.0; // s over which it drifts round toward the takeoff view once the last words go
 const LABEL_CAP = 6; // s: a flag stays up all section, but the camera plans for it this long
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -200,6 +252,10 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     },
     get spider() {
       return spider;
+    },
+    /** The hero camera's own state (its plan, beat, hold), for tools that study it. */
+    get hc() {
+      return hc;
     },
     program,
     reset,
@@ -501,20 +557,40 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   const R = [0, 0, 0];
   const Up = [0, 0, 0];
   const A = [0, 0, 0];
+  const P = [0, 0, 0];
   const scr = { x: 0, y: 0, z: 0 };
   const cand = { sx: 0, xd: 0 };
   const vis = new Float64Array(PANS.length);
   const aimT = rig();
+  const C = [0, 1]; // which way his chest faces, in the ground plane (see chestAt)
 
   /** The opening state of the hero camera: a wide look at the first ball, centred on him. */
   function resetCamera() {
-    const az0 = planRand() * PI * 2;
-    const az = az0 + (planRand() < 0.5 ? -0.7 : 0.7); // it glides round as it pushes in
+    // It settles on a front three-quarter view of him walking on toward his first words, gliding
+    // round from nearer his side as it pushes in.
+    const s = run.spider;
+    const g = n ? landing(0) : run.spiderGoal;
+    const face = Math.hypot(g.x - s.x, g.z - s.z) > 1 ? Math.atan2(g.x - s.x, g.z - s.z) : planRand() * PI * 2;
+    const side = planRand() < 0.5 ? -1 : 1;
+    const az = face + side * 0.8;
+    const az0 = az + side * 0.7;
     const D = shotDist(SIZE_MEDIUM);
     hc = {
       az0,
       plan: { az, el: ELS[1], D, sx: 0 }, // the two-shot the planner wants...
       shot: { az, el: ELS[1], lD: Math.log(D), sx: 0, vAz: 0, vEl: 0, vD: 0, vSx: 0 }, // ...and where it has eased to
+      heldAt: -1, // when the two-shot settled (it holds a while from then)
+      moveDir: 0, // which way round its last move went, and when
+      moveAt: -1e9,
+      backT: 0, // s the camera has been behind him, recently (see stepShot)
+      beat: { kind: '', t1: 0, at: 0 }, // the two-shot's size beat (see updateBeat)
+      beatSeen: 0,
+      lastTight: -1e9,
+      lastReveal: -1e9,
+      preSx: 0,
+      cutNow: false, // cut (rather than ease) to the camera target on the next step
+      rollT: 0, // the bank the camera leans into
+      vRoll: 0,
       planAt: 0,
       leap: null, // the leap being filmed (see beginLeap)
       sched: [], // [x, y, z, t] per word he will fire at soon (see schedule)
@@ -543,10 +619,11 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       rest: rig(),
       out: rig(),
       keyed: rig(),
+      pull: rig(),
     };
     openRig(hc.open);
     const o = hc.open;
-    run.camera = { x: o.x, y: o.y, z: o.z, dist: o.dist, yaw: o.yaw, pitch: o.pitch };
+    run.camera = { x: o.x, y: o.y, z: o.z, dist: o.dist, yaw: o.yaw, pitch: o.pitch, roll: 0, cut: 0 };
   }
 
   /**
@@ -563,7 +640,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   /**
    * His middle in the world: over his feet standing, at the crawler point in
    * the air, and low in the superhero landing's kneel until he rises out of it
-   * (world/ironman.js: the last LAND_RISE of the land phase).
+   * (world/ironman.js: the last LAND_RISE of the land phase), a little low
+   * still for a moment after (see RISE_SINK).
    */
   function heroPoint(out) {
     const s = run.spider;
@@ -572,7 +650,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     if (L && L.touch >= 0 && run.travel && L.id === run.travel.id) {
       const ts = run.t - L.touch;
       const kneel = lerp(L.mid0, KNEEL_MID, ss(0, 0.3, ts));
-      mid = lerp(kneel, mid, ss(LAND_TIME - KNEEL_RISE, LAND_TIME, ts));
+      mid = lerp(kneel, mid - RISE_SINK * (1 - ss(LAND_TIME, LAND_TIME + SINK_SETTLE, ts)), ss(LAND_HOLD, LAND_TIME, ts));
     }
     out[0] = s.x;
     out[1] = s.y + mid;
@@ -622,6 +700,17 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     E[0] = p[0] + dir[0] * D;
     E[1] = p[1] + dir[1] * D;
     E[2] = p[2] + dir[2] * D;
+    return aimFrom(E, p, sx, sy, out);
+  }
+
+  /** Rig target for a lens at e looking toward p, turned so p sits at (sx, sy) on screen (NDC). */
+  function aimFrom(e, p, sx, sy, out) {
+    const D = Math.hypot(p[0] - e[0], p[1] - e[1], p[2] - e[2]) || 1;
+    if (e !== E) {
+      E[0] = e[0];
+      E[1] = e[1];
+      E[2] = e[2];
+    }
     lookBasis(E, p);
     const a = sx * LENS_TAN * aspect();
     const b = sy * LENS_TAN;
@@ -671,10 +760,14 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return out;
   }
 
+  /** While a word's beam is out (or about to be), d s after it went: its weight, else 0. */
+  const firing = (d, w) => (d > -0.5 && d < 1.0 ? w : 0);
+
   /**
    * The words that matter to the shot now (from hc.sched, see schedule): the
    * ones going out and the labels still up, in full, and the next few, less
-   * the later they come. [x, y, z, weight] in hc.att.
+   * the later they come. [x, y, z, weight, weight while its beam is out] in
+   * hc.att.
    */
   function attention() {
     const a = hc.att;
@@ -683,9 +776,47 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     for (let j = 0; j < s.length; j += 6) {
       const d = -s[j + 3]; // s since it went (< 0: still to come)
       const w = s[j + 4] * (d > -0.2 ? 1 - ss(s[j + 5] + 0.4, s[j + 5] + 0.9, d) : 0.6 * Math.exp(d / 1.2));
-      if (w > 0.02) a.push(s[j], s[j + 1], s[j + 2], w);
+      if (w > 0.02) a.push(s[j], s[j + 1], s[j + 2], w, firing(d, s[j + 4]));
     }
     return a;
+  }
+
+  /**
+   * Which way his chest faces (unit, in the ground plane, into C) t s from now:
+   * his heading, turned toward the words he fires at then as world/ironman.js
+   * turns him (the firing arm a little off the chest's line). Needs H.
+   */
+  function chestAt(t, hx, hz) {
+    const s = hc.sched;
+    let tw = 0;
+    let k = 0;
+    for (let j = 0; j < s.length; j += 6) {
+      if (!firing(t - s[j + 3], 1)) continue;
+      const ax = s[j] - H[0];
+      const az = s[j + 2] - H[2];
+      const ang = Math.atan2(ax * hz - az * hx, ax * hx + az * hz); // > 0: on his left
+      tw += ang - (ang > 0 ? ARM_OFF : -ARM_OFF);
+      k++;
+    }
+    const a = clamp(k ? tw / k : 0, -TWIST_MAX, TWIST_MAX);
+    C[0] = hx * Math.cos(a) + hz * Math.sin(a);
+    C[1] = hz * Math.cos(a) - hx * Math.sin(a);
+    return C;
+  }
+
+  /**
+   * What the view of him from the lens just aimed costs (see FACE_W, BACK_W):
+   * by its angle off his chest (C), 0 in front of it.
+   */
+  function facingCost() {
+    const hl = Math.hypot(dir[0], dir[2]) || 1;
+    const off = Math.acos(clamp((dir[0] * C[0] + dir[2] * C[1]) / hl, -1, 1));
+    return FACE_W * ss(1.15, 1.9, off) + BACK_W * (1 + hc.backT / BACK_T) * ss(1.9, 2.5, off) + 0.08 * ss(0.35, 0, off);
+  }
+
+  /** Where his middle sits on screen (NDC y) in a shot from distance D: his eyes EYES_TOP down the frame. */
+  function shotY(D) {
+    return 1 - 2 * (EYES_TOP + (EYE_UP / HERO_H) * (HERO_H / (D * 2 * LENS_TAN)));
   }
 
   /**
@@ -733,35 +864,40 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   }
 
   /**
-   * The part of a two-shot's cost that does not depend on the words, for the
-   * lens just aimed: seeing him from behind, its elevation, the stars round
-   * the lens, and flipping which way he walks across the screen.
+   * The part of a two-shot's cost that does not depend on the words or which
+   * way his chest faces, for the lens just aimed: its elevation (a little
+   * below his eyes, looking up a touch, is best), the stars round the lens,
+   * and flipping which way he walks across the screen.
    */
-  function fixedCost(el, xd, hx, hz) {
-    const hl = Math.hypot(dir[0], dir[2]) || 1;
-    const phi = Math.acos(clamp((dir[0] * hx + dir[2] * hz) / hl, -1, 1)); // 0: the lens in front of him
-    return BACK_W * ss(1.7, 2.7, phi) + 0.4 * Math.abs(el - 0.08) + crowding(E, H) + (xd && hc.screenDir && xd !== hc.screenDir ? 0.25 : 0);
+  function fixedCost(el, xd) {
+    return 0.4 * Math.abs(el - 0.04) + crowding(E, H) + (xd && hc.screenDir && xd !== hc.screenDir ? 0.25 : 0);
   }
 
   /**
    * Score a two-shot of him (at H) from (az, el) at distance D; lower is
    * better. It counts the (weighted) share of his words (hc.att) it would lose,
-   * off screen or hidden behind him, for the best of the pans (cand.sx), and
-   * of the firing hands his body would hide, with lead room the way he walks
-   * (cand.xd: which way that is across the screen); then the rest (see
-   * fixedCost, or `fixed` if it is already known).
+   * off screen or hidden behind him, for the best of the pans (cand.sx); the
+   * firing hands his body would hide, and those it would show from the back
+   * (their beams going away from the lens); with lead room the way he walks
+   * (cand.xd: which way that is across the screen); how it sees him (see
+   * facingCost; his chest in C); then the rest (see fixedCost, or `fixed` if
+   * it is already known).
    */
   function twoShotCost(az, el, D, moving, hx, hz, fixed = -1) {
     const asp = aspect();
     aimAtHim(az, el, D);
     const bx = 10 / (D * LENS_TAN * asp); // his half-width on screen, arms in
     const by = HERO_H / 2 / (D * LENS_TAN); // his half-height
+    const sy = shotY(D);
+    const hl = Math.hypot(dir[0], dir[2]) || 1;
     vis.fill(0);
     let all = 0;
     let hidden = 0;
+    let palm = 0;
+    let fired = 0;
     const a = hc.att;
     const cy = H[1] + 9; // his chest
-    for (let i = 0; i < a.length; i += 4) {
+    for (let i = 0; i < a.length; i += 5) {
       const w = a[i + 3];
       all += w;
       // The firing hand: an arm's length out from his chest toward the word.
@@ -771,16 +907,22 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       const dl = Math.hypot(dx, dy, dz) || 1;
       onScreen(E, H[0] + (dx / dl) * 20, cy + (dy / dl) * 20, H[2] + (dz / dl) * 20, asp);
       if (scr.z > D + 2 && Math.abs(scr.x) < bx * 0.75 && Math.abs(scr.y) < by) hidden += w;
+      if (a[i + 4] > 0) {
+        // Its palm (and the beam leaving it) toward the lens's side, not away: across the frame is best.
+        const off = Math.acos(clamp((dir[0] * dx + dir[2] * dz) / (hl * (Math.hypot(dx, dz) || 1)), -1, 1));
+        palm += a[i + 4] * (ss(1.75, 2.5, off) + 0.3 * ss(0.5, 0.15, off));
+        fired += a[i + 4];
+      }
       onScreen(E, a[i], a[i + 1], a[i + 2], asp);
       if (scr.z < 12) continue; // behind the lens
       if (scr.z > D && Math.abs(scr.x) < bx && Math.abs(scr.y) < by) continue; // behind him
-      for (let k = 0; k < PANS.length; k++) if (Math.abs(scr.x + PANS[k]) < 0.86 && Math.abs(scr.y + SHOT_Y) < 0.84) vis[k] += w;
+      for (let k = 0; k < PANS.length; k++) if (Math.abs(scr.x + PANS[k]) < 0.86 && Math.abs(scr.y + sy) < 0.84) vis[k] += w;
     }
     const xd = walkDir(moving, hx, hz, asp);
     let best = Infinity;
     for (let k = 0; k < PANS.length; k++) {
       const sx = PANS[k];
-      let c = (all > 0 ? 2.4 * (1 - vis[k] / all) : 0) + 0.05 * Math.abs(sx);
+      let c = (all > 0 ? WORD_W * (1 - vis[k] / all) : 0) + 0.05 * Math.abs(sx);
       // He walks into the frame, not out of it; with nothing to fire at, from a third of the way across.
       if (xd) c += 0.8 * Math.max(0, sx * xd) + (all > 0 ? 0 : 0.5 * Math.abs(sx + 0.2 * xd));
       if (c < best) {
@@ -788,14 +930,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         cand.sx = sx;
       }
     }
-    let cost = best + (all > 0 ? (HAND_W * hidden) / all : 0);
+    let cost = best + (all > 0 ? (HAND_W * hidden) / all : 0) + (fired > 0 ? (PALM_W * palm) / fired : 0) + facingCost();
     if (!all) {
       // With nothing to fire at: a front three-quarter tracking shot.
-      const hl = Math.hypot(dir[0], dir[2]) || 1;
-      cost += 0.3 * Math.abs(Math.acos(clamp((dir[0] * hx + dir[2] * hz) / hl, -1, 1)) - 0.85);
+      cost += 0.15 * Math.abs(Math.acos(clamp((dir[0] * hx + dir[2] * hz) / hl, -1, 1)) - 0.75);
     }
     cand.xd = xd;
-    return cost + (fixed >= 0 ? fixed : fixedCost(el, xd, hx, hz));
+    return cost + (fixed >= 0 ? fixed : fixedCost(el, xd));
   }
 
   /** How much a word matters to the shot (its label: a flag most, a link more than a plain word, a filler word none). */
@@ -868,7 +1009,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     for (let b = 0; b < NB; b++) {
       for (let e = 0; e < NE; e++) {
         aimAtHim(az0 + (b - NB / 2) * binW, ELS[e], D);
-        fixed[b * NE + e] = fixedCost(ELS[e], walkDir(moving, hx, hz, aspect()), hx, hz);
+        fixed[b * NE + e] = fixedCost(ELS[e], walkDir(moving, hx, hz, aspect()));
       }
     }
     for (let k = 0; k < S; k++) {
@@ -880,8 +1021,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         // From as it goes (the beam) until its label is gone.
         const d = t - sched[j + 3];
         const wt = sched[j + 4] * ss(-0.4, 0, d) * (1 - ss(sched[j + 5] + 0.4, sched[j + 5] + 0.9, d));
-        if (wt > 0.01) hc.att.push(sched[j], sched[j + 1], sched[j + 2], wt);
+        if (wt > 0.01) hc.att.push(sched[j], sched[j + 1], sched[j + 2], wt, firing(d, sched[j + 4]));
       }
+      chestAt(t, hx, hz); // (he turns to the words he fires at then)
       for (let b = 0; b < NB; b++) {
         const off = (b - NB / 2) * binW;
         for (let e = 0; e < NE; e++) {
@@ -896,7 +1038,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
           for (let db = -kmax; db <= kmax; db++) {
             const pb = (b + db + NB) % NB;
             for (let pe = Math.max(0, e - 1); pe <= Math.min(NE - 1, e + 1); pe++) {
-              const c = cost[pb * NE + pe] + 0.04 * Math.abs(db) + 0.08 * Math.abs(pe - e);
+              const c = cost[pb * NE + pe] + MOVE_W * Math.abs(db) + 0.08 * Math.abs(pe - e);
               if (c < m) {
                 m = c;
                 arg = pb * NE + pe;
@@ -943,16 +1085,57 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   }
 
   /**
+   * The two-shot's size beat while he reads: now and then, as a linked word
+   * goes, in to a medium shot (the suit's detail, the firing hand and its beam
+   * up close), and as a flag goes, out a little so the flagged word and he
+   * share the frame; otherwise the full figure. A beat starts as its word is
+   * about to go and holds until its label has had its moment.
+   */
+  function updateBeat() {
+    const b = hc.beat;
+    if (b.kind && run.t < b.t1) return;
+    if (b.kind) {
+      b.kind = '';
+      b.at = run.t; // back out: a deliberate move too
+    }
+    if (run.phase !== 'read' || hc.pre > 0) return;
+    const s = hc.sched;
+    for (let j = 0; j < s.length; j += 6) {
+      const go = s[j + 3]; // s until it goes
+      if (go < 0 || go > 0.6) continue;
+      const w = s[j + 4];
+      const reveal = w >= 2 && run.t - hc.lastReveal > REVEAL_EVERY;
+      if (!reveal && !(w >= 1.4 && run.t - hc.lastTight > TIGHT_EVERY)) continue;
+      b.kind = reveal ? 'reveal' : 'tight';
+      b.t1 = run.t + go + (reveal ? REVEAL_HOLD : TIGHT_HOLD);
+      b.at = run.t;
+      if (reveal) hc.lastReveal = run.t;
+      else hc.lastTight = run.t;
+      return;
+    }
+  }
+
+  /** How far the two-shot stands off for the beat it is on. */
+  function beatDist() {
+    const k = hc.beat.kind;
+    return shotDist(k === 'tight' ? SIZE_TIGHT : k === 'reveal' ? SIZE_REVEAL : run.phase === 'visit' ? SIZE_VISIT : SIZE_MEDIUM);
+  }
+
+  /**
    * Re-plan the two-shot. While there are words to fire at it keeps near the
-   * look-ahead path (see planAhead), fitting the angle, height, size and where
-   * he sits in the frame to the words he is firing at now; otherwise it
-   * considers every angle round him, each charged for how far the camera would
-   * travel. The current plan is kept unless another is clearly better, so it
-   * settles, then moves with purpose. While the takeoff nears it leans toward
+   * look-ahead path (see planAhead), fitting the angle, height and where he
+   * sits in the frame to the words he is firing at now (and pulling back a
+   * little if that keeps them); otherwise it considers every angle round him,
+   * each charged for how far the camera would travel. A shot, once it has
+   * settled, is held for HOLD_MIN unless it is losing what matters; then it is
+   * kept unless another is clearly better, so the camera rests, then moves
+   * with purpose, and does not go straight back the way it came. A new beat
+   * (see updateBeat) is a move of its own. While the takeoff nears it goes to
    * the takeoff view.
    */
   function planTwoShot() {
     schedule();
+    updateBeat();
     const sec = analysis.sections[run.active];
     const words = run.tentacles.length > 0 || (sec && (run.phase === 'read' || run.phase === 'walk') && cursor < sec.start + sec.count);
     let path = null;
@@ -968,27 +1151,49 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const s = run.spider;
     const hx = Math.cos(s.heading);
     const hz = Math.sin(s.heading);
+    chestAt(0, hx, hz);
     const moving = Math.hypot(s.vx, s.vz) > 4;
     const p = hc.plan;
-    const Dm = shotDist(SIZE_MEDIUM);
-    const Dw = shotDist(SIZE_WIDE);
-    // Off the path costs; so does travelling, and (while the takeoff nears) facing away from its view.
-    const extra = (az, el, D) =>
-      (path ? 0.8 * Math.abs(wrap(az - path.az)) + 0.5 * Math.abs(el - path.el) : 0.3 * Math.abs(wrap(az - hc.shot.az))) +
-      (hc.pre > 0 ? (0.9 * hc.pre * Math.abs(wrap(az - hc.preAz))) / PI : 0) +
-      (D > Dm * 1.01 ? 0.22 : 0);
-    let bestCost = twoShotCost(p.az, p.el, p.D, moving, hx, hz) + extra(p.az, p.el, p.D) - 0.12;
+    if (hc.pre > 0) {
+      // The takeoff is coming: round to its view (see updatePre), at its own pace.
+      p.az = hc.shot.az + wrap(hc.preAz - hc.shot.az);
+      p.el = 0.04;
+      p.D = shotDist(SIZE_LAUNCH);
+      p.sx = hc.preSx;
+      return;
+    }
+    const Db = beatDist();
+    const Dw = run.phase === 'read' && !hc.beat.kind ? shotDist(SIZE_WIDE) : Db;
+    const sh = hc.shot;
+    if (Math.abs(sh.vAz) < HOLD_V && Math.abs(wrap(p.az - sh.az)) < 0.06) {
+      if (hc.heldAt < 0) hc.heldAt = run.t;
+    } else hc.heldAt = -1;
+    // A beat starting is a move of its own; one ending only changes the size back, unless it is time to move anyway.
+    const fresh = hc.beat.at !== hc.beatSeen && hc.beat.kind;
+    hc.beatSeen = hc.beat.at;
+    const holding = !fresh && !(hc.heldAt >= 0 && run.t - hc.heldAt >= HOLD_MIN);
+    const keep = fresh ? 0 : holding ? KEEP_HELD : KEEP;
+    const tight = hc.beat.kind === 'tight';
+    // Off the path costs (less for a tight beat, which picks its own side of him; and not the shot being held,
+    // which keeps to itself until it has had its time); so does travelling, and going straight back.
+    const extra = (az, el, D, held = false) =>
+      (path && !held ? (tight ? 0.3 : 0.6) * Math.abs(wrap(az - path.az)) + 0.5 * Math.abs(el - path.el) : 0) +
+      TRAVEL_W * Math.abs(wrap(az - sh.az)) +
+      (D > Db * 1.01 ? 0.22 : 0) +
+      (run.t - hc.moveAt < REVERSE_T && wrap(az - sh.az) * hc.moveDir < -0.05 ? REVERSE_W : 0);
+    const curD = p.D === Dw ? Dw : Db;
+    let bestCost = twoShotCost(p.az, p.el, curD, moving, hx, hz) + extra(p.az, p.el, curD, holding) - keep;
     let bAz = p.az;
     let bEl = p.el;
-    let bD = p.D;
+    let bD = curD;
     let bSx = cand.sx;
     let bXd = cand.xd;
-    const from = path ? path.az : hc.shot.az;
-    const steps = path ? 2 : 12;
+    const from = path && !tight ? path.az : sh.az;
+    const steps = path && !tight ? 2 : tight ? 2 : 12;
     for (let k = -steps; k <= steps; k++) {
-      const az = from + (k * PI) / (path ? 24 : 12);
+      const az = from + (k * PI) / (path && !tight ? 24 : 12);
       for (const el of ELS) {
-        for (const D of [Dm, Dw]) {
+        for (const D of Dw === Db ? [Db] : [Db, Dw]) {
           const cost = twoShotCost(az, el, D, moving, hx, hz) + extra(az, el, D) + 0.5 * Math.abs(el - p.el);
           if (cost < bestCost) {
             bestCost = cost;
@@ -1001,28 +1206,53 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         }
       }
     }
-    p.az = hc.shot.az + wrap(bAz - hc.shot.az);
+    const turn = wrap(bAz - sh.az);
+    if (Math.abs(wrap(bAz - p.az)) > 0.05) {
+      hc.moveDir = Math.sign(turn);
+      hc.moveAt = run.t;
+      hc.heldAt = -1;
+    }
+    p.az = sh.az + turn;
     p.el = bEl;
     p.D = bD;
     p.sx = bSx;
     if (bXd) hc.screenDir = bXd;
   }
 
-  /** Ease the two-shot toward its plan: slowly, never circling him faster than AZ_RATE. */
+  /**
+   * Ease the two-shot toward its plan: slowly, never circling him faster than
+   * AZ_RATE; and keep count of how long it has been seeing him from behind.
+   */
   function stepShot(dt) {
     const s = hc.shot;
     const p = hc.plan;
+    const sp = run.spider;
+    // Walking, it tracks him: as he turns, the shot (and what it plans) turns round with him, so it keeps
+    // its angle on him without re-planning; standing, it holds still while he turns to fire.
+    const turn = hc.heading === undefined ? 0 : -wrap(sp.heading - hc.heading) * TRACK * ss(3, 10, Math.hypot(sp.vx, sp.vz));
+    hc.heading = sp.heading;
+    if (turn && hc.pre === 0) {
+      s.az += turn;
+      p.az += turn;
+      for (let k = 0; k < hc.path.n; k++) hc.path.az[k] += turn;
+    }
     [s.az, s.vAz] = smoothDamp(s.az, s.az + wrap(p.az - s.az), s.vAz, SHOT_TURN, dt);
     s.vAz = clamp(s.vAz, -AZ_RATE, AZ_RATE);
     [s.el, s.vEl] = smoothDamp(s.el, p.el, s.vEl, 0.9, dt);
-    [s.lD, s.vD] = smoothDamp(s.lD, Math.log(p.D), s.vD, 1.0, dt);
+    [s.lD, s.vD] = smoothDamp(s.lD, Math.log(p.D), s.vD, 0.7, dt);
     [s.sx, s.vSx] = smoothDamp(s.sx, p.sx, s.vSx, 0.8, dt);
+    heroPoint(H);
+    chestAt(0, Math.cos(sp.heading), Math.sin(sp.heading));
+    orbitDir(s.az, s.el, dir);
+    const behind = (dir[0] * C[0] + dir[2] * C[1]) / (Math.hypot(dir[0], dir[2]) || 1) < Math.cos(1.9);
+    hc.backT = behind ? hc.backT + dt : Math.max(0, hc.backT - 2 * dt);
   }
 
   /** The two-shot as it has eased so far, as a camera target. */
   function twoShotRig(out) {
     const s = hc.shot;
-    compose(heroPoint(H), s.az, s.el, Math.exp(s.lD), s.sx, SHOT_Y, out);
+    const D = Math.exp(s.lD);
+    compose(heroPoint(H), s.az, s.el, D, s.sx, shotY(D), out);
     return setEase(out, 0.5, 0.7, 0.6);
   }
 
@@ -1040,10 +1270,33 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return { x: B.x, y: B.y, z: B.z };
   }
 
-  /** Once his last words have gone (or a visit's crossing is done), lean toward the coming takeoff view. */
+  /**
+   * The takeoff view for a leap heading `yaw` with the camera at azimuth `az`
+   * round him: from behind him and off to the camera's side of him, as near as
+   * LAUNCH_OFF allows to where it is, so it never has far to swing.
+   */
+  function launchAz(yaw, az) {
+    const off = wrap(az - yaw - PI);
+    return yaw + PI + (off < 0 ? -1 : 1) * clamp(Math.abs(off), LAUNCH_OFF[0], LAUNCH_OFF[1]);
+  }
+
+  /** Which way (-1, 1) a leap heading `yaw` carries him across the screen from the takeoff view at `az`. */
+  function launchDir(yaw, az) {
+    heroPoint(H);
+    aimAtHim(az, 0.04, shotDist(SIZE_LAUNCH));
+    return onScreen(E, H[0] + Math.sin(yaw) * 40, H[1], H[2] + Math.cos(yaw) * 40, aspect()).x > 0 ? 1 : -1;
+  }
+
+  /**
+   * Once his last words have gone (or he is most of the way across a ball he
+   * only visits), go round to the coming takeoff's view, leaving room on
+   * screen the way he will go.
+   */
   function updatePre() {
     const sec = analysis.sections[run.active];
-    const ending = (run.phase === 'read' && sec && cursor >= sec.start + sec.count) || (run.phase === 'visit' && visit && visit.leaveAt > 0);
+    const ending =
+      (run.phase === 'read' && sec && cursor >= sec.start + sec.count) ||
+      (run.phase === 'visit' && visit && visit.crawl && (visit.leaveAt > 0 || run.phaseT - visit.t0 > VISIT_CRAWL - PRE_LEAP));
     if (!ending) {
       hc.preT0 = -1;
       hc.pre = 0;
@@ -1054,35 +1307,41 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       const g = nextGoal();
       const s = run.spider;
       const yaw = Math.atan2(g.x - s.x, g.z - s.z);
-      hc.preAz = yaw + PI - (Math.sin(hc.shot.az - yaw) < 0 ? -1 : 1) * LAUNCH_AZ;
+      hc.preAz = launchAz(yaw, hc.shot.az);
+      hc.preSx = launchDir(yaw, hc.preAz) > 0 ? -0.16 : 0.16;
     }
     hc.pre = ss(0, PRE_LEAP, run.t - hc.preT0);
   }
 
-  /** A new leap: which way it goes, and the side of it to film from (the side the camera is on, unless the other is far clearer). */
+  /**
+   * A new leap: which way it goes; the takeoff and chase views, off to the
+   * side of him the camera is on; and the landing view's side (the chase's,
+   * unless the other is far clearer of stars).
+   */
   function beginLeap(tr) {
     const fx = tr.to[0] - tr.from[0];
     const fz = tr.to[2] - tr.from[2];
     const yaw = Math.hypot(fx, fz) > 4 ? Math.atan2(fx, fz) : run.camera.yaw + PI;
-    const mid = [(tr.from[0] + tr.to[0]) / 2, (tr.from[1] + tr.to[1]) / 2 + tr.apex, (tr.from[2] + tr.to[2]) / 2];
-    const G = [tr.to[0], tr.to[1] + HERO_MID, tr.to[2]];
+    const launch = launchAz(yaw, hc.shot.az);
+    const off = wrap(launch - yaw - PI);
+    const side = off < 0 ? -1 : 1;
+    const chase = yaw + PI + side * clamp(Math.abs(off), CHASE_OFF[0], CHASE_OFF[1]);
+    const G = [tr.to[0], tr.to[1] + KNEEL_MID, tr.to[2]];
     const look = (p, az, el, D) => {
       orbitDir(az, el, dir);
       return crowding([p[0] + dir[0] * D, p[1] + dir[1] * D, p[2] + dir[2] * D], p);
     };
-    const sideCost = (sd) => look(mid, yaw + PI - sd * CHASE_AZ, CHASE_EL, shotDist(SIZE_CHASE)) + look(G, yaw + sd * LAND_AZ, LAND_EL, shotDist(SIZE_LAND));
-    let side = Math.sin(run.camera.yaw - yaw) < 0 ? -1 : 1;
-    if (sideCost(-side) < sideCost(side) - 0.6) side = -side;
-    // The takeoff view leaves room on screen the way he will go.
-    heroPoint(H);
-    orbitDir(yaw + PI - side * LAUNCH_AZ, 0.04, dir);
-    const D = shotDist(SIZE_LAUNCH);
-    E[0] = H[0] + dir[0] * D;
-    E[1] = H[1] + dir[1] * D;
-    E[2] = H[2] + dir[2] * D;
-    lookBasis(E, H);
-    const xd = onScreen(E, H[0] + Math.sin(yaw) * 40, H[1], H[2] + Math.cos(yaw) * 40, aspect()).x;
-    hc.leap = { id: tr.id, yaw, side, sx: xd > 0 ? -0.16 : 0.16, touch: -1, done: false };
+    const Dk = kneelDist(SIZE_KNEEL);
+    // (The lens on the chase's side of his path in front of him: azimuth yaw - side * LAND_AZ.)
+    let ls = side;
+    if (look(G, yaw + ls * LAND_AZ, LAND_EL, Dk) < look(G, yaw - ls * LAND_AZ, LAND_EL, Dk) - 0.6) ls = -ls;
+    const xd = launchDir(yaw, launch);
+    hc.leap = { id: tr.id, yaw, side, launch, chase, landAz: yaw - ls * LAND_AZ, G, xd, sx: xd > 0 ? -0.16 : 0.16, touch: -1, cut: false, done: false };
+  }
+
+  /** Distance at which, kneeling, he fills `share` of the view height. */
+  function kneelDist(share) {
+    return (shotDist(share) * KNEEL_H) / HERO_H;
   }
 
   /** Touchdown: the two-shot will take over from the landing view, so it starts from there. */
@@ -1091,21 +1350,23 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     L.touch = run.t;
     const s = hc.shot;
     const p = hc.plan;
-    s.az = p.az = s.az + wrap(L.yaw + L.side * LAND_AZ - s.az);
+    s.az = p.az = s.az + wrap(L.landAz - s.az);
     s.el = p.el = ELS[0];
     p.D = shotDist(SIZE_MEDIUM);
     s.lD = Math.log(p.D);
     s.sx = p.sx = 0;
     s.vAz = s.vEl = s.vD = s.vSx = 0;
+    hc.heldAt = -1;
+    hc.backT = 0;
     hc.planAt = run.t + LAND_HOLD;
   }
 
   /**
-   * The camera through a leap, from `base` (the shot before it): round to a
-   * rear three-quarter view through the crouch; the chase, close behind and to
-   * the side, as he flies; on ahead to settle low in front of where he lands
-   * (aimed between him and it) before he touches down; holding the landing,
-   * pushing in as he rises, and back to the two-shot.
+   * The camera through a leap, from `base` (the shot before it, by now on the
+   * takeoff view, see updatePre): the takeoff, held through the crouch; the
+   * chase, behind him and to the side, banking a little, as he flies; then,
+   * CUT_U of the way, a cut to the landing (see landRig), and back to the
+   * two-shot once he is up.
    */
   function leapRig(base, out) {
     const L = hc.leap;
@@ -1115,29 +1376,45 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const T = run.t - tr.t0;
     const u = sim.mode === 'jump' ? (sim.launched ? sim.airU : 0) : 1;
     const ts = L.touch >= 0 ? run.t - L.touch : 0;
-    compose(H, L.yaw + PI - L.side * LAUNCH_AZ, 0.04, shotDist(SIZE_LAUNCH), L.sx, SHOT_Y, hc.launch);
+    const Dl = shotDist(SIZE_LAUNCH);
+    compose(H, L.launch, 0.04, Dl, L.sx, shotY(Dl), hc.launch);
     mixRig(base, setEase(hc.launch, 0.45, 0.6, 0.6), ss(0, Math.max(0.05, tr.crouch), T), out, 'launch');
-    compose(H, L.yaw + PI - L.side * CHASE_AZ, CHASE_EL, shotDist(SIZE_CHASE), 0, -0.12, hc.chase);
-    mixRig(out, setEase(hc.chase, 0.22, 0.45, 1), ss(0, 0.3, u), out, 'chase');
-    // The landing view swings in once he is within a few shot lengths of where he lands (at
-    // once, on a short hop), aimed more and more at that spot as he nears it, then onto him
-    // as he rises (his middle low while he is down, rising as he stands; see heroPoint).
-    const Dl = shotDist(SIZE_LAND);
-    const mid = H[1] - run.spider.y; // his middle above the crawler point, as it is now
-    const toG = Math.hypot(H[0] - tr.to[0], H[1] - tr.to[1] - mid, H[2] - tr.to[2]);
-    // (Never so far toward the spot that he would leave the side of the frame: on a narrow screen it waits for him.)
-    const reach = (0.55 * Dl * LENS_TAN * Math.min(1, aspect())) / Math.max(1, toG);
-    const g = L.touch >= 0 ? 0.65 * (1 - ss(0, 1.2, ts)) : Math.min(reach, 0.65 * ss(2.2 * Dl, 0.6 * Dl, toG));
-    A[0] = lerp(H[0], tr.to[0], g);
-    A[1] = lerp(H[1], tr.to[1] + mid, g);
-    A[2] = lerp(H[2], tr.to[2], g);
-    const rise = ss(LAND_HOLD, LAND_HOLD + 1.6, ts);
-    compose(A, L.yaw + L.side * LAND_AZ, LAND_EL + 0.05 * rise, shotDist(lerp(SIZE_LAND, SIZE_RISE, rise)), 0, SHOT_Y - 0.04, hc.land);
-    const landW = L.touch >= 0 ? 1 : ss(2.6 * Dl, 1.2 * Dl, toG) * ss(0.15, 0.4, u);
-    mixRig(out, setEase(hc.land, 0.35, 0.5, 1 - g), landW, out, 'land');
-    const back = ss(LAND_HOLD, LAND_HOLD + LAND_BLEND, ts);
+    compose(H, L.chase, CHASE_EL, shotDist(SIZE_CHASE), 0, -0.12, hc.chase);
+    const chase = ss(0, 0.3, u);
+    mixRig(out, setEase(hc.chase, 0.22, 0.45, 1), chase, out, 'chase');
+    if (!L.cut && u >= CUT_U) L.cut = hc.cutNow = true;
+    hc.rollT = L.cut ? 0 : CHASE_ROLL * L.xd * chase;
+    if (!L.cut) return out;
+    landRig(L, tr, u, ts, out);
+    const back = ss(LAND_TIME + 0.15, LAND_TIME + 0.15 + LAND_BLEND, ts);
     if (back >= 1) L.done = true;
     return mixRig(out, hc.two, back, out, 'back');
+  }
+
+  /**
+   * The landing: a locked-off lens low and almost straight in front of where
+   * he lands, looking up. He flies down into the shot (it pans down with him,
+   * settled on the spot just before he touches down); it pushes in slowly
+   * through the kneel; then holds its place, easing back a little and tilting
+   * up with him as he rises.
+   */
+  function landRig(L, tr, u, ts, out) {
+    const G = L.G;
+    const down = L.touch >= 0;
+    const push = down ? ss(0, LAND_HOLD + 0.2, ts) : 0;
+    const rise = down ? ss(LAND_HOLD - 0.1, LAND_TIME, ts) : 0;
+    const D = lerp(lerp(kneelDist(SIZE_KNEEL), kneelDist(SIZE_KNEEL_IN), push), shotDist(SIZE_RISE), rise);
+    orbitDir(L.landAz, LAND_EL + 0.1 * rise, dir);
+    A[0] = G[0] + dir[0] * D;
+    A[1] = G[1] + dir[1] * D;
+    A[2] = G[2] + dir[2] * D;
+    // Looking between him and where he will land, and more and more at the spot as he nears it (so it
+    // pans little: he comes down into the frame); at him again as he rises.
+    const g = down ? 1 : ss(CUT_U, 0.9, u);
+    const w = down ? 1 - ss(LAND_HOLD - 0.2, LAND_HOLD + 0.3, ts) : lerp(LAND_LOOK, 1, g);
+    for (let i = 0; i < 3; i++) P[i] = lerp(H[i], G[i], w);
+    aimFrom(A, P, 0, lerp(SHOT_Y_KNEEL * g, shotY(D), rise), out);
+    return setEase(out, 0.16, 0.16, 0);
   }
 
   /**
@@ -1154,14 +1431,25 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     let hero = hc.two;
     if (L) hero = leapRig(hc.two, hc.out);
     // The last shot of him, the nebula behind him; once settled it drifts slowly on round, so it keeps breathing.
-    compose(heroPoint(H), ship.finalYaw + ship.turn * 0.012 * settled, 0.2, shotDist(SIZE_REST), -0.12 * ship.turn, SHOT_Y, hc.rest);
+    compose(heroPoint(H), ship.finalYaw + ship.turn * 0.012 * settled, 0.2, shotDist(SIZE_REST), -0.12 * ship.turn, shotY(shotDist(SIZE_REST)), hc.rest);
     hero = mixRig(hero, setEase(hc.rest, 1.0, 1.3, 0.4), ss(9, 13, run.phaseT), hc.out, 'rest');
-    // Pulled back once he is down from his last leap (or at once, if he only strolled to his rest).
+    // Pulled back once he is up from his last landing (or at once, if he only strolled to his rest).
     const since = run.t - run.phaseT;
     const leapt = hc.leap && run.travel && hc.leap.id === run.travel.id && run.travel.t0 >= since - 1e-6;
     const down = leapt ? (hc.leap.touch >= 0 ? hc.leap.touch - since : 1e6) : 0;
-    const wide = ss(down + 0.6, down + 3.6, run.phaseT) * (1 - ss(12.6, 19.5, run.phaseT));
-    return mixRig(hero, hc.keyed, wide, hc.out, 'keys');
+    const wide = ss(down + LAND_TIME + 0.2, down + LAND_TIME + 3.2, run.phaseT) * (1 - ss(12.6, 19.5, run.phaseT));
+    // Back from him first (the distance and angles), and only then over to what the keys look at, so he
+    // shrinks into the nebula rather than the camera swinging past him.
+    const k2 = copyRig(hc.keyed, hc.pull);
+    k2.x = hero.x;
+    k2.y = hero.y;
+    k2.z = hero.z;
+    const look = wide * wide;
+    mixRig(hero, k2, wide, hc.out, 'keys');
+    hc.out.x = lerp(hc.out.x, hc.keyed.x, look);
+    hc.out.y = lerp(hc.out.y, hc.keyed.y, look);
+    hc.out.z = lerp(hc.out.z, hc.keyed.z, look);
+    return hc.out;
   }
 
   /** Turn a sampled key (base b: bounds 0 .. cluster 1, spider weight w) into a camera target. */
@@ -1241,16 +1529,28 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     aimT.x += hc.vel[0] * lead;
     aimT.y += hc.vel[1] * lead;
     aimT.z += hc.vel[2] * lead;
-    // Critically damped springs: every change of shot accelerates and settles, nothing lurches.
-    followCamera(run.camera, aimT, dt, t.move, t.turn);
-    // Never zoom faster than ZOOM_MAX (log distance per second), whatever the
-    // shot asks for: a big change of size must not lurch.
     const cam = run.camera;
-    const step = Math.log(cam.dist / d0);
-    if (Math.abs(step) > ZOOM_MAX * dt) {
-      cam.dist = d0 * Math.exp(Math.sign(step) * ZOOM_MAX * dt);
-      if (cam.v) cam.v.dist = clamp(cam.v.dist, -ZOOM_MAX, ZOOM_MAX);
+    if (hc.cutNow) {
+      // A deliberate cut (to the landing): straight onto the new shot, nothing carried over.
+      hc.cutNow = false;
+      for (const k of ['x', 'y', 'z', 'dist', 'yaw', 'pitch']) cam[k] = aimT[k];
+      cam.v = { x: 0, y: 0, z: 0, dist: 0, yaw: 0, pitch: 0 };
+      cam.roll = hc.vRoll = 0;
+      cam.cut++;
+    } else {
+      // Critically damped springs: every change of shot accelerates and settles, nothing lurches.
+      followCamera(cam, aimT, dt, t.move, t.turn);
+      // Never zoom faster than ZOOM_MAX (log distance per second), whatever the
+      // shot asks for: a big change of size must not lurch.
+      const step = Math.log(cam.dist / d0);
+      if (Math.abs(step) > ZOOM_MAX * dt) {
+        cam.dist = d0 * Math.exp(Math.sign(step) * ZOOM_MAX * dt);
+        if (cam.v) cam.v.dist = clamp(cam.v.dist, -ZOOM_MAX, ZOOM_MAX);
+      }
+      // The bank (see leapRig), eased in and out.
+      [cam.roll, hc.vRoll] = smoothDamp(cam.roll, hc.rollT, hc.vRoll, 0.5, dt);
     }
+    hc.rollT = 0;
     guard(dt);
   }
 
