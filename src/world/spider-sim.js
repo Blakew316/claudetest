@@ -188,6 +188,9 @@ export class Spider {
     this.gaitAmp = 0; // 0..1 how strongly the walk rocks the body, eased so it never pops
     this.gaitAmpV = 0;
     this.coastV = [0, 0, 0]; // walking velocity it brakes out of when it stops to crouch
+    this.speedT = 0; // the speed it means to go, eased so it never surges at once
+    this.goalN = null; // direction to the goal as it steers by it, eased so a new waypoint never kinks the path
+    this.turnCap = 0; // turn-rate limit, eased so turns lean in and straighten out with the walk
     this.walking = false;
     this.intentT = 0.3;
     this.pauseT = 0;
@@ -207,6 +210,7 @@ export class Spider {
     this.pose = zeroPose();
     this.poseV = zeroPose();
     this.poseT = zeroPose();
+    this.poseS = zeroPose(); // poseT as the springs chase it (eased in the crawl)
     /** Palp flick per side [left, right], same scale as the renderer's idle palp tap (about +-0.35, twitches to +-0.9). */
     this.palpTap = [0, 0];
     this.palpTw = [0, 0];
@@ -214,6 +218,8 @@ export class Spider {
     this.palpKick = [0, 0];
     this.palpKickT = [0, 0];
     this.palpNext = [0.4, 0.7];
+    this.palpAmp = 0.18;
+    this.breathAmp = 1;
     /** Abdomen scale to breathe with (matches the renderer's own breath). */
     this.breath = 1;
     /** 0..1 how far the abdomen is dipped toward the newest silk anchor. */
@@ -561,7 +567,8 @@ export class Spider {
     // Straight behind: keep turning the way it already is, rather than dithering.
     if (Math.abs(yawErr) > 2.8 && this.yawV * yawErr < 0) yawErr -= Math.sign(yawErr) * 2 * Math.PI;
     const pitchErr = clamp(Math.asin(clamp(d[1], -1, 1)), -maxTilt, maxTilt) - this.pitch;
-    let wy = rate * yawErr;
+    // Aimed near straight up or down, the bearing swings wildly at the least change: it stops yawing after it.
+    let wy = rate * yawErr * smooth(0, 0.3, flat);
     let wp = rate * pitchErr;
     const wl = Math.hypot(wy, wp);
     if (wl > maxTurn) {
@@ -708,10 +715,13 @@ export class Spider {
       this.abKickV += im.ab * f;
       if (im.t >= IMPACT) this.impact = null;
     }
-    // Pose springs: crouching, weight shifts and leans ease in and out.
+    // Pose springs: crouching, weight shifts and leans ease in and out. In the crawl
+    // the targets glide too, so a weight shift starts as gently as it ends.
+    const chase = this.mode === 'crawl' ? 1 - Math.exp(-8 * dt) : 1;
     for (const key of Object.keys(this.pose)) {
       const k = 14;
-      this.poseV[key] += ((this.poseT[key] - this.pose[key]) * k - this.poseV[key] * 2 * Math.sqrt(k)) * dt;
+      this.poseS[key] += (this.poseT[key] - this.poseS[key]) * chase;
+      this.poseV[key] += ((this.poseS[key] - this.pose[key]) * k - this.poseV[key] * 2 * Math.sqrt(k)) * dt;
       this.pose[key] += this.poseV[key] * dt;
     }
     this.frame();
@@ -749,11 +759,12 @@ export class Spider {
     const Sa = norm(cross(this.aF, this.U));
     const breathe = Math.sin(this.time * 2.1);
     this.breath = 1 + 0.03 * breathe;
+    this.breathAmp += ((this.walking ? 0.5 : 1) - this.breathAmp) * (1 - Math.exp(-4 * dt));
     // Inertia: launch and landing swing the abdomen down; it overshoots a little and settles.
     const KA = 70;
     this.abKickV += (-KA * this.abKick - 2 * 0.45 * Math.sqrt(KA) * this.abKickV) * dt;
     this.abKick = clamp(this.abKick + this.abKickV * dt, -0.3, 0.38);
-    let aD = rotate(this.aF, Sa, 0.02 * breathe * (this.walking ? 0.5 : 1));
+    let aD = rotate(this.aF, Sa, 0.02 * breathe * this.breathAmp);
     this.dipT += dt;
     const t = this.dipT;
     this.dip = t < 0.16 ? ease(t / 0.16) : t < 0.3 ? 1 : 1 - smooth(0.3, 0.75, t);
@@ -780,6 +791,8 @@ export class Spider {
   /** Palps flick now and then (more often while it stands and feels), over a slow idle sway. */
   palps(dt) {
     const still = this.mode === 'crawl' && !this.walking;
+    // The sway calms as it stops and quickens as it sets off, never all at once.
+    this.palpAmp += ((still ? 0.18 : 0.35) - this.palpAmp) * (1 - Math.exp(-4 * dt));
     for (let s = 0; s < 2; s++) {
       this.palpNext[s] -= dt;
       if (this.palpNext[s] <= 0) {
@@ -794,7 +807,7 @@ export class Spider {
       const K = 260;
       this.palpTwV[s] += ((this.palpKick[s] - this.palpTw[s]) * K - this.palpTwV[s] * 2 * 0.7 * Math.sqrt(K)) * dt;
       this.palpTw[s] += this.palpTwV[s] * dt;
-      this.palpTap[s] = Math.sin(this.time * 3.1 + (s ? 1.4 : 0)) * (still ? 0.18 : 0.35) + this.palpTw[s];
+      this.palpTap[s] = Math.sin(this.time * 3.1 + (s ? 1.4 : 0)) * this.palpAmp + this.palpTw[s];
     }
   }
 
@@ -813,6 +826,8 @@ export class Spider {
     this.travelId = tr.id;
     this.midAir = this.mode === 'jump' && this.launched;
     this.coastV = this.mode === 'crawl' ? [...this.v] : [0, 0, 0];
+    this.goalN = null;
+    this.turnCap = 0;
     this.mode = 'jump';
     this.jumps++;
     // Only a travel with no crouch is an abseil; every other one is a real leap.
@@ -821,6 +836,7 @@ export class Spider {
     this.crouchAnchored = false;
     this.speed = 0;
     this.speedV = 0;
+    this.speedT = 0;
     this.walking = false;
     this.shuffle = null;
     this.feelAt = [Infinity, Infinity];
@@ -1058,16 +1074,32 @@ export class Spider {
     if (!this.walking) this.stand(dt);
     else this.poseT.roll = clamp(-dot(this.w, this.hU) * 0.08, -0.06, 0.06);
 
-    const n = dist > 1e-6 ? scale(to, 1 / dist) : this.hF;
+    // The goal hops on to the next waypoint now and then: it swings its course round over a moment.
+    const n0 = dist > 1e-6 ? scale(to, 1 / dist) : this.hF;
+    this.goalN = this.goalN ? norm(lerp3(this.goalN, n0, 1 - Math.exp(-2.5 * dt))) : n0;
+    const n = this.goalN;
     const facing = Math.max(0.15, dot(this.hF, n));
+    // The speed it means to go eases too, so a burst gathers and dies away rather than kicking in.
     const target = this.walking ? Math.min(CRUISE, dist * 1.2) * facing : 0;
-    this.speedV += ((target - this.speed) * 20 - this.speedV * 9) * dt;
+    this.speedT += (target - this.speedT) * (1 - Math.exp(-10 * dt));
+    this.speedV += ((this.speedT - this.speed) * 36 - this.speedV * 12) * dt;
     this.speed = Math.max(0, this.speed + this.speedV * dt);
     const wander = Math.sin(this.time * 0.9 + this.meander) * 0.32 + Math.sin(this.time * 2.1 + this.meander * 2) * 0.12;
-    if (this.walking) this.orient(dist > 10 ? rotate(n, this.hU, wander) : this.hF, dt, 2.2);
+    // It steers as it walks: setting off it leans into the turn, slowing to a halt it straightens
+    // out with its speed (not all at once), and right by the goal it stops steering so it never circles it.
+    const moving = Math.min(1, this.speed / CRUISE);
+    let aim = n;
+    let rate = 0.8;
+    let cap = 0;
+    if (this.walking || moving > 0.1) {
+      aim = rotate(n, this.hU, wander);
+      rate = 2.2;
+      cap = MAX_TURN * (this.walking ? 1 : moving) * smooth(6, 14, dist);
+    }
     // Standing it holds its heading, unless the goal has drifted well off to one side; never while feeling.
-    else if (this.feel < 0.05 && dist > 10 && facing < 0.85) this.orient(n, dt, 0.8, MAX_TILT, 0.4);
-    else this.orient(this.hF, dt, 1.5);
+    else if (this.feel < 0.05 && dist > 10 && facing < 0.85) cap = 0.4;
+    this.turnCap += (cap - this.turnCap) * (1 - Math.exp(-6 * dt));
+    this.orient(aim, dt, rate, MAX_TILT, this.turnCap);
     // Mostly along the body, a little straight to the goal so it never orbits it.
     const dir = norm(add(scale(this.hF, 0.75), n, 0.25));
     this.p = add(this.p, dir, this.speed * dt);
@@ -1079,7 +1111,8 @@ export class Spider {
     if (this.shiftT <= 0) this.weightShift();
     for (let s = 0; s < 2; s++) {
       const leg = this.legs[s ? LEG_COUNT / 2 : 0];
-      if (leg.mode === 'plant' && this.pauseT >= this.feelAt[s] && this.pauseT < this.feelEnd) {
+      // Only once it has all but stopped, and with time left to feel about.
+      if (leg.mode === 'plant' && this.pauseT >= this.feelAt[s] && this.pauseT < this.feelEnd - 0.5 && this.speed < 8) {
         leg.mode = 'feel';
         leg.rel = this.toLocal(leg.foot);
         leg.relV = [0, 0, 0];
