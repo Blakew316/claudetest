@@ -86,11 +86,11 @@ const SIZE_LAND = 0.47; // the landing as he touches down (crouched he is about 
 const SIZE_RISE = 0.54; // ...pushing in to this as he rises
 const SIZE_OPEN = 0.09; // the brief wide look the run opens on
 const SIZE_REST = 0.42; // the finale's last shot of him
-const CHASE_DIST = 2.3 * HERO_H; // in flight, close behind him (lying along his path he reads at ~30%)
+const CHASE_DIST = 2.6 * HERO_H; // in flight, close behind him (lying along his path he reads at about a third of the height)
 const CHASE_AZ = 0.72; // rad off straight behind him, to one side
 const CHASE_EL = 0.16; // a little above, looking down and ahead along his path
 const LAUNCH_AZ = 1.2; // rad off straight behind: a rear three-quarter view of the takeoff
-const LAND_AZ = 0.95; // rad off straight ahead: a front three-quarter view of the landing
+const LAND_AZ = 0.75; // rad off straight ahead: a front three-quarter view of the landing
 const LAND_EL = -0.1; // low, looking up at him
 const LAND_HOLD = 0.9; // s after touchdown the landing shot holds before handing back...
 const LAND_BLEND = 2.3; // ...over this long
@@ -510,6 +510,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       dpA: new Float64Array(AHEAD_BINS * ELS.length),
       dpB: new Float64Array(AHEAD_BINS * ELS.length),
       dpBack: new Int32Array(AHEAD_N * AHEAD_BINS * ELS.length),
+      dpFixed: new Float64Array(AHEAD_BINS * ELS.length),
       preT0: -1, // when his last words went: the takeoff is coming
       pre: 0,
       preAz: 0,
@@ -622,13 +623,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   /**
    * Blend two camera targets: look-at and angles on arcs (so the lens swings
    * round him, never through him), distance in log. Which way round the yaw
-   * blends is chosen (the short way) when the blend starts and then held, so
+   * blends is chosen (the short way) as the blend leaves either end and then held, so
    * a target that wanders past the far side of the other never flips it
    * (`slot` names the blend, to remember it).
    */
   function mixRig(a, b, w, out, slot) {
     const p = hc.turnWay[slot];
-    const d = w > 0 && p !== undefined ? p + wrap(b.yaw - a.yaw - p) : wrap(b.yaw - a.yaw);
+    const d = w > 0 && w < 1 && p !== undefined ? p + wrap(b.yaw - a.yaw - p) : wrap(b.yaw - a.yaw);
     hc.turnWay[slot] = d;
     if (w <= 0) return a === out ? out : copyRig(a, out);
     if (w >= 1) return copyRig(b, out);
@@ -687,21 +688,44 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return cost;
   }
 
-  /**
-   * Score a two-shot of him (at H) from (az, el) at distance D; lower is
-   * better. It counts the (weighted) share of his words (hc.att) it would lose,
-   * off screen or hidden behind him, for the best of the pans (cand.sx), and
-   * of the firing hands his body would hide; then how it sees him (from behind
-   * costs more), its elevation, the stars round the lens, and lead room the
-   * way he walks (cand.xd: which way that is across the screen).
-   */
-  function twoShotCost(az, el, D, moving, hx, hz) {
-    const asp = aspect();
+  /** Point the lens at him (at H) from (az, el) at distance D: E, its basis, and dir. */
+  function aimAtHim(az, el, D) {
     orbitDir(az, el, dir);
     E[0] = H[0] + dir[0] * D;
     E[1] = H[1] + dir[1] * D;
     E[2] = H[2] + dir[2] * D;
     lookBasis(E, H);
+  }
+
+  /** Which way he walks across the screen from the lens just aimed (-1, 0, 1). */
+  function walkDir(moving, hx, hz, asp) {
+    if (!moving) return 0;
+    onScreen(E, H[0] + hx * 30, H[1], H[2] + hz * 30, asp);
+    return scr.x > 0.02 ? 1 : scr.x < -0.02 ? -1 : 0;
+  }
+
+  /**
+   * The part of a two-shot's cost that does not depend on the words, for the
+   * lens just aimed: seeing him from behind, its elevation, the stars round
+   * the lens, and flipping which way he walks across the screen.
+   */
+  function fixedCost(el, xd, hx, hz) {
+    const hl = Math.hypot(dir[0], dir[2]) || 1;
+    const phi = Math.acos(clamp((dir[0] * hx + dir[2] * hz) / hl, -1, 1)); // 0: the lens in front of him
+    return BACK_W * ss(1.7, 2.7, phi) + 0.4 * Math.abs(el - 0.08) + crowding(E, H) + (xd && hc.screenDir && xd !== hc.screenDir ? 0.25 : 0);
+  }
+
+  /**
+   * Score a two-shot of him (at H) from (az, el) at distance D; lower is
+   * better. It counts the (weighted) share of his words (hc.att) it would lose,
+   * off screen or hidden behind him, for the best of the pans (cand.sx), and
+   * of the firing hands his body would hide, with lead room the way he walks
+   * (cand.xd: which way that is across the screen); then the rest (see
+   * fixedCost, or `fixed` if it is already known).
+   */
+  function twoShotCost(az, el, D, moving, hx, hz, fixed = -1) {
+    const asp = aspect();
+    aimAtHim(az, el, D);
     const bx = 10 / (D * LENS_TAN * asp); // his half-width on screen, arms in
     const by = HERO_H / 2 / (D * LENS_TAN); // his half-height
     vis.fill(0);
@@ -724,11 +748,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       if (scr.z > D && Math.abs(scr.x) < bx && Math.abs(scr.y) < by) continue; // behind him
       for (let k = 0; k < PANS.length; k++) if (Math.abs(scr.x + PANS[k]) < 0.86 && Math.abs(scr.y + SHOT_Y) < 0.84) vis[k] += w;
     }
-    let xd = 0;
-    if (moving) {
-      onScreen(E, H[0] + hx * 30, H[1], H[2] + hz * 30, asp);
-      xd = scr.x > 0.02 ? 1 : scr.x < -0.02 ? -1 : 0;
-    }
+    const xd = walkDir(moving, hx, hz, asp);
     let best = Infinity;
     for (let k = 0; k < PANS.length; k++) {
       const sx = PANS[k];
@@ -741,15 +761,13 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       }
     }
     let cost = best + (all > 0 ? (HAND_W * hidden) / all : 0);
-    const hl = Math.hypot(dir[0], dir[2]) || 1;
-    const phi = Math.acos(clamp((dir[0] * hx + dir[2] * hz) / hl, -1, 1)); // 0: the lens in front of him
-    cost += BACK_W * ss(1.7, 2.7, phi);
-    if (!all) cost += 0.3 * Math.abs(phi - 0.85); // a front three-quarter tracking shot
-    cost += 0.4 * Math.abs(el - 0.08);
-    cost += crowding(E, H);
-    if (xd && hc.screenDir && xd !== hc.screenDir) cost += 0.25; // he keeps walking the same way across the screen
+    if (!all) {
+      // With nothing to fire at: a front three-quarter tracking shot.
+      const hl = Math.hypot(dir[0], dir[2]) || 1;
+      cost += 0.3 * Math.abs(Math.acos(clamp((dir[0] * hx + dir[2] * hz) / hl, -1, 1)) - 0.85);
+    }
     cand.xd = xd;
-    return cost;
+    return cost + (fixed >= 0 ? fixed : fixedCost(el, xd, hx, hz));
   }
 
   /**
@@ -802,6 +820,14 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     let cost = hc.dpA;
     let next = hc.dpB;
     const back = hc.dpBack;
+    // He is taken to stay put, so all but the words is the same at every step: once per angle.
+    const fixed = hc.dpFixed;
+    for (let b = 0; b < NB; b++) {
+      for (let e = 0; e < NE; e++) {
+        aimAtHim(az0 + (b - NB / 2) * binW, ELS[e], D);
+        fixed[b * NE + e] = fixedCost(ELS[e], walkDir(moving, hx, hz, aspect()), hx, hz);
+      }
+    }
     for (let k = 0; k < S; k++) {
       const t = k * AHEAD_DT;
       // The words live then; and keep near the last plan, so re-planning never jumps about.
@@ -815,8 +841,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       for (let b = 0; b < NB; b++) {
         const off = (b - NB / 2) * binW;
         for (let e = 0; e < NE; e++) {
-          const local = twoShotCost(az0 + off, ELS[e], D, moving, hx, hz) + (prev === null ? 0 : 0.25 * Math.abs(wrap(az0 + off - prev)));
           const st = b * NE + e;
+          const local = twoShotCost(az0 + off, ELS[e], D, moving, hx, hz, fixed[st]) + (prev === null ? 0 : 0.25 * Math.abs(wrap(az0 + off - prev)));
           if (k === 0) {
             next[st] = local + 1.5 * Math.abs(off) + 0.5 * Math.abs(ELS[e] - hc.shot.el);
             continue;
@@ -907,7 +933,11 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       (hc.pre > 0 ? (0.9 * hc.pre * Math.abs(wrap(az - hc.preAz))) / PI : 0) +
       (D > Dm * 1.01 ? 0.22 : 0);
     let bestCost = twoShotCost(p.az, p.el, p.D, moving, hx, hz) + extra(p.az, p.el, p.D) - 0.12;
-    let best = { az: p.az, el: p.el, D: p.D, sx: cand.sx, xd: cand.xd };
+    let bAz = p.az;
+    let bEl = p.el;
+    let bD = p.D;
+    let bSx = cand.sx;
+    let bXd = cand.xd;
     const from = path ? path.az : hc.shot.az;
     const steps = path ? 2 : 12;
     for (let k = -steps; k <= steps; k++) {
@@ -917,16 +947,20 @@ export function createDirector(analysis, world, getStage, seed = 1) {
           const cost = twoShotCost(az, el, D, moving, hx, hz) + extra(az, el, D) + 0.5 * Math.abs(el - p.el);
           if (cost < bestCost) {
             bestCost = cost;
-            best = { az, el, D, sx: cand.sx, xd: cand.xd };
+            bAz = az;
+            bEl = el;
+            bD = D;
+            bSx = cand.sx;
+            bXd = cand.xd;
           }
         }
       }
     }
-    p.az = hc.shot.az + wrap(best.az - hc.shot.az);
-    p.el = best.el;
-    p.D = best.D;
-    p.sx = best.sx;
-    if (best.xd) hc.screenDir = best.xd;
+    p.az = hc.shot.az + wrap(bAz - hc.shot.az);
+    p.el = bEl;
+    p.D = bD;
+    p.sx = bSx;
+    if (bXd) hc.screenDir = bXd;
   }
 
   /** Ease the two-shot toward its plan: slowly, never circling him faster than AZ_RATE. */
