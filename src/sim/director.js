@@ -145,8 +145,8 @@ const TRACK = 0.75; // walking, the two-shot turns round with him this much of t
 const SHOT_TURN = 0.5; // s: the two-shot's angle round him eases onto its plan this fast (a move takes 1-1.5 s)
 // Holds: once a move settles the two-shot stays put for at least HOLD_MIN, unless keeping it would cost
 // KEEP_HELD more than the best shot (it is losing him or his words); afterwards KEEP more.
-const HOLD_MIN = 3;
-const KEEP_HELD = 0.55;
+const HOLD_MIN = 4;
+const KEEP_HELD = 0.7;
 const KEEP = 0.25;
 const HOLD_V = 0.04; // rad/s: settled
 const REVERSE_T = 4; // s after a move during which going back the other way costs REVERSE_W
@@ -1261,7 +1261,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const s = hc.shot;
     const D = Math.exp(s.lD);
     compose(heroPoint(H), s.az, s.el, D, s.sx, shotY(D), out);
-    return setEase(out, 0.5, 0.7, 0.6);
+    return setEase(out, 0.4, 0.45, 0.6); // (its angle is eased already, see stepShot: the follow need not add a long tail)
   }
 
   /** The brief wide look the run opens on: the first ball, him small in the middle of it. */
