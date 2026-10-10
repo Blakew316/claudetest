@@ -234,4 +234,8 @@ window.crawler = {
   get hero() {
     return view3d?.hero;
   },
+  /** Iron Man's silhouette on screen as last drawn (see view3d), for tools that check the labels. */
+  get silhouette() {
+    return view3d?.silhouette;
+  },
 };

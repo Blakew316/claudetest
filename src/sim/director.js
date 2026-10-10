@@ -128,6 +128,7 @@ const SIZE_KNEEL = 0.44; // the kneeling hero fills this much of the view height
 const SIZE_KNEEL_IN = 0.5; // ...pushing in to this through the hold
 const SIZE_RISE = 0.62; // standing, as he rises (the lens holds its place and tilts up with him)
 const SHOT_Y_KNEEL = -0.04; // where the kneeling hero's middle sits on screen (NDC)
+const KNEEL_SX = -0.14; // ...and across it, on a narrow screen (see landRig)
 const LAND_LOOK = 0.4; // at the cut it looks this far from him toward where he lands
 const PANS = [-0.3, -0.15, 0, 0.15, 0.3]; // where across the frame the two-shot may put him (NDC)
 const ELS = [-0.07, 0.09, 0.25]; // two-shot elevations it chooses between (rad, > 0 looks down)
@@ -1422,7 +1423,10 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const w = down ? 0 : lerp(LAND_LOOK, 1, ss(CUT_U, 0.9, u));
     for (let i = 0; i < 3; i++) P[i] = lerp(H[i], tr.to[i], w);
     const sy = down ? lerp(SHOT_Y_KNEEL * ss(0, 0.3, ts), shotY(D), rise) : 0;
-    aimFrom(A, P, 0, sy, out);
+    // (Kneeling he sweeps his left arm out, to the right of the frame from in front: on a narrow screen
+    // he sits a little left of the middle to leave it room.)
+    const sx = down ? KNEEL_SX * ss(1.2, 0.8, aspect()) * ss(0, 0.3, ts) * (1 - rise) : 0;
+    aimFrom(A, P, sx, sy, out);
     return setEase(out, 0.22, 0.22, 0);
   }
 
