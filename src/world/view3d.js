@@ -270,6 +270,8 @@ function depthPoints(shared, { size, max, drift, dof, stellar = 1, spikes = 0, g
       attribute float hot;
       uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDrift, uDof, uGain, uLightR, uLightGain, uFogK, uClear, uDofSpan, uStellar, uSpikes, uGiants;
       uniform vec3 uLight, uClearAt;
+      uniform vec4 uFlashP[2]; // repulsor flashes (muzzle, impact): where, and the radius they light
+      uniform vec2 uFlashK; // ... and how much brighter they make the stars there
       uniform vec3 uColor;
       varying vec3 vC;
       varying float vSize;
@@ -308,6 +310,11 @@ function depthPoints(shared, { size, max, drift, dof, stellar = 1, spikes = 0, g
         float prox = pow(min(rpx, 1.0), 1.3) * (1.0 + 0.5 * log2(max(rpx, 1.0)));
         float dl = distance(p, uLight);
         float lit = uGain + uLightGain * exp(-dl * dl / (uLightR * uLightR));
+        // A repulsor's flash lights the dust round it for a frame or two.
+        vec3 f0 = p - uFlashP[0].xyz;
+        vec3 f1 = p - uFlashP[1].xyz;
+        float flash = uFlashK.x * exp(-dot(f0, f0) / (uFlashP[0].w * uFlashP[0].w)) + uFlashK.y * exp(-dot(f1, f1) / (uFlashP[1].w * uFlashP[1].w));
+        lit += flash;
         float fz = uFog * depth * uFogK;
         // Clear the stars between the camera and the crawler (his whole figure) so he
         // always reads, however dense the cluster he is crawling through.
@@ -355,6 +362,8 @@ function depthPoints(shared, { size, max, drift, dof, stellar = 1, spikes = 0, g
         // Faint stars lean to the section hue so the ball keeps its colour; resolved ones show their own.
         float w = uStellar * mix(0.2, 0.72, smoothstep(0.45, 1.6, F));
         vC = mix(uColor, star, w) * peak;
+        // ... in its own cyan-white.
+        vC = mix(vC, vec3(0.62, 0.85, 1.0) * dot(vC, LUMA) * 1.2, clamp(0.25 * flash, 0.0, 0.45));
         gl_PointSize = S;
         gl_Position = projectionMatrix * mv;
       }`,
@@ -456,6 +465,22 @@ function fresnel(core, rim, band = 9) {
 /**
  * @param {HTMLCanvasElement} canvas
  */
+/** A round point sprite with a soft rim (white; vertex colours tint it). */
+function dotTexture(n = 32) {
+  const d = new Uint8Array(n * n * 4);
+  for (let y = 0; y < n; y++) {
+    for (let x = 0; x < n; x++) {
+      const r = Math.hypot(x + 0.5 - n / 2, y + 0.5 - n / 2) / (n / 2);
+      const a = Math.round(255 * Math.min(1, Math.max(0, (1 - r) * 3)));
+      d.set([a, a, a, a], (y * n + x) * 4);
+    }
+  }
+  const t = new THREE.DataTexture(d, n, n);
+  t.magFilter = t.minFilter = THREE.LinearFilter;
+  t.needsUpdate = true;
+  return t;
+}
+
 export function createView3D(canvas) {
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, powerPreference: 'high-performance' });
   renderer.setClearColor(BG, 1);
@@ -489,6 +514,8 @@ export function createView3D(canvas) {
     uClear: { value: hero ? HERO_CLEAR : 80 * SS },
     uClearAt: { value: new THREE.Vector3() },
     uDofSpan: { value: DOF_SPAN },
+    uFlashP: { value: [new THREE.Vector4(0, 0, 0, 1), new THREE.Vector4(0, 0, 0, 1)] },
+    uFlashK: { value: new THREE.Vector2() },
   };
   const mat4 = new THREE.Matrix4();
   const quat = new THREE.Quaternion();
@@ -643,7 +670,8 @@ export function createView3D(canvas) {
     wg.setAttribute('position', new THREE.BufferAttribute(world.wordPos, 3));
     const wcol = new THREE.BufferAttribute(new Float32Array(nw * 3), 3);
     wg.setAttribute('color', wcol);
-    const words = new THREE.Points(wg, new THREE.PointsMaterial({ size: 5, sizeAttenuation: false, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
+    // Round dots: plain point squares read as glowing tiles once the bloom spreads them over his suit.
+    const words = new THREE.Points(wg, new THREE.PointsMaterial({ size: 6, map: dotTexture(), sizeAttenuation: false, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending }));
     root.add(words);
 
     // Spider: real geometry throughout.
@@ -851,6 +879,13 @@ export function createView3D(canvas) {
       const wpos = W.world.wordPos;
       const targets = run.tentacles.map((tn) => ({ at: [wpos[tn.wordId * 3], wpos[tn.wordId * 3 + 1], wpos[tn.wordId * 3 + 2]], id: tn.wordId, p: tn.p }));
       hero.update(spider, dt, camera, targets, (size.h * renderer.getPixelRatio()) / 2);
+      // His repulsor flashes light the dust round them.
+      const flashes = hero.fx.userData.flashes || [];
+      for (let i = 0; i < 2 && i < flashes.length; i++) {
+        const f = flashes[i];
+        shared.uFlashP.value[i].set(f.p.x, f.p.y, f.p.z, f.r);
+        shared.uFlashK.value.setComponent(i, f.k);
+      }
       from = hero.chest();
       U = hero.up();
     } else {
