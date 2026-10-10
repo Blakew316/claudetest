@@ -95,8 +95,12 @@ const CHASE_EL = 0.16; // a little above, looking down and ahead along his path
 const LAUNCH_AZ = 1.2; // rad off straight behind: a rear three-quarter view of the takeoff
 const LAND_AZ = 0.75; // rad off straight ahead: a front three-quarter view of the landing
 const LAND_EL = -0.1; // low, looking up at him
-const LAND_HOLD = 0.9; // s after touchdown the landing shot holds before handing back...
-const LAND_BLEND = 2.3; // ...over this long
+// The superhero landing (world/ironman.js): he drops into a kneel, holds it and rises out of it over the
+// last KNEEL_RISE of the land phase (LAND_TIME), his middle KNEEL_MID above the crawler point meanwhile.
+const KNEEL_RISE = 0.9;
+const KNEEL_MID = 7;
+const LAND_HOLD = LAND_TIME - KNEEL_RISE; // s after touchdown the landing shot holds (he rises then)...
+const LAND_BLEND = 2.2; // ...then hands back to the two-shot over this long, pushing in as he stands
 const SHOT_Y = -0.06; // he sits a little below the middle of the frame (NDC): headroom
 const PANS = [-0.3, -0.15, 0, 0.15, 0.3]; // where across the frame the two-shot may put him (NDC)
 const ELS = [-0.07, 0.09, 0.25]; // two-shot elevations it chooses between (rad, > 0 looks down)
@@ -556,11 +560,22 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     hc.fly += ((spider.taut || 0) - hc.fly) * (1 - Math.exp(-9 * dt));
   }
 
-  /** His middle in the world: over his feet standing, at the crawler point in the air. */
+  /**
+   * His middle in the world: over his feet standing, at the crawler point in
+   * the air, and low in the superhero landing's kneel until he rises out of it
+   * (world/ironman.js: the last LAND_RISE of the land phase).
+   */
   function heroPoint(out) {
     const s = run.spider;
+    let mid = HERO_MID * (1 - clamp(Math.max(hc.air, hc.fly), 0, 1));
+    const L = hc.leap;
+    if (L && L.touch >= 0 && run.travel && L.id === run.travel.id) {
+      const ts = run.t - L.touch;
+      const kneel = lerp(L.mid0, KNEEL_MID, ss(0, 0.3, ts));
+      mid = lerp(kneel, mid, ss(LAND_TIME - KNEEL_RISE, LAND_TIME, ts));
+    }
     out[0] = s.x;
-    out[1] = s.y + HERO_MID * (1 - clamp(Math.max(hc.air, hc.fly), 0, 1));
+    out[1] = s.y + mid;
     out[2] = s.z;
     return out;
   }
@@ -1072,6 +1087,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
 
   /** Touchdown: the two-shot will take over from the landing view, so it starts from there. */
   function touchdown(L) {
+    L.mid0 = HERO_MID * (1 - clamp(Math.max(hc.air, hc.fly), 0, 1)); // his middle as he touches down (see heroPoint)
     L.touch = run.t;
     const s = hc.shot;
     const p = hc.plan;
@@ -1115,7 +1131,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     A[0] = lerp(H[0], tr.to[0], g);
     A[1] = lerp(H[1], tr.to[1] + mid, g);
     A[2] = lerp(H[2], tr.to[2], g);
-    const rise = ss(0.8, 2.8, ts);
+    const rise = ss(LAND_HOLD, LAND_HOLD + 1.6, ts);
     compose(A, L.yaw + L.side * LAND_AZ, LAND_EL + 0.05 * rise, shotDist(lerp(SIZE_LAND, SIZE_RISE, rise)), 0, SHOT_Y - 0.04, hc.land);
     const landW = L.touch >= 0 ? 1 : ss(2.6 * Dl, 1.2 * Dl, toG) * ss(0.15, 0.4, u);
     mixRig(out, setEase(hc.land, 0.35, 0.5, 1 - g), landW, out, 'land');
