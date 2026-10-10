@@ -466,8 +466,8 @@ export function createView3D(canvas) {
   composer.addPass(new RenderPass(scene, camera));
   composer.addPass(new UnrealBloomPass(new THREE.Vector2(512, 512), 0.5, 0.35, 0.3));
   composer.addPass(new OutputPass());
-  const hero = AVATAR === 'ironman' ? createIronMan() : null;
-  if (hero) scene.add(hero.group);
+  const hero = AVATAR === 'ironman' ? createIronMan(renderer) : null;
+  if (hero) scene.add(hero.group, hero.fx);
 
   const orbit = { yaw: 0, pitch: 0 };
   const size = { w: 1, h: 1 };
@@ -837,7 +837,8 @@ export function createView3D(canvas) {
     let U; // its up
     if (hero) {
       const wpos = W.world.wordPos;
-      hero.update(spider, dt, camera, run.tentacles.map((tn) => [wpos[tn.wordId * 3], wpos[tn.wordId * 3 + 1], wpos[tn.wordId * 3 + 2]]));
+      const targets = run.tentacles.map((tn) => ({ at: [wpos[tn.wordId * 3], wpos[tn.wordId * 3 + 1], wpos[tn.wordId * 3 + 2]], id: tn.wordId, p: tn.p }));
+      hero.update(spider, dt, camera, targets, (size.h * renderer.getPixelRatio()) / 2);
       from = hero.chest();
       U = hero.up();
     } else {
@@ -979,37 +980,16 @@ export function createView3D(canvas) {
       from = spider.cephCenter();
     }
 
-    // Tentacles: dotted beziers to the words, rippling like tendrils; for Iron
-    // Man, pulsar rays: straight beams from his nearer palm, bright pulses racing
-    // out along them and a hot tip where the beam is still reaching.
+    // Tentacles: dotted beziers to the words, rippling like tendrils (Iron Man's
+    // repulsor rays are drawn by ironman.js instead).
     const tp = W.tentacles.geometry.attributes.position.array;
     const tcol = W.tentacles.geometry.attributes.color.array;
     let dots = 0;
     const wp = W.world.wordPos;
-    for (const tn of run.tentacles) {
+    for (const tn of hero ? [] : run.tentacles) {
       const tx = wp[tn.wordId * 3];
       const ty = wp[tn.wordId * 3 + 1];
       const tz = wp[tn.wordId * 3 + 2];
-      if (hero) {
-        const o0 = hero.palm([tx, ty, tz]);
-        const L = Math.hypot(tx - o0[0], ty - o0[1], tz - o0[2]) || 1;
-        const n = Math.min(TENTACLE_DOTS - 1, Math.max(2, Math.floor(L / 2.5)));
-        const m = Math.floor(n * tn.p);
-        for (let i = 0; i <= m && dots < MAX_TENTACLES * TENTACLE_DOTS; i++) {
-          const u = i / n;
-          const ph = (u * L) / 38 - t * 3.2 + tn.wordId * 0.37;
-          const pulse = Math.exp(-((ph - Math.floor(ph) - 0.5) ** 2) / 0.006);
-          const g = 0.3 + 0.75 * pulse + (m - i < 3 && tn.p < 1 ? 0.7 : 0);
-          tp[dots * 3] = o0[0] + (tx - o0[0]) * u;
-          tp[dots * 3 + 1] = o0[1] + (ty - o0[1]) * u;
-          tp[dots * 3 + 2] = o0[2] + (tz - o0[2]) * u;
-          tcol[dots * 3] = g * (0.5 + 0.35 * pulse);
-          tcol[dots * 3 + 1] = g * (0.82 + 0.1 * pulse);
-          tcol[dots * 3 + 2] = g;
-          dots++;
-        }
-        continue;
-      }
       const p = from;
       const dx = tx - p[0];
       const dy = ty - p[1];

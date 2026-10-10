@@ -1,18 +1,24 @@
 /**
  * Iron Man in place of the spider: the nanotech suit (a static OBJ mesh with
  * its textures, from Marvel Future Fight, supplied with the project; Iron Man
- * is Marvel's). The mesh has no rig, so one is built here: a 16-bone
- * skeleton fitted to its A-pose and skin weights from each vertex's distance
- * to the bones, and it is animated procedurally.
+ * is Marvel's). The mesh has no rig, so one is built here: a 16-bone skeleton
+ * fitted to its A-pose and skin weights from each vertex's distance to the
+ * bones; it is animated procedurally.
  *
- * The spider simulation still decides where the crawler goes. Over a cluster
- * he walks across the stars (a real stride, arms swinging, turning on the
- * spot with small steps), and raises a hand to fire each reading beam (the
- * pulsar rays, drawn in view3d) from his palm. Before a leap he crouches;
- * between clusters he flies head-first, arms at his sides, boots and palms
- * firing, the nanotech back thrusters forming out of the suit; he lands
- * bracing on bent knees. Lit by its own lights (the stars are not lit
- * materials, so these touch only the suit).
+ * Walking: the feet are planted on the stars and stepped by a foot planner
+ * (no sliding), the legs solved by two-bone IK, the heel striking and the toe
+ * pushing off; the pelvis rides over the stance foot (bob, sway, hip drop,
+ * twist) with the chest counter-rotating and the arms swinging on springs.
+ * Shooting: the torso and head turn to the target, the arm comes up straight
+ * with the palm out, the repulsor charges, fires with a kick of recoil, and
+ * the ray (a white-hot core in a cyan sheath, pulsing and flickering) holds
+ * on the target with a flare and sparks where it hits. Flying: head-first,
+ * arms at his sides, boots and palms firing, the nanotech back thrusters
+ * formed out of the suit; he is drawn larger in flight so the leap reads.
+ *
+ * The suit is a physically based, clear-coated metal: metalness, roughness,
+ * relief and glow maps derived from its colour texture (red paint, gold and
+ * silver trim, cyan lights), reflecting a small space environment of its own.
  */
 
 import * as THREE from 'three';
@@ -22,9 +28,11 @@ import TEX_BODY from '../../assets/ironman/hero_ironman01_S04.png';
 import TEX_PACK from '../../assets/ironman/hero_ironman01_S04_wp4.png';
 
 const HEIGHT = 46; // world units: he reads at the distances the camera keeps from the crawler
-const K = HEIGHT / 2.02; // the mesh stands 2.02 units tall, feet at y = 0
-const STRIDE = 0.95 * K; // world units travelled per walk cycle (two steps)
-const EXHAUST = 360; // thruster sparks in flight at once
+const K = HEIGHT / 2.02; // world units per mesh unit (the mesh stands 2.02 tall, feet at y = 0)
+const FLY_SCALE = 1.9; // drawn this much larger in flight, so a leap reads at the camera's distance
+const MAX_BEAMS = 32;
+const SPARKS = 900;
+const FLARES = 48;
 const UP = new THREE.Vector3(0, 1, 0);
 
 /*
@@ -43,24 +51,56 @@ const J = {
   palm: [0.618, 0.979, 0.124],
   fingers: [0.66, 0.9, 0.12],
   hip: [0.14, 0.86, 0.06],
-  knee: [0.14, 0.46, 0],
+  knee: [0.14, 0.46, 0.0],
   ankle: [0.175, 0.11, 0.02],
   toe: [0.173, 0.02, 0.22],
   sole: [0.174, 0.013, 0.067],
 };
 const side = (p, s) => [p[0] * s, p[1], p[2]];
+const V = (a) => new THREE.Vector3(a[0], a[1], a[2]);
+const L1 = V(J.knee).distanceTo(V(J.hip)); // thigh
+const L2 = V(J.ankle).distanceTo(V(J.knee)); // shin
+const ANKLE_H = J.ankle[1] - J.sole[1]; // ankle above the sole
+const HIP_DROP = J.pelvis[1] - J.hip[1]; // pelvis above the hip joints
+const HIP_W = J.hip[0]; // hip joint off the midline
 
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const smooth = (a, b, x) => {
-  const t = Math.max(0, Math.min(1, (x - a) / (b - a)));
+  const t = clamp((x - a) / (b - a), 0, 1);
   return t * t * (3 - 2 * t);
 };
+const wrapA = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+
+/**
+ * A critically damped (or lightly underdamped) spring toward a target, for every
+ * eased value. Sub-stepped so a slow frame cannot make it unstable; after a jump
+ * in time (a seek) it lands on its target.
+ */
+function spring(w = 12, zeta = 1) {
+  const s = { x: 0, v: 0 };
+  s.to = (target, dt) => {
+    if (dt > 0.3) {
+      s.x = target;
+      s.v = 0;
+      return s.x;
+    }
+    const n = Math.ceil(dt / 0.008);
+    const h = dt / Math.max(1, n);
+    for (let i = 0; i < n; i++) {
+      s.v += ((target - s.x) * w * w - s.v * 2 * zeta * w) * h;
+      s.x += s.v * h;
+    }
+    return s.x;
+  };
+  return s;
+}
 
 /** Squared distance from p to segment ab. */
 function segDist2(p, a, b) {
   const abx = b[0] - a[0];
   const aby = b[1] - a[1];
   const abz = b[2] - a[2];
-  const t = Math.max(0, Math.min(1, ((p[0] - a[0]) * abx + (p[1] - a[1]) * aby + (p[2] - a[2]) * abz) / (abx * abx + aby * aby + abz * abz)));
+  const t = clamp(((p[0] - a[0]) * abx + (p[1] - a[1]) * aby + (p[2] - a[2]) * abz) / (abx * abx + aby * aby + abz * abz), 0, 1);
   const dx = p[0] - a[0] - abx * t;
   const dy = p[1] - a[1] - aby * t;
   const dz = p[2] - a[2] - abz * t;
@@ -97,7 +137,13 @@ function buildSkeleton() {
     const knee = make('knee' + n, side(J.knee, s), hip, [side(J.knee, s), side(J.ankle, s), 'leg', s]);
     const ankle = make('ankle' + n, side(J.ankle, s), knee, [side(J.ankle, s), side(J.toe, s), 'leg', s]);
     const sole = make('sole' + n, side(J.sole, s), ankle);
-    limbs[n] = { s, sh, el, wr, palm, hip, knee, ankle, sole };
+    limbs[n] = {
+      s, n, sh, el, wr, palm, hip, knee, ankle, sole,
+      restArm: V(side(J.wrist, s)).sub(V(side(J.shoulder, s))).normalize(),
+      restThigh: V(side(J.knee, s)).sub(V(side(J.hip, s))).normalize(),
+      restShin: V(side(J.ankle, s)).sub(V(side(J.knee, s))).normalize(),
+      restFoot: V(side(J.toe, s)).sub(V(side(J.ankle, s))).normalize(),
+    };
   }
   return { root, spine, chest, neck, limbs, bones, segs };
 }
@@ -130,11 +176,10 @@ function skin(geo, segs) {
       else gate = 1 - 0.85 * smooth(0.27, 0.34, ax) * smooth(1.4, 1.2, p[1]); // the torso lets go of the arms below the shoulder
       w[b] = gate / (segDist2(p, a, e) + 1e-4) ** 3;
     }
-    // The three strongest, normalised.
-    for (let k = 0; k < 4; k++) {
+    for (let k = 0; k < 3; k++) {
       let best = -1;
       for (let b = 0; b < segs.length; b++) if (w[b] > 0 && (best < 0 || w[b] > w[best])) best = b;
-      if (best < 0 || k === 3) break;
+      if (best < 0) break;
       idx[i * 4 + k] = best;
       wts[i * 4 + k] = w[best];
       w[best] = 0;
@@ -146,18 +191,197 @@ function skin(geo, segs) {
   geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(wts, 4));
 }
 
-export function createIronMan() {
-  const group = new THREE.Group();
-  const body = new THREE.Group(); // oriented: +y his head, +z his chest
-  group.add(body);
-  const tex = (url) => {
-    const t = new THREE.TextureLoader().load(url);
-    t.colorSpace = THREE.SRGBColorSpace;
+/**
+ * Surface maps from the colour texture, once it has loaded: metalness and
+ * roughness (green: roughness, blue: metalness, as three reads them), relief
+ * (luminance: the silver and gold trim stands proud of the red panels) and
+ * glow (the cyan lights: arc reactor, eyes, palms, vents).
+ */
+function deriveMaps(img) {
+  const w = img.width;
+  const h = img.height;
+  const cv = (fn) => {
+    const c = document.createElement('canvas');
+    c.width = w;
+    c.height = h;
+    const g = c.getContext('2d');
+    g.drawImage(img, 0, 0);
+    const d = g.getImageData(0, 0, w, h);
+    const a = d.data;
+    for (let i = 0; i < a.length; i += 4) fn(a, i, a[i] / 255, a[i + 1] / 255, a[i + 2] / 255);
+    g.putImageData(d, 0, 0);
+    const t = new THREE.CanvasTexture(c);
     t.anisotropy = 4;
     return t;
   };
-  // Emissive from its own texture so the dark red and gold still read against black space.
-  const suit = (map, sideMode) => new THREE.MeshStandardMaterial({ map, emissiveMap: map, emissive: 0xffffff, emissiveIntensity: 0.32, metalness: 0.6, roughness: 0.36, side: sideMode, fog: false });
+  const glowOf = (r, g, b) => smooth(0.45, 0.7, b) * smooth(0.4, 0.65, g) * smooth(0.95, 0.6, r - b + 0.3);
+  const mr = cv((a, i, r, g, b) => {
+    const mx = Math.max(r, g, b);
+    const mn = Math.min(r, g, b);
+    const gold = smooth(0.35, 0.55, r) * smooth(0.22, 0.4, g) * smooth(0.3, 0.12, b) * smooth(0.45, 0.65, g / Math.max(r, 1e-3));
+    const silver = smooth(0.14, 0.06, mx - mn) * smooth(0.2, 0.45, mx);
+    const dark = smooth(0.12, 0.03, mx);
+    // The red is paint (a dielectric base under the clear coat); gold and silver trim is bare metal.
+    const metal = 0.22 + 0.78 * Math.max(gold, silver) - 0.15 * dark;
+    const rough = 0.38 - 0.16 * gold - 0.2 * silver + 0.4 * dark;
+    a[i] = 0;
+    a[i + 1] = clamp(rough, 0.05, 1) * 255;
+    a[i + 2] = clamp(metal, 0, 1) * 255;
+    a[i + 3] = 255;
+  });
+  const bump = cv((a, i, r, g, b) => {
+    const l = (0.3 * r + 0.59 * g + 0.11 * b) * 255;
+    a[i] = a[i + 1] = a[i + 2] = l;
+    a[i + 3] = 255;
+  });
+  const glow = cv((a, i, r, g, b) => {
+    const k = glowOf(r, g, b);
+    a[i] = r * k * 255;
+    a[i + 1] = g * k * 255;
+    a[i + 2] = b * k * 255;
+    a[i + 3] = 255;
+  });
+  glow.colorSpace = THREE.SRGBColorSpace;
+  return { mr, bump, glow };
+}
+
+/** A small space environment for the suit to reflect: dark, with cool and warm nebula light and stars. */
+function spaceEnvironment(renderer) {
+  const env = new THREE.Scene();
+  env.background = new THREE.Color(0x04050a);
+  const panel = (color, intensity, pos, size) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), side: THREE.DoubleSide }));
+    m.position.set(...pos);
+    m.lookAt(0, 0, 0);
+    env.add(m);
+  };
+  panel(0x7d9bff, 2.2, [0, 9, 2], 9); // a cool sky above
+  panel(0xffb46a, 1.6, [-8, -3, 4], 7); // a warm cluster low on one side
+  panel(0xff4f9a, 1.1, [8, 1, -5], 6); // magenta on the other
+  panel(0x9fe8ff, 3.0, [3, 4, 9], 2.2); // a hard key reflection
+  const sg = new THREE.SphereGeometry(0.06, 6, 4);
+  let s = 7;
+  const rnd = () => (s = (s * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 160; i++) {
+    const m = new THREE.Mesh(sg, new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 1, 1).multiplyScalar(1 + 4 * rnd()) }));
+    const u = rnd() * 2 - 1;
+    const th = rnd() * Math.PI * 2;
+    const r = Math.sqrt(1 - u * u);
+    m.position.set(r * Math.cos(th) * 12, u * 12, r * Math.sin(th) * 12);
+    env.add(m);
+  }
+  const pm = new THREE.PMREMGenerator(renderer);
+  const tex = pm.fromScene(env, 0.02).texture;
+  pm.dispose();
+  return tex;
+}
+
+/** Soft round sprites (flares and sparks): additive, sized in world units, with faint cross rays. */
+function spriteMaterial(rays) {
+  return new THREE.ShaderMaterial({
+    uniforms: { uHalfH: { value: 450 }, uRays: { value: rays } },
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    vertexShader: /* glsl */ `
+      attribute vec3 color;
+      attribute float size;
+      uniform float uHalfH;
+      varying vec3 vColor;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        gl_PointSize = clamp(size * projectionMatrix[1][1] * uHalfH / max(1.0, -mv.z), 0.0, 220.0);
+        gl_Position = projectionMatrix * mv;
+        vColor = color;
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform float uRays;
+      varying vec3 vColor;
+      void main() {
+        vec2 d = gl_PointCoord * 2.0 - 1.0;
+        float r2 = dot(d, d);
+        if (r2 > 1.0) discard;
+        float a = exp(-r2 * 7.0) + 0.25 * exp(-r2 * 2.2);
+        float rays = exp(-abs(d.x) * 22.0) * exp(-abs(d.y) * 2.4) + exp(-abs(d.y) * 22.0) * exp(-abs(d.x) * 2.4);
+        gl_FragColor = vec4(vColor * (a + uRays * rays * (1.0 - r2)), 1.0);
+      }`,
+  });
+}
+
+/** The repulsor ray: a camera-facing ribbon, white-hot core in a cyan sheath, pulsing and flickering. */
+function beamMaterial() {
+  return new THREE.ShaderMaterial({
+    uniforms: { uTime: { value: 0 } },
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.DoubleSide,
+    vertexShader: /* glsl */ `
+      attribute vec2 aUv;
+      attribute vec3 aInfo; // length, seed, power
+      varying vec2 vUv;
+      varying vec3 vInfo;
+      void main() {
+        vUv = aUv;
+        vInfo = aInfo;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }`,
+    fragmentShader: /* glsl */ `
+      uniform float uTime;
+      varying vec2 vUv;
+      varying vec3 vInfo;
+      void main() {
+        float L = vInfo.x;
+        float x = vUv.x * L;
+        float v = vUv.y;
+        float seed = vInfo.y;
+        float power = vInfo.z;
+        // Energy packets racing out from the palm, and a fast shimmer along the beam.
+        float pulse = pow(0.5 + 0.5 * sin(x * 0.32 - uTime * 42.0 + seed * 6.3), 8.0);
+        float shimmer = 0.82 + 0.18 * sin(x * 1.9 + uTime * 71.0 + seed * 13.0) * sin(x * 0.47 - uTime * 29.0);
+        // The core trembles very slightly across the beam.
+        float wob = 0.012 * sin(x * 0.11 - uTime * 37.0 + seed * 3.0);
+        float vv = v - wob;
+        float core = exp(-vv * vv / 0.01);
+        float sheath = exp(-vv * vv / 0.12);
+        float halo = exp(-abs(vv) * 2.6) * 0.22;
+        // A gentle flare where it leaves the palm, fading to full strength a little way out.
+        float mouth = 1.0 + 1.6 * exp(-x * 0.45);
+        vec3 c = vec3(1.0, 1.0, 1.0) * core * (1.3 + 1.1 * pulse) + vec3(0.32, 0.72, 1.0) * (sheath * (0.75 + 0.7 * pulse) + halo);
+        c *= shimmer * mouth * power;
+        float fade = smoothstep(1.0, 0.86, abs(v));
+        gl_FragColor = vec4(c * fade, 1.0);
+      }`,
+  });
+}
+
+/**
+ * @param {THREE.WebGLRenderer} renderer for the suit's reflections
+ * @returns {{group: THREE.Group, fx: THREE.Group, update: Function, chest: Function, up: Function}}
+ */
+export function createIronMan(renderer) {
+  const group = new THREE.Group(); // at his pelvis
+  const body = new THREE.Group(); // oriented: +y his head, +z his chest
+  group.add(body);
+  const fx = new THREE.Group(); // world-space effects: rays, flares, sparks
+
+  const envMap = renderer ? spaceEnvironment(renderer) : null;
+  const loadTex = (url, onImage) => {
+    const t = new THREE.TextureLoader().load(url, (tt) => onImage && onImage(tt.image));
+    t.colorSpace = THREE.SRGBColorSpace;
+    t.anisotropy = 8;
+    return t;
+  };
+  // Clear-coated metal (the red is a metallic paint); its maps follow once the texture has loaded.
+  const suit = (url, sideMode) => {
+    const m = new THREE.MeshPhysicalMaterial({ metalness: 0.4, roughness: 0.35, clearcoat: 0.8, clearcoatRoughness: 0.12, envMap, envMapIntensity: 1.7, emissive: 0xffffff, emissiveIntensity: 0, side: sideMode, fog: false });
+    m.map = loadTex(url, (img) => {
+      const d = deriveMaps(img);
+      Object.assign(m, { metalnessMap: d.mr, roughnessMap: d.mr, metalness: 1, roughness: 1, bumpMap: d.bump, bumpScale: 1.6, emissiveMap: d.glow, emissiveIntensity: 2.6 });
+      m.needsUpdate = true;
+    });
+    return m;
+  };
 
   const parts = {};
   new OBJLoader().parse(OBJ).traverse((o) => {
@@ -165,7 +389,7 @@ export function createIronMan() {
   });
   const sk = buildSkeleton();
   skin(parts.body, sk.segs);
-  const mesh = new THREE.SkinnedMesh(parts.body, suit(tex(TEX_BODY), THREE.FrontSide));
+  const mesh = new THREE.SkinnedMesh(parts.body, suit(TEX_BODY, THREE.FrontSide));
   mesh.add(sk.root);
   mesh.updateMatrixWorld(true);
   mesh.bind(new THREE.Skeleton(sk.bones));
@@ -178,260 +402,515 @@ export function createIronMan() {
   // The nanotech back thrusters (from the game's flight effect): formed out of the suit for flight.
   const packGeo = parts.wp4.clone();
   packGeo.translate(-J.chest[0], -J.chest[1], -J.chest[2]);
-  const pack = new THREE.Mesh(packGeo, suit(tex(TEX_PACK), THREE.DoubleSide));
+  const pack = new THREE.Mesh(packGeo, suit(TEX_PACK, THREE.DoubleSide));
   pack.scale.setScalar(1e-3);
   sk.chest.add(pack);
-  const rest = {
-    pelvisY: sk.root.position.y,
-    arm: Object.fromEntries(['L', 'R'].map((n) => [n, new THREE.Vector3().subVectors(new THREE.Vector3(...side(J.wrist, sk.limbs[n].s)), new THREE.Vector3(...side(J.shoulder, sk.limbs[n].s))).normalize()])),
-  };
+  const pelvisY0 = sk.root.position.y;
 
   // Lights for the suit: a soft sky fill, a warm key from over the camera's shoulder, a cool rim.
-  const hemi = new THREE.HemisphereLight(0xc8d8ff, 0x1a1020, 1.4);
-  const key = new THREE.DirectionalLight(0xfff1e0, 2.8);
-  const rim = new THREE.DirectionalLight(0x7fb0ff, 2.2);
+  const hemi = new THREE.HemisphereLight(0xc8d8ff, 0x1a1020, 1.7);
+  const key = new THREE.DirectionalLight(0xfff1e0, 4.2);
+  const rim = new THREE.DirectionalLight(0x7fb0ff, 3.2);
+  const repulsorLight = new THREE.PointLight(0x9fdcff, 0, 60 * K / 22, 2); // the repulsors light up his own armour
   key.target = body;
   rim.target = body;
-  group.add(hemi, key, rim);
+  group.add(hemi, key, rim, repulsorLight);
 
-  // Thrusters: a bright core at each boot and palm, and a stream of fine sparks.
-  const glowPos = new Float32Array(4 * 3);
-  const glowGeo = new THREE.BufferGeometry();
-  glowGeo.setAttribute('position', new THREE.BufferAttribute(glowPos, 3));
-  const glow = new THREE.Points(glowGeo, new THREE.PointsMaterial({ color: 0xdff4ff, size: 2.4, sizeAttenuation: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }));
-  glow.frustumCulled = false;
-  const exPos = new Float32Array(EXHAUST * 3);
-  const exCol = new Float32Array(EXHAUST * 3);
-  const exVel = new Float32Array(EXHAUST * 3);
-  const exAge = new Float32Array(EXHAUST).fill(9);
-  const exLife = new Float32Array(EXHAUST).fill(1);
-  const exGeo = new THREE.BufferGeometry();
-  exGeo.setAttribute('position', new THREE.BufferAttribute(exPos, 3));
-  exGeo.setAttribute('color', new THREE.BufferAttribute(exCol, 3));
-  const exhaust = new THREE.Points(exGeo, new THREE.PointsMaterial({ size: 1.1, sizeAttenuation: true, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, fog: false }));
-  exhaust.frustumCulled = false;
-  group.add(glow, exhaust);
+  // Effects: rays, flares (palms, boots, impacts) and sparks (exhaust, impacts).
+  const beamGeo = new THREE.BufferGeometry();
+  const bPos = new Float32Array(MAX_BEAMS * 4 * 3);
+  const bUv = new Float32Array(MAX_BEAMS * 4 * 2);
+  const bInfo = new Float32Array(MAX_BEAMS * 4 * 3);
+  const bIdx = new Uint16Array(MAX_BEAMS * 6);
+  for (let i = 0; i < MAX_BEAMS; i++) bIdx.set([i * 4, i * 4 + 1, i * 4 + 2, i * 4 + 2, i * 4 + 1, i * 4 + 3], i * 6);
+  beamGeo.setAttribute('position', new THREE.BufferAttribute(bPos, 3).setUsage(THREE.DynamicDrawUsage));
+  beamGeo.setAttribute('aUv', new THREE.BufferAttribute(bUv, 2).setUsage(THREE.DynamicDrawUsage));
+  beamGeo.setAttribute('aInfo', new THREE.BufferAttribute(bInfo, 3).setUsage(THREE.DynamicDrawUsage));
+  beamGeo.setIndex(new THREE.BufferAttribute(bIdx, 1));
+  const beams = new THREE.Mesh(beamGeo, beamMaterial());
+  beams.frustumCulled = false;
+  beams.renderOrder = 16;
+  const pointsOf = (n, mat) => {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('color', new THREE.BufferAttribute(new Float32Array(n * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute('size', new THREE.BufferAttribute(new Float32Array(n), 1).setUsage(THREE.DynamicDrawUsage));
+    const p = new THREE.Points(g, mat);
+    p.frustumCulled = false;
+    p.renderOrder = 17;
+    return p;
+  };
+  const flares = pointsOf(FLARES, spriteMaterial(1));
+  const sparks = pointsOf(SPARKS, spriteMaterial(0));
+  fx.add(beams, flares, sparks);
+  const sp = { vel: new Float32Array(SPARKS * 3), age: new Float32Array(SPARKS).fill(9), life: new Float32Array(SPARKS).fill(1), tint: new Float32Array(SPARKS * 3), size: new Float32Array(SPARKS), next: 0, acc: 0 };
 
-  // Eased state.
-  const st = { walk: 0, fly: 0, air: 0, crouch: 0, phase: 0, yaw: null, turn: 0, aim: { L: 0, R: 0 }, pack: 0, hipsY: null };
+  // State.
+  const st = { phase: 0, feet: null, lastFoot: 'R', landAt: -9, grounded: true, seen: new Map(), time: 0 };
+  const ez = {
+    walk: spring(7), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), pack: spring(7, 0.6), scale: spring(6),
+    pelvisY: spring(16, 0.85), sway: spring(10), yawP: spring(12), roll: spring(12),
+    twist: spring(9, 0.9), lookY: spring(10, 0.9), lookP: spring(10, 0.9),
+    arm: { L: spring(9, 0.55), R: spring(9, 0.55) }, aim: { L: spring(11, 0.85), R: spring(11, 0.85) },
+    recoil: { L: spring(26, 0.45), R: spring(26, 0.45) }, charge: { L: spring(14), R: spring(14) },
+  };
+  ez.scale.x = 1;
   const aimAt = { L: new THREE.Vector3(), R: new THREE.Vector3() };
+  const heading = new THREE.Vector3(0, 0, 1);
+  const leftV = new THREE.Vector3(1, 0, 0);
   const head = new THREE.Vector3(0, 1, 0);
   const chestDir = new THREE.Vector3(0, 0, 1);
-  const heading = new THREE.Vector3(0, 0, 1);
   const H = new THREE.Vector3();
   const C = new THREE.Vector3();
   const X = new THREE.Vector3();
   const v = new THREE.Vector3();
-  const tmp = new THREE.Vector3();
-  const tmp2 = new THREE.Vector3();
+  const a3 = new THREE.Vector3();
+  const b3 = new THREE.Vector3();
+  const c3 = new THREE.Vector3();
   const q = new THREE.Quaternion();
+  const q2 = new THREE.Quaternion();
+  const qInv = new THREE.Quaternion();
   const basis = new THREE.Matrix4();
   const inv = new THREE.Matrix4();
-  let emitAcc = 0;
-  let next = 0;
+  const flightQ = new THREE.Quaternion();
+  const euler = new THREE.Euler();
 
   const perp = (a, n, fallback) => {
     a.addScaledVector(n, -a.dot(n));
     if (a.lengthSq() < 1e-6) a.copy(fallback).addScaledVector(n, -fallback.dot(n));
     return a.normalize();
   };
-  const ease = (key, to, rate, dt) => (st[key] += (to - st[key]) * (1 - Math.exp(-rate * dt)));
 
-  /** Pose every bone for this frame. */
-  function pose(dt, time, targets) {
-    const w = st.walk;
-    const f = st.fly;
-    const c = st.crouch;
-    const ph = st.phase;
-    const L = sk.limbs;
-    // Legs: hip swing, knee lift in the swing, foot kept near level; crouch and flight blend in.
-    for (const n of ['L', 'R']) {
-      const g = L[n];
-      const psi = ph + (n === 'L' ? 0 : Math.PI);
-      let hip = -0.42 * w * Math.sin(psi);
-      let knee = w * (0.1 + 0.85 * Math.max(0, Math.cos(psi)) ** 2);
-      hip = hip * (1 - c) - 0.75 * c;
-      knee = knee * (1 - c) + 1.35 * c;
-      hip = hip * (1 - f) + 0.12 * f;
-      knee = knee * (1 - f) + 0.18 * f;
-      g.hip.rotation.set(hip, 0, -g.s * 0.03 * f);
-      g.knee.rotation.set(knee, 0, 0);
-      g.ankle.rotation.set(-(hip + knee) * 0.7 * (1 - f) + 0.5 * f, 0, 0);
+  /** Emit a spark. */
+  function spark(p, vx, vy, vz, life, r, g, b, size) {
+    const i = sp.next;
+    sp.next = (sp.next + 1) % SPARKS;
+    const pa = sparks.geometry.attributes.position.array;
+    pa[i * 3] = p.x;
+    pa[i * 3 + 1] = p.y;
+    pa[i * 3 + 2] = p.z;
+    sp.vel[i * 3] = vx;
+    sp.vel[i * 3 + 1] = vy;
+    sp.vel[i * 3 + 2] = vz;
+    sp.age[i] = 0;
+    sp.life[i] = life;
+    sp.tint[i * 3] = r;
+    sp.tint[i * 3 + 1] = g;
+    sp.tint[i * 3 + 2] = b;
+    sp.size[i] = size;
+  }
+
+  /* ---------------- feet: planner and IK ---------------- */
+
+  /** Where a foot would like to stand now (sole, world), given the body's place, heading and speed. */
+  function footHome(n, out, pelvis, ground, lead) {
+    const s = n === 'L' ? 1 : -1;
+    out.copy(pelvis).addScaledVector(leftV, s * (HIP_W + 0.02) * K).addScaledVector(v, lead);
+    out.y = ground;
+    return out;
+  }
+
+  function stepFeet(dt, pelvis, ground, speed, yaw) {
+    const stepDur = clamp(0.42 - speed * 0.0045, 0.26, 0.42);
+    const lead = stepDur * 0.85;
+    const feet = st.feet;
+    let swinging = null;
+    for (const n of ['L', 'R']) if (feet[n].swing) swinging = n;
+    if (!swinging && st.time - st.landAt > 0.04) {
+      // The foot furthest from where it should be steps next (alternating while walking).
+      let pick = null;
+      let worst = 0;
+      for (const n of ['L', 'R']) {
+        const f = feet[n];
+        footHome(n, a3, pelvis, ground, lead);
+        const err = Math.hypot(f.pos.x - a3.x, f.pos.z - a3.z) + Math.abs(wrapA(f.yaw - yaw)) * 0.25 * K + Math.abs(f.pos.y - ground) * 0.5;
+        const bias = n === st.lastFoot ? 0.6 : 1;
+        if (err * bias > worst) {
+          worst = err * bias;
+          pick = n;
+        }
+      }
+      const need = speed > 4 ? 0.16 * K : 0.07 * K;
+      if (pick && worst > need) {
+        const f = feet[pick];
+        f.swing = { u: 0, dur: speed > 4 ? stepDur : 0.34, from: f.pos.clone(), fromYaw: f.yaw, lift: (0.07 + 0.06 * Math.min(1, speed / 26)) * K, target: new THREE.Vector3() };
+        st.lastFoot = pick;
+      }
     }
-    // Pelvis and torso: bob, twist and counter-twist; lean into the walk, hunch in the crouch.
-    sk.root.position.y = rest.pelvisY - (0.025 * w * Math.cos(2 * ph) + 0.26 * c) * (1 - f);
-    sk.root.rotation.set(0, 0.08 * w * Math.sin(ph) * (1 - f), 0);
-    sk.spine.rotation.set(0.06 * w + 0.35 * c + 0.012 * Math.sin(time * 1.6), 0, 0);
-    sk.chest.rotation.set(0.1 * c + 0.015 * Math.sin(time * 1.6 + 0.4), -0.12 * w * Math.sin(ph) * (1 - f), 0);
-    // Head: steady on the walk; tilted back to look ahead when flying head-first.
-    sk.neck.rotation.set(-0.06 * c - 0.75 * f, 0.1 * w * Math.sin(ph), 0);
-    // Arms: down from the A-pose, swinging against the legs; drawn back in the crouch;
-    // along his sides, palms back, in flight; or raised to fire.
     for (const n of ['L', 'R']) {
-      const g = L[n];
-      const other = ph + (n === 'L' ? Math.PI : 0);
-      const swing = -0.35 * w * Math.sin(other) * (1 - c);
-      const adduct = -g.s * (0.42 * (1 - f) + 0.6 * f);
-      g.sh.rotation.set(swing * (1 - f) + 0.45 * c * (1 - f) + 0.3 * f, 0, adduct);
-      g.el.rotation.set(-(0.3 + 0.25 * w * Math.max(0, Math.sin(other))) * (1 - f), 0, 0);
-      g.wr.rotation.set(0.9 * f, 0, 0);
-      const a = st.aim[n];
-      if (a > 1e-3) {
-        // Aim: the arm swung from its rest direction onto the target (in the chest's frame), straight, palm out.
-        sk.root.updateMatrixWorld(true); // this frame's torso, so the aim is taken from where the shoulder is now
-        inv.copy(sk.chest.matrixWorld).invert();
-        tmp.copy(targets[n]).applyMatrix4(inv); // target in the chest's frame (mesh units)
-        tmp2.set(...side(J.shoulder, g.s)).sub(new THREE.Vector3(...J.chest));
-        tmp.sub(tmp2).normalize();
-        q.setFromUnitVectors(rest.arm[n], tmp);
-        g.sh.quaternion.slerp(q, a);
-        g.el.rotation.x *= 1 - a;
-        g.wr.rotation.set(0, 0, g.s * 1.0 * a);
+      const f = feet[n];
+      const sw = f.swing;
+      if (!sw) {
+        // Planted: the heel peels up as the body passes well ahead of it (pushing off the toe).
+        b3.copy(f.pos).sub(pelvis);
+        const behind = -(b3.x * heading.x + b3.z * heading.z);
+        f.roll = 0.55 * smooth(0.12 * K, 0.38 * K, behind);
+        continue;
+      }
+      sw.u = Math.min(1, sw.u + dt / sw.dur);
+      if (sw.u < 0.75) footHome(n, sw.target, pelvis, ground, lead);
+      const u = sw.u;
+      const e = u * u * (3 - 2 * u);
+      f.pos.lerpVectors(sw.from, sw.target, e);
+      f.pos.y = sw.from.y + (sw.target.y - sw.from.y) * e + sw.lift * Math.sin(Math.PI * u) ** 1.2;
+      f.yaw = sw.fromYaw + wrapA(yaw - sw.fromYaw) * e;
+      // Toe-off at the start, toes up for the heel strike, flat at contact.
+      f.roll = 0.55 * (1 - smooth(0, 0.35, u)) - 0.32 * smooth(0.5, 0.85, u) * (1 - smooth(0.9, 1, u));
+      if (u >= 1) {
+        f.swing = null;
+        f.roll = 0;
+        st.landAt = st.time;
       }
     }
   }
 
+  /** Two-bone IK for one leg, the knee toward his front; the foot laid at its yaw and roll. */
+  function solveLeg(g, f, rootQ) {
+    // Ankle target: above the sole, raised further by the heel peeling up.
+    a3.copy(f.pos).addScaledVector(UP, ANKLE_H * K + Math.max(0, f.roll) * 0.16 * K);
+    a3.applyMatrix4(inv); // into the pelvis bone's frame (mesh units)
+    const t = a3.sub(g.hip.position);
+    const reach = L1 + L2;
+    const d = clamp(t.length(), 0.35 * reach, 0.995 * reach);
+    const u = t.normalize();
+    const pole = b3.set(0, 0, 1).addScaledVector(u, -u.z).normalize();
+    const cosA = clamp((L1 * L1 + d * d - L2 * L2) / (2 * L1 * d), -1, 1);
+    const sinA = Math.sqrt(1 - cosA * cosA);
+    const d1 = c3.copy(u).multiplyScalar(cosA).addScaledVector(pole, sinA);
+    q.setFromUnitVectors(g.restThigh, d1);
+    g.hip.quaternion.copy(q);
+    // Shin: from the knee to the ankle target, in the thigh's frame.
+    const knee = d1.multiplyScalar(L1);
+    const d2 = u.multiplyScalar(d).sub(knee).normalize().applyQuaternion(qInv.copy(q).invert());
+    q2.setFromUnitVectors(g.restShin, d2);
+    g.knee.quaternion.copy(q2);
+    // Foot: pointing along its yaw, pitched by its roll, in the shin's frame.
+    const pitch = Math.asin(-g.restFoot.y) + f.roll;
+    a3.set(Math.sin(f.yaw) * Math.cos(pitch), -Math.sin(pitch), Math.cos(f.yaw) * Math.cos(pitch));
+    a3.applyQuaternion(qInv.copy(rootQ).invert()).applyQuaternion(qInv.copy(q).multiply(q2).invert());
+    g.ankle.quaternion.setFromUnitVectors(g.restFoot, a3.normalize());
+  }
+
+  /* ---------------- per frame ---------------- */
+
   /**
-   * Place, pose and light him for this frame.
+   * Place, pose and light him for this frame, and draw his rays.
    * @param {object} spider the spider as drawn (p, b, F, v, taut, air, crouch, jolt, time, legs)
-   * @param {number} dt real seconds since the last frame
+   * @param {number} frameDt real seconds since the last frame
    * @param {THREE.Camera} camera
-   * @param {number[][]} beams world points his palms are firing at
+   * @param {{at:number[], id:number, p:number}[]} targets words his palms are firing at, and how far each ray has reached
+   * @param {number} halfH half the drawing buffer's height (px), for sprite sizes
    */
-  function update(spider, dt, camera, beams = []) {
-    dt = Math.min(dt, 0.1);
+  function update(spider, frameDt, camera, targets = [], halfH = 450) {
+    // A jump in time (a seek) lands every spring and replants the feet; otherwise steps are capped.
+    const jumped = frameDt > 0.3;
+    if (jumped) st.feet = null;
+    let dt = clamp(frameDt, 0, 0.1);
+    const sdt = jumped ? frameDt : dt;
+    st.time += dt;
+    flares.material.uniforms.uHalfH.value = halfH;
+    sparks.material.uniforms.uHalfH.value = halfH;
+    beams.material.uniforms.uTime.value = spider.time;
     v.set(spider.v[0], spider.v[1], spider.v[2]);
     const speed = v.length();
-    tmp.set(spider.F[0], 0, spider.F[2]);
-    if (tmp.lengthSq() > 1e-6) heading.copy(tmp.normalize());
+    a3.set(spider.F[0], 0, spider.F[2]);
+    if (a3.lengthSq() > 1e-6) heading.copy(a3.normalize());
+    leftV.set(heading.z, 0, -heading.x); // his left
     const yaw = Math.atan2(heading.x, heading.z);
-    let yawRate = 0;
-    if (st.yaw !== null && dt > 0) yawRate = Math.atan2(Math.sin(yaw - st.yaw), Math.cos(yaw - st.yaw)) / dt;
-    st.yaw = yaw;
-    ease('fly', spider.taut || 0, 6, dt);
-    ease('air', spider.air || 0, 5, dt);
-    ease('crouch', spider.crouch && !spider.air ? 1 : 0, 6, dt);
-    const ground = spider.air ? 0 : 1;
-    // Walking (or stepping round on the spot while turning), its cycle locked to the distance covered.
-    const across = Math.hypot(v.x, v.z);
-    ease('walk', ground * Math.min(1, Math.max(across / 26, Math.abs(yawRate) * 0.35)), 5, dt);
-    st.phase += (dt * Math.max(across, Math.abs(yawRate) * 9) * Math.PI * 2) / STRIDE;
-    // Hands up to fire: the beam targets on each side of him, the nearest one.
-    tmp2.set(-heading.z, 0, heading.x); // his right, world
-    const tgt = { L: null, R: null };
-    for (const b of beams) {
-      tmp.set(b[0] - group.position.x, b[1] - group.position.y, b[2] - group.position.z);
-      const n = tmp.dot(tmp2) > 0 ? 'R' : 'L';
-      if (!tgt[n] || tmp.lengthSq() < tgt[n].lengthSq()) tgt[n] = tmp.clone();
-    }
-    for (const n of ['L', 'R']) {
-      st.aim[n] += ((tgt[n] ? 1 : 0) * (1 - st.fly) - st.aim[n]) * (1 - Math.exp(-7 * dt));
-      if (tgt[n]) aimAt[n].copy(tgt[n]).add(group.position);
-    }
+    const fly = ez.fly.to(spider.taut || 0, sdt);
+    const air = ez.air.to(spider.air || 0, sdt);
+    const crouch = clamp(ez.crouch.to(spider.crouch && !spider.air ? 1 : 0, sdt), 0, 1.1);
+    const g = clamp(Math.max(air, fly), 0, 1); // off the ground
+    const scale = ez.scale.to(1 + (FLY_SCALE - 1) * (spider.taut || 0), sdt);
+    group.scale.setScalar(scale);
 
-    // Orientation: upright, leaning into the walk; head-first and chest down in flight.
-    const lean = 0.12 * st.walk;
-    const f = st.fly;
-    H.copy(UP).addScaledVector(heading, lean).normalize();
-    C.copy(heading).addScaledVector(UP, -lean);
-    if (f > 0.01 && speed > 5) {
-      tmp.copy(v).divideScalar(speed);
-      H.lerp(tmp, f).normalize();
-      C.lerp(UP, -f);
+    // Ground: where the spider's feet are.
+    let gy = 0;
+    for (const l of spider.legs) gy += l.tip[1];
+    gy /= spider.legs.length;
+    const across = Math.hypot(v.x, v.z);
+    const walk = ez.walk.to((1 - g) * Math.min(1, across / 26), sdt);
+
+    // Feet: (re)planted where they stand when he comes down, or on a jump in time.
+    if (!st.feet || Math.hypot(st.feet.L.pos.x - spider.p[0], st.feet.L.pos.z - spider.p[2]) > 3 * K) {
+      st.feet = {};
+      for (const n of ['L', 'R']) st.feet[n] = { pos: footHome(n, new THREE.Vector3(), a3.set(spider.p[0], gy, spider.p[2]), gy, 0), yaw, roll: 0, swing: null };
+    }
+    if (st.grounded && g > 0.6) st.grounded = false;
+    if (!st.grounded && g < 0.35) {
+      st.grounded = true;
+      for (const n of ['L', 'R']) {
+        sk.limbs[n].sole.getWorldPosition(b3);
+        Object.assign(st.feet[n], { pos: b3.clone().setY(gy), yaw, roll: 0, swing: null });
+      }
+    }
+    const pelvisXZ = new THREE.Vector3(spider.p[0], gy, spider.p[2]);
+    if (st.grounded) stepFeet(dt, pelvisXZ, gy, across, yaw);
+
+    // Pelvis: as high as the planted legs allow (so it rides up over the stance foot and dips
+    // between steps), lowered in the crouch, swaying over the stance foot, the swing hip dropping.
+    let top = (HIP_DROP + 0.97 * (L1 + L2) + ANKLE_H) * K;
+    let swingSide = 0;
+    for (const n of ['L', 'R']) {
+      const f = st.feet[n];
+      if (f.swing) {
+        swingSide = n === 'L' ? 1 : -1;
+        continue;
+      }
+      const s = n === 'L' ? 1 : -1;
+      const hx = pelvisXZ.x + leftV.x * s * HIP_W * K - f.pos.x;
+      const hz = pelvisXZ.z + leftV.z * s * HIP_W * K - f.pos.z;
+      const legL = 0.985 * (L1 + L2) * K;
+      const reachY = Math.sqrt(Math.max(0, legL * legL - hx * hx - hz * hz));
+      top = Math.min(top, f.pos.y - gy + ANKLE_H * K + reachY + HIP_DROP * K);
+    }
+    const stand = (J.pelvis[1] - 0.035) * K;
+    if (ez.pelvisY.x === 0) ez.pelvisY.x = stand;
+    const pelvisH = ez.pelvisY.to(Math.min(stand, top) - 0.3 * K * clamp(crouch, 0, 1), sdt);
+    const sway = ez.sway.to(-swingSide * 0.022 * K * walk, sdt);
+    const onGround = b3.set(spider.p[0], gy + pelvisH + Math.min(0, spider.jolt || 0) * 3, spider.p[2]).addScaledVector(leftV, sway);
+    group.position.set(onGround.x + (spider.b[0] - onGround.x) * g, onGround.y + (spider.b[1] - onGround.y) * g, onGround.z + (spider.b[2] - onGround.z) * g);
+
+    // Orientation: upright on the ground (a slight lean into the walk); head-first, chest down, in flight.
+    H.copy(UP).addScaledVector(heading, 0.06 * walk + 0.12 * crouch).normalize();
+    C.copy(heading);
+    if (fly > 0.01 && speed > 5) {
+      a3.copy(v).divideScalar(speed);
+      H.lerp(a3, clamp(fly, 0, 1)).normalize();
+      C.lerp(UP, -clamp(fly, 0, 1));
     }
     perp(C, H, heading);
-    const k = 1 - Math.exp(-7 * dt);
+    const k = 1 - Math.exp(-8 * dt);
     head.lerp(H, k).normalize();
     chestDir.lerp(C, k);
     perp(chestDir, head, heading);
     X.crossVectors(head, chestDir);
     basis.makeBasis(X, head, chestDir);
     body.quaternion.setFromRotationMatrix(basis);
-    // Feet on the stars the spider stands on; in the air, where its body flies.
-    let gy = 0;
-    for (const l of spider.legs) gy += l.tip[1];
-    gy /= spider.legs.length;
-    const hipsY = gy + J.pelvis[1] * K;
-    if (st.hipsY === null) st.hipsY = hipsY;
-    st.hipsY += (hipsY - st.hipsY) * (1 - Math.exp(-10 * dt));
-    const onGround = [spider.p[0], st.hipsY + Math.min(0, spider.jolt || 0) * 3, spider.p[2]]; // a landing sinks him onto bent knees
-    const g = Math.max(st.air, st.fly);
-    group.position.set(onGround[0] + (spider.b[0] - onGround[0]) * g, onGround[1] + (spider.b[1] - onGround[1]) * g, onGround[2] + (spider.b[2] - onGround[2]) * g);
+
+    // Pelvis bone: twist toward the leading leg, the swing hip dropping; the chest counters.
+    a3.copy(st.feet.L.pos).sub(st.feet.R.pos);
+    const lead = clamp((a3.x * heading.x + a3.z * heading.z) / (0.35 * K), -1, 1); // + when the left foot is ahead
+    const pelvisYaw = ez.yawP.to(-0.13 * lead * walk * (1 - g), sdt);
+    const pelvisRoll = ez.roll.to(swingSide * 0.06 * walk * (1 - g), sdt);
+    sk.root.position.y = pelvisY0;
+    sk.root.rotation.set(0, pelvisYaw, pelvisRoll);
     group.updateMatrixWorld(true);
-    // Targets into the body's frame for the aim (the chest bone's frame is found in pose()).
-    pose(dt, spider.time, aimAt);
+
+    // Targets: each side's nearest word; a new ray kicks that arm back and charges the palm.
+    const tgt = { L: null, R: null };
+    const ids = new Set();
+    for (const t of targets) {
+      a3.set(t.at[0] - group.position.x, t.at[1] - group.position.y, t.at[2] - group.position.z);
+      const n = a3.dot(leftV) > 0 ? 'L' : 'R';
+      t.side = n;
+      ids.add(t.id);
+      if (!st.seen.has(t.id)) {
+        st.seen.set(t.id, n);
+        ez.recoil[n].v += 9;
+        ez.charge[n].v += 30;
+      }
+      if (!tgt[n] || a3.lengthSq() < tgt[n].lengthSq()) tgt[n] = a3.clone();
+    }
+    for (const id of [...st.seen.keys()]) if (!ids.has(id)) st.seen.delete(id);
+    let twistTo = 0;
+    let lookY = 0;
+    let lookP = 0;
+    let nT = 0;
+    for (const n of ['L', 'R']) {
+      ez.aim[n].to((tgt[n] ? 1 : 0) * (1 - g), sdt);
+      ez.recoil[n].to(0, sdt);
+      ez.charge[n].to(0, sdt);
+      if (tgt[n]) {
+        aimAt[n].copy(tgt[n]).add(group.position);
+        // Torso and head turn toward the target (the head further).
+        const ang = Math.atan2(tgt[n].dot(leftV), tgt[n].x * heading.x + tgt[n].z * heading.z);
+        twistTo += ang;
+        lookY += ang;
+        lookP += Math.atan2(tgt[n].y, Math.hypot(tgt[n].x, tgt[n].z));
+        nT++;
+      }
+    }
+    if (nT) {
+      twistTo /= nT;
+      lookY /= nT;
+      lookP /= nT;
+    }
+    const twist = ez.twist.to(clamp(twistTo * 0.35, -0.45, 0.45) * (1 - g), sdt);
+    const neckY = ez.lookY.to(clamp(lookY * 0.55, -0.7, 0.7) * (1 - g), sdt);
+    const neckP = ez.lookP.to(clamp(-lookP * 0.5, -0.45, 0.35) * (1 - g), sdt);
+
+    // Torso.
+    const breath = Math.sin(spider.time * 1.6);
+    const cr = clamp(crouch, 0, 1);
+    sk.spine.rotation.set(0.05 * walk + 0.32 * cr + 0.012 * breath, -pelvisYaw * 0.5 + twist * 0.4, -pelvisRoll * 0.6);
+    sk.chest.rotation.set(0.1 * cr + 0.015 * breath, -pelvisYaw * 0.45 + twist * 0.6, -pelvisRoll * 0.3);
+    sk.neck.rotation.set(-0.06 * cr - 0.75 * fly + neckP, neckY - twist * 0.5, 0);
+
+    // Legs: IK on the planted and stepping feet, blended toward the flight pose off the ground.
+    group.updateMatrixWorld(true);
+    inv.copy(sk.root.matrixWorld).invert();
+    const rootQ = sk.root.getWorldQuaternion(new THREE.Quaternion());
+    for (const n of ['L', 'R']) {
+      const gL = sk.limbs[n];
+      if (g < 0.999) solveLeg(gL, st.feet[n], rootQ);
+      if (g > 0.001) {
+        const legs = [[gL.hip, 0.12 * fly - 0.15 * air * (1 - fly), 0, -gL.s * 0.03 * fly], [gL.knee, 0.18 * fly + 0.35 * air * (1 - fly), 0, 0], [gL.ankle, 0.5 * fly + 0.2 * air * (1 - fly), 0, 0]];
+        for (const [bone, x, y, z] of legs) {
+          if (g >= 0.999) bone.quaternion.setFromEuler(euler.set(x, y, z));
+          else bone.quaternion.slerp(flightQ.setFromEuler(euler.set(x, y, z)), g);
+        }
+      }
+    }
+
+    // Arms: swinging against the legs on springs (follow-through), or raised to fire.
+    for (const n of ['L', 'R']) {
+      const gA = sk.limbs[n];
+      const otherLead = n === 'L' ? -lead : lead; // the opposite foot leads this arm forward
+      const swing = ez.arm[n].to(-0.4 * otherLead * walk, sdt);
+      const adduct = -gA.s * (0.42 * (1 - fly) + 0.6 * fly);
+      gA.sh.rotation.set(swing * (1 - fly) + 0.45 * cr * (1 - fly) + 0.3 * fly, 0, adduct);
+      gA.el.rotation.set(-(0.28 + 0.3 * Math.max(0, -swing)) * (1 - fly), 0, 0);
+      gA.wr.rotation.set(0.9 * fly, 0, 0);
+      const a = clamp(ez.aim[n].x, 0, 1);
+      if (a > 1e-3) {
+        // Aim: the arm swung from rest onto the target in the chest's frame, elbow soft, palm out; recoil kicks it up.
+        sk.root.updateMatrixWorld(true);
+        inv.copy(sk.chest.matrixWorld).invert();
+        a3.copy(aimAt[n]).applyMatrix4(inv).sub(b3.set(...side(J.shoulder, gA.s)).sub(V(J.chest))).normalize();
+        q.setFromUnitVectors(gA.restArm, a3);
+        gA.sh.quaternion.slerp(q, a);
+        const rec = ez.recoil[n].x;
+        gA.sh.rotateX(-0.05 * rec * a);
+        gA.el.rotation.x = gA.el.rotation.x * (1 - a) - (0.08 + 0.22 * Math.max(0, rec)) * a;
+        gA.wr.rotation.set(-0.15 * a, 0, gA.s * 1.15 * a);
+      }
+    }
+
     // The back thrusters form out of the suit for flight and fold away on landing.
-    ease('pack', st.fly > 0.3 ? 1 : 0, 4, dt);
-    const ps = 0.6 * st.pack * (1 + 0.12 * Math.sin(Math.PI * st.pack)); // a sleek rig, not a second body
+    const ps = clamp(ez.pack.to(fly > 0.3 ? 1 : 0, sdt), 0, 1.2) * 0.6;
     pack.scale.setScalar(Math.max(1e-3, ps));
     pack.visible = ps > 0.01;
     group.updateMatrixWorld(true);
 
     // Key over the camera's shoulder, rim from behind him.
-    tmp.copy(camera.position).sub(group.position);
-    const d = tmp.length() || 1;
-    key.position.copy(tmp).addScaledVector(UP, d * 0.6).addScaledVector(X, -d * 0.3);
-    rim.position.copy(tmp).multiplyScalar(-1).addScaledVector(UP, d * 0.3);
+    a3.copy(camera.position).sub(group.position);
+    const dist = a3.length() || 1;
+    key.position.copy(a3).addScaledVector(UP, dist * 0.6).addScaledVector(X, -dist * 0.3);
+    rim.position.copy(a3).multiplyScalar(-1).addScaledVector(UP, dist * 0.3);
 
-    // Thrusters: boots and palms in the air, palms alone while firing.
+    /* ---- effects ---- */
     const L = sk.limbs;
-    const nozzle = [L.L.sole, L.R.sole, L.L.palm, L.R.palm];
-    nozzle.forEach((b, i) => {
-      b.getWorldPosition(tmp);
-      glowPos.set([tmp.x, tmp.y, tmp.z], i * 3);
-    });
-    const thrust = Math.max(st.air, st.fly);
-    const firing = st.aim.L > 0.3 || st.aim.R > 0.3;
-    if (thrust > 0.1) glowGeo.setDrawRange(0, 4);
-    else glowGeo.setDrawRange(2, firing ? 2 : 0);
-    glowGeo.attributes.position.needsUpdate = true;
-    glow.material.opacity = 0.75 + 0.25 * Math.sin(spider.time * 40);
-    emitAcc += dt * 420 * thrust;
-    while (emitAcc >= 1) {
-      emitAcc -= 1;
-      const n = Math.floor(Math.random() * (st.fly > 0.3 ? 4 : 2));
-      const i = next;
-      next = (next + 1) % EXHAUST;
-      exPos.set(glowPos.subarray(n * 3, n * 3 + 3), i * 3);
-      const s = 70 + 50 * st.fly;
-      exVel[i * 3] = -head.x * s + (Math.random() - 0.5) * 14 + v.x * 0.6;
-      exVel[i * 3 + 1] = -head.y * s + (Math.random() - 0.5) * 14 + v.y * 0.6;
-      exVel[i * 3 + 2] = -head.z * s + (Math.random() - 0.5) * 14 + v.z * 0.6;
-      exAge[i] = 0;
-      exLife[i] = 0.18 + Math.random() * 0.22;
+    const palmW = { L: L.L.palm.getWorldPosition(new THREE.Vector3()), R: L.R.palm.getWorldPosition(new THREE.Vector3()) };
+    const soleW = [L.L.sole.getWorldPosition(new THREE.Vector3()), L.R.sole.getWorldPosition(new THREE.Vector3())];
+    const thrust = Math.max(air, fly);
+
+    // Rays.
+    let nb = 0;
+    camera.getWorldPosition(c3);
+    for (const t of targets) {
+      if (nb >= MAX_BEAMS) break;
+      const from = palmW[t.side || 'R'];
+      a3.set(t.at[0], t.at[1], t.at[2]);
+      const to = b3.copy(from).lerp(a3, clamp(t.p, 0, 1));
+      const len = from.distanceTo(to);
+      if (len < 0.5) continue;
+      const toCam = a3.copy(from).add(to).multiplyScalar(0.5).sub(c3).multiplyScalar(-1);
+      const dir = to.clone().sub(from).normalize();
+      const w = (1.5 + 0.6 * Math.min(1, len / 150)) * (K / 22.8); // half-width: the cyan sheath; the white core is a fifth of it
+      const sideV = dir.clone().cross(toCam).normalize().multiplyScalar(w);
+      const o = nb * 4;
+      const corners = [[from, 1], [from, -1], [to, 1], [to, -1]];
+      corners.forEach(([p, s], k2) => {
+        bPos[(o + k2) * 3] = p.x + sideV.x * s;
+        bPos[(o + k2) * 3 + 1] = p.y + sideV.y * s;
+        bPos[(o + k2) * 3 + 2] = p.z + sideV.z * s;
+        bUv[(o + k2) * 2] = k2 < 2 ? 0 : 1;
+        bUv[(o + k2) * 2 + 1] = s;
+        bInfo[(o + k2) * 3] = len;
+        bInfo[(o + k2) * 3 + 1] = (t.id * 0.618) % 1;
+        bInfo[(o + k2) * 3 + 2] = 0.9 + 0.1 * Math.sin(spider.time * 31 + t.id);
+      });
+      nb++;
+      // Where it hits: sparks thrown back off the star.
+      if (t.p >= 1 && Math.random() < dt * 40) {
+        const sv = 25 + 35 * Math.random();
+        spark(to, -dir.x * sv + (Math.random() - 0.5) * 40, -dir.y * sv + (Math.random() - 0.5) * 40, -dir.z * sv + (Math.random() - 0.5) * 40, 0.2 + 0.25 * Math.random(), 1, 0.85, 0.6, 0.9);
+      }
     }
-    for (let i = 0; i < EXHAUST; i++) {
-      exAge[i] += dt;
-      const u = exAge[i] / exLife[i];
+    beamGeo.setDrawRange(0, nb * 6);
+    for (const name of ['position', 'aUv', 'aInfo']) beamGeo.attributes[name].needsUpdate = true;
+
+    // Flares: palms (charging and firing), boots (in the air), and each ray's point of impact.
+    const fp = flares.geometry.attributes.position.array;
+    const fc = flares.geometry.attributes.color.array;
+    const fs = flares.geometry.attributes.size.array;
+    let nf = 0;
+    const flare = (p, r, g2, b, size) => {
+      if (nf >= FLARES) return;
+      fp[nf * 3] = p.x;
+      fp[nf * 3 + 1] = p.y;
+      fp[nf * 3 + 2] = p.z;
+      fc[nf * 3] = r;
+      fc[nf * 3 + 1] = g2;
+      fc[nf * 3 + 2] = b;
+      fs[nf] = size * (K / 22.8) * scale;
+      nf++;
+    };
+    const flick = 0.85 + 0.15 * Math.sin(spider.time * 47);
+    let lightP = 0;
+    for (const n of ['L', 'R']) {
+      const fire = clamp(ez.aim[n].x, 0, 1) * (tgt[n] ? 1 : 0);
+      const ch = Math.max(0, ez.charge[n].x);
+      const pw = Math.max(fire * 0.7 + Math.min(1.5, ch * 1.4), thrust * 0.8); // the charge flashes up, then holds while firing
+      if (pw > 0.02) flare(palmW[n], 0.75 * pw * flick, 0.9 * pw * flick, 1.0 * pw * flick, 3.2 + 3 * Math.min(1, ch));
+      lightP += pw;
+    }
+    if (thrust > 0.05) for (const s of soleW) flare(s, 0.8 * thrust * flick, 0.9 * thrust * flick, thrust * flick, 4.2);
+    for (const t of targets) if (t.p >= 1) flare(a3.set(t.at[0], t.at[1], t.at[2]), 0.9 * flick, 0.95 * flick, 1.0 * flick, 3.4 + 0.6 * Math.sin(spider.time * 23 + t.id));
+    flares.geometry.setDrawRange(0, nf);
+    for (const name of ['position', 'color', 'size']) flares.geometry.attributes[name].needsUpdate = true;
+    repulsorLight.intensity = 40 * Math.min(2, lightP);
+    repulsorLight.position.copy(head).multiplyScalar(0.2 * K);
+
+    // Exhaust: sparks shooting back from boots (and palms in flight).
+    sp.acc += dt * 500 * thrust;
+    while (sp.acc >= 1) {
+      sp.acc -= 1;
+      const n = Math.random() < (fly > 0.3 ? 0.5 : 1) ? Math.floor(Math.random() * 2) : 2 + Math.floor(Math.random() * 2);
+      const p = n < 2 ? soleW[n] : palmW[n === 2 ? 'L' : 'R'];
+      const s = (70 + 60 * fly) * scale;
+      spark(p, -head.x * s + (Math.random() - 0.5) * 16 + v.x * 0.6, -head.y * s + (Math.random() - 0.5) * 16 + v.y * 0.6, -head.z * s + (Math.random() - 0.5) * 16 + v.z * 0.6, 0.16 + Math.random() * 0.2, 0.8, 0.9, 1, 1.0 * scale);
+    }
+    const pa = sparks.geometry.attributes.position.array;
+    const ca = sparks.geometry.attributes.color.array;
+    const sa = sparks.geometry.attributes.size.array;
+    for (let i = 0; i < SPARKS; i++) {
+      sp.age[i] += dt;
+      const u = sp.age[i] / sp.life[i];
       if (u >= 1) {
-        exCol[i * 3] = exCol[i * 3 + 1] = exCol[i * 3 + 2] = 0;
+        sa[i] = 0;
         continue;
       }
-      exPos[i * 3] += exVel[i * 3] * dt;
-      exPos[i * 3 + 1] += exVel[i * 3 + 1] * dt;
-      exPos[i * 3 + 2] += exVel[i * 3 + 2] * dt;
-      // White-blue at the nozzle, cooling to amber as it fades.
+      pa[i * 3] += sp.vel[i * 3] * dt;
+      pa[i * 3 + 1] += sp.vel[i * 3 + 1] * dt;
+      pa[i * 3 + 2] += sp.vel[i * 3 + 2] * dt;
+      // White-blue at birth, cooling to amber as it fades.
       const a = (1 - u) * (1 - u);
-      exCol[i * 3] = a * (0.75 + 0.25 * u);
-      exCol[i * 3 + 1] = a * (0.85 - 0.3 * u);
-      exCol[i * 3 + 2] = a * (1 - 0.7 * u);
+      ca[i * 3] = a * sp.tint[i * 3] * (0.8 + 0.4 * u);
+      ca[i * 3 + 1] = a * sp.tint[i * 3 + 1] * (1 - 0.35 * u);
+      ca[i * 3 + 2] = a * sp.tint[i * 3 + 2] * (1 - 0.75 * u);
+      sa[i] = sp.size[i] * (K / 22.8) * (1 - 0.4 * u);
     }
-    exGeo.attributes.position.needsUpdate = true;
-    exGeo.attributes.color.needsUpdate = true;
+    for (const name of ['position', 'color', 'size']) sparks.geometry.attributes[name].needsUpdate = true;
   }
 
   return {
     group,
+    fx,
     update,
     /** Arc reactor, world space. */
     chest: () => sk.chest.localToWorld(new THREE.Vector3(0, 0.04, 0.19)).toArray(),
-    /** The palm (world space) that fires at a target: the one on its side of him. */
-    palm: (to) => {
-      tmp2.set(-heading.z, 0, heading.x);
-      const right = (to[0] - group.position.x) * tmp2.x + (to[2] - group.position.z) * tmp2.z > 0;
-      const i = right ? 3 : 2;
-      return [glowPos[i * 3], glowPos[i * 3 + 1], glowPos[i * 3 + 2]];
-    },
     /** Which way his head points, world space. */
     up: () => head.toArray(),
   };
