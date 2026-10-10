@@ -74,10 +74,12 @@ export class Spider {
    * @param {number[]} p start position [x, y, z] in the world
    * @param {number} seed
    * @param {import('../core/contracts.js').World} [world]
+   * @param {number} [yaw] the way it faces to begin with (rad, from +x toward +z)
    */
-  constructor(p, seed = 1, world = null) {
-    this.sim = new SpiderSim(up(p), seed, simWorld(world));
-    this.simRun = { t: 0, silkSection: 0, travel: null, spiderGoal: { x: 0, y: 0, z: 0 }, spider: { arrived: false }, silk: [] };
+  constructor(p, seed = 1, world = null, yaw = undefined) {
+    this.sim = new SpiderSim(up(p), seed, simWorld(world), yaw);
+    this.simRun = { t: 0, silkSection: 0, travel: null, spiderGoal: { x: 0, y: 0, z: 0 }, spider: { arrived: false }, silk: [], tentacles: null, faceAt: null };
+    this.faceAt = { x: 0, z: 0 };
     this.lastTravel = null;
     this.taut = 0; // the dragline pulled taut by a leap, eased so it never snaps slack
     this.hit = 0; // a landing's impact (0..1) and the time since, for the camera's jolt
@@ -113,6 +115,13 @@ export class Spider {
     r.spiderGoal.y = g.y * K;
     r.spiderGoal.z = (g.z ?? 0) * K;
     r.spider.arrived = run.spider.arrived;
+    r.tentacles = run.tentacles; // (firing, it walks slower)
+    // Whoever it is squaring up to, standing.
+    if (run.faceAt) {
+      this.faceAt.x = run.faceAt.x * K;
+      this.faceAt.z = run.faceAt.z * K;
+      r.faceAt = this.faceAt;
+    } else r.faceAt = null;
     r.silk.length = 0;
     [this.prev, this.cur] = [this.cur, this.prev];
     this.sim.update(dt, r);

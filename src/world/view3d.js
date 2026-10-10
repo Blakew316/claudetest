@@ -32,6 +32,7 @@ import { mulberry32 } from '../core/rng.js';
 import { LEG_COUNT, MAX_TENTACLES } from '../core/contracts.js';
 import { ABDOMEN, CEPH, SCALE as SS } from './spider.js';
 import { createIronMan } from './ironman.js';
+import { createPortal } from './portal.js';
 import { setSuitSurroundings, suitFrame, suitQuality } from './ironman-model.js';
 
 /** Who crawls the clusters: 'ironman' (the suit, hovering and flying) or 'spider'. */
@@ -502,6 +503,17 @@ export function createView3D(canvas) {
   composer.addPass(new OutputPass());
   const hero = AVATAR === 'ironman' ? createIronMan(renderer) : null;
   if (hero) scene.add(hero.group, hero.fx);
+  // Thanos, on the same rig and animation, when the director has him in the fight; drawn only on
+  // his side of the portal he is walking through (a clipping plane through it).
+  const foeHero = hero ? createIronMan(renderer, { character: 'thanos' }) : null;
+  const portal = foeHero ? createPortal() : null;
+  const foeClip = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1e9);
+  const foeView = { clipped: false, last: null };
+  if (foeHero) {
+    foeHero.group.visible = foeHero.fx.visible = false;
+    scene.add(foeHero.group, foeHero.fx, portal.mesh);
+    renderer.localClippingEnabled = true;
+  }
 
   const orbit = { yaw: 0, pitch: 0 };
   const size = { w: 1, h: 1 };
@@ -856,8 +868,9 @@ export function createView3D(canvas) {
    * @param {import('./spider.js').Spider} spider
    * @param {number} dt real seconds since last frame (for crossfades)
    * @param {{camera:object, t:number}} [between] camera and clock as drawn between two sim steps
+   * @param {import('./spider.js').Spider} [foe] Thanos as drawn (null while he is nowhere)
    */
-  function render(run, analysis, spider, dt, between = null) {
+  function render(run, analysis, spider, dt, between = null, foe = null) {
     if (!W) return;
     const t = between ? between.t : run.t;
     placeCamera(run, spider, between ? between.camera : run.camera, t, dt);
@@ -932,7 +945,24 @@ export function createView3D(canvas) {
       const targets = run.tentacles.map((tn) => ({ at: [wpos[tn.wordId * 3], wpos[tn.wordId * 3 + 1], wpos[tn.wordId * 3 + 2]], id: tn.wordId, p: tn.p }));
       surroundings(spider, dt);
       if (suitFrame(dt)) resize(size.w, size.h, renderer.getPixelRatio());
-      hero.update(spider, dt, camera, targets, (size.h * renderer.getPixelRatio()) / 2);
+      const halfH = (size.h * renderer.getPixelRatio()) / 2;
+      // The duel: each fires at the other through the windows the director opens (ids < 0).
+      const F = run.foe;
+      const foeOn = !!(foeHero && foe && F && F.on);
+      const foeTargets = [];
+      if (foeOn) {
+        for (const w of F.fire) {
+          if (t < w.t0) continue;
+          const tg = { at: w.by === 'hero' ? foeHero.chest() : hero.chest(), id: w.id, p: Math.min(1, (t - w.t0) / 0.25) };
+          (w.by === 'hero' ? targets : foeTargets).push(tg);
+        }
+      }
+      const struck = hero.update(spider, dt, camera, targets, halfH);
+      if (foeOn) {
+        for (const id of struck) if (id < 0) foeHero.hit(dirTo(hero.chest(), foeHero.chest()), 0.6);
+        drawFoe(foe, dt, foeTargets, halfH, F.portal);
+      } else if (foeHero) foeHero.group.visible = foeHero.fx.visible = false;
+      if (portal) portal.update(F && F.portal, t);
       // His repulsor flashes light the dust round them.
       const flashes = hero.fx.userData.flashes || [];
       for (let i = 0; i < 2 && i < flashes.length; i++) {
@@ -1244,5 +1274,36 @@ export function createView3D(canvas) {
     sil.on = n > 0;
   }
 
-  return { resize, setWorld, render, project, orbit, camera, hero, silhouette: sil };
+  /** Unit vector from a to b (arrays), as an array. */
+  function dirTo(a, b) {
+    const x = b[0] - a[0];
+    const y = b[1] - a[1];
+    const z = b[2] - a[2];
+    const l = Math.hypot(x, y, z) || 1;
+    return [x / l, y / l, z / l];
+  }
+
+  /** Thanos for a frame: clipped at his portal, firing at Iron Man, and Iron Man struck by what lands. */
+  function drawFoe(foe, dt, targets, halfH, P) {
+    // (His materials take the clipping plane once his model has loaded.)
+    if (!foeView.clipped) {
+      foeHero.group.traverse((o) => {
+        if (!o.isSkinnedMesh) return;
+        for (const m of Array.isArray(o.material) ? o.material : [o.material]) m.clippingPlanes = [foeClip];
+        foeView.clipped = true;
+      });
+    }
+    if (P && P.open > 0) {
+      foeClip.normal.set(P.keep * P.nx, 0, P.keep * P.nz);
+      foeClip.constant = -P.keep * (P.nx * P.x + P.nz * P.z);
+    } else foeClip.constant = 1e9;
+    // Out of a portal he is a new walker: his rig lands on it at once.
+    const jump = foe !== foeView.last || !foeHero.group.visible;
+    foeView.last = foe;
+    foeHero.group.visible = foeHero.fx.visible = true;
+    const struck = foeHero.update(foe, jump ? 1 : dt, camera, targets, halfH);
+    for (const id of struck) if (id < 0) hero.hit(dirTo(foeHero.chest(), hero.chest()), 1);
+  }
+
+  return { resize, setWorld, render, project, orbit, camera, hero, foe: foeHero, silhouette: sil };
 }

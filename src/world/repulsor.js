@@ -75,9 +75,10 @@ const hash = (x) => {
 /** When slot k of a hand fires (seconds on the animation clock); the right hand is half a period behind. */
 const slotTime = (side, k) => (k + (side === 'R' ? 0.5 : 0) + JITTER * (hash(k * 1.731 + (side === 'R' ? 91.7 : 13.3)) - 0.5)) * PERIOD;
 
-// Repulsor colours (linear): a white-hot core, a cyan sheath, a deep blue edge.
-const CYAN = [0.32, 0.74, 1.0];
-const BLUE = [0.12, 0.38, 1.0];
+// Repulsor colours (linear): a white-hot core, a cyan sheath, a deep blue edge (another palette can be
+// passed to createRepulsors, e.g. the Power Stone's purple for Thanos's gauntlet).
+const CYAN0 = [0.32, 0.74, 1.0];
+const BLUE0 = [0.12, 0.38, 1.0];
 
 /** Soft round sprites (exhaust sparks): additive, sized in world units, with optional faint cross rays. */
 function spriteMaterial(rays) {
@@ -449,7 +450,10 @@ function ribbonPool(n, material, fx) {
   };
 }
 
-export function createRepulsors() {
+export function createRepulsors(palette = {}) {
+  const CYAN = palette.sheath || CYAN0;
+  const BLUE = palette.edge || BLUE0;
+  const lightColor = palette.light ?? 0xbfe6ff;
   const group = new THREE.Group();
 
   const streaks = ribbonPool(STREAKS, streakMaterial(), false);
@@ -498,8 +502,8 @@ export function createRepulsors() {
   // forearm and chest. Always present (intensity 0 when idle), so the suit's
   // shaders never recompile.
   const palmLights = {
-    L: new THREE.PointLight(0xbfe6ff, 0, PALM_LIGHT_RANGE, 2),
-    R: new THREE.PointLight(0xbfe6ff, 0, PALM_LIGHT_RANGE, 2),
+    L: new THREE.PointLight(lightColor, 0, PALM_LIGHT_RANGE, 2),
+    R: new THREE.PointLight(lightColor, 0, PALM_LIGHT_RANGE, 2),
   };
   group.add(discs, beams.mesh, streaks.mesh, glows, sparks, palmLights.L, palmLights.R);
 
@@ -522,6 +526,7 @@ export function createRepulsors() {
     dir: new THREE.Vector3(),
     dist: 1,
     tau: 0.02,
+    id: 0, // the target it was fired at
   }));
   const seen = new Map(); // word id -> last reach p (+10 once it is retracting)
   const elig = { L: [], R: [] };
@@ -540,7 +545,7 @@ export function createRepulsors() {
   const lightK = { L: 0, R: 0 };
   const lightAt = { L: new THREE.Vector3(), R: new THREE.Vector3() };
   const ready = { L: false, R: false }; // each hand up on a word and firing on its schedule
-  const out = { fired: { L: 0, R: 0 }, light: 0 }; // update()'s result, reused every frame
+  const out = { fired: { L: 0, R: 0 }, light: 0, hits: [] }; // update()'s result, reused every frame
 
   /** Emit an exhaust spark. */
   function spark(p, vx, vy, vz, life, r, g, b, size) {
@@ -625,7 +630,7 @@ export function createRepulsors() {
   }
 
   /** Start a blast from slot k of a hand at time T, from the palm at a word. */
-  function addShot(side, k, T, palm, at, S) {
+  function addShot(side, k, T, palm, at, S, id) {
     let s = shots[0];
     for (const c of shots) {
       if (!c.live) {
@@ -638,6 +643,7 @@ export function createRepulsors() {
     s.side = side;
     s.T = T;
     s.seed = hash(k * 0.917 + (side === 'R' ? 5.1 : 2.3)) * 1000;
+    s.id = id;
     s.dir.copy(at).sub(palm);
     s.dist = Math.max(1e-3, s.dir.length());
     s.dir.multiplyScalar(1 / s.dist);
@@ -665,7 +671,7 @@ export function createRepulsors() {
    * @param {number} o.fly 0..1 flying (palms join the thrust)
    * @param {{at:number[], id:number, p:number, side:'L'|'R'}[]} o.targets words being read: where, which, how far the director's reach has got (0..1), and the hand on that side
    * @param {{L:number, R:number}} o.aim how far each arm is raised onto its target (0..1)
-   * @returns {{fired:{L:number, R:number}, light:number}} blasts fired this frame per hand (the body recoils per blast), and how bright the repulsors burn (lights his armour); the same object every frame
+   * @returns {{fired:{L:number, R:number}, light:number, hits:number[]}} blasts fired this frame per hand (the body recoils per blast), how bright the repulsors burn (lights his armour), and the ids of the targets struck this frame; the same object every frame
    */
   function update(o) {
     const { dt, time, camera, halfH, unit, scale, palms, soles, head, vel, thrust, fly, targets, aim } = o;
@@ -719,7 +725,7 @@ export function createRepulsors() {
         const T = slotTime(n, k);
         if (T <= t0 || T > time) continue;
         const t = targets[elig[n][((k % elig[n].length) + elig[n].length) % elig[n].length]];
-        addShot(n, k, T, palms[n], a3.set(t.at[0], t.at[1], t.at[2]), S);
+        addShot(n, k, T, palms[n], a3.set(t.at[0], t.at[1], t.at[2]), S, t.id);
         if (!jumped || T > time - 0.07) fired[n]++;
       }
     }
@@ -777,10 +783,12 @@ export function createRepulsors() {
       light += 0.08 * up + 0.3 * q;
     }
 
-    // Blasts.
+    // Blasts (and the targets each one struck this frame).
+    out.hits.length = 0;
     for (const s of shots) {
       if (!s.live) continue;
       const a = time - s.T;
+      if (!jumped && s.T + s.tau > t0 && s.T + s.tau <= time) out.hits.push(s.id);
       if (a > SHOT_LIFE || a < 0) {
         s.live = false;
         continue;

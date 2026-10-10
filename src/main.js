@@ -112,7 +112,8 @@ function render(dt, force = false) {
     for (const f of ['x', 'y', 'z', 'dist', 'pitch', 'roll']) camDrawn[f] = (camPrev[f] || 0) + ((c[f] || 0) - (camPrev[f] || 0)) * kc;
     camDrawn.cut = c.cut;
     const spider = director.spider.at(k);
-    view3d.render(run, analysis, spider, dt, { camera: camDrawn, t: tPrev + (run.t - tPrev) * k });
+    const foe = director.foe ? director.foe.at(k) : null;
+    view3d.render(run, analysis, spider, dt, { camera: camDrawn, t: tPrev + (run.t - tPrev) * k }, foe);
     const view = { width: stage.width, height: stage.height, dpr: stage.dpr, project: view3d.project, camDist: camDrawn.dist, spider: spider.p, hero: view3d.silhouette };
     octx.setTransform(1, 0, 0, 1, 0, 0);
     octx.clearRect(0, 0, overlay.width, overlay.height);

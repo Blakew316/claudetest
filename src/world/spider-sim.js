@@ -49,6 +49,7 @@ const CELL = 30;
 const STRIDE = 28; // sim units of body travel per gait cycle: about half a leg length, as a real spider strides
 const CRUISE = 52; // walking speed, sim units/s (26 in the world at SCALE 0.5)
 const MAX_TURN = 0.7; // rad/s
+const FACE_TURN = 0.9; // rad/s, at most, standing and turning to face an opponent
 const FIRE_SLOW = 0.55; // walking speed while he fires, of the usual
 const MAX_TILT = 1.05;
 const MAX_TILT_AIR = 0.9;
@@ -153,8 +154,9 @@ export class Spider {
    * @param {number[]} p start position [x, y, z]
    * @param {number} seed
    * @param {import('../core/contracts.js').World} [world] stars the feet grip
+   * @param {number} [yaw] the way it faces to begin with (rad, from +x toward +z)
    */
-  constructor(p, seed = 1, world = null) {
+  constructor(p, seed = 1, world = null, yaw = Math.atan2(0.3, 1)) {
     const rand = fork(seed, 'spider');
     this.rand = fork(seed, 'gait');
     this.world = world;
@@ -162,7 +164,7 @@ export class Spider {
     this.b = [...p]; // body position incl. bob, sway, crouch and weight shift
     this.v = [0, 0, 0];
     // Heading frame (where it is going): yaw and pitch, each turning at a smoothed rate...
-    this.yaw = Math.atan2(0.3, 1);
+    this.yaw = yaw;
     this.pitch = 0;
     this.yawV = 0;
     this.pitchV = 0;
@@ -1126,7 +1128,13 @@ export class Spider {
       rate = 2.2;
       cap = MAX_TURN * (this.walking ? 1 : moving) * smooth(6, 14, dist);
     }
-    // Standing it holds its heading, unless the goal has drifted well off to one side; never while feeling.
+    // Standing it squares up to whoever it is fighting (run.faceAt), turning on the spot;
+    else if (run.faceAt && Math.hypot(run.faceAt.x - this.p[0], run.faceAt.z - this.p[2]) > 8) {
+      aim = norm([run.faceAt.x - this.p[0], 0, run.faceAt.z - this.p[2]]);
+      rate = 1.4;
+      cap = FACE_TURN;
+    }
+    // otherwise it holds its heading, unless the goal has drifted well off to one side; never while feeling.
     else if (this.feel < 0.05 && dist > 10 && facing < 0.85) cap = 0.4;
     this.turnCap += (cap - this.turnCap) * (1 - Math.exp(-6 * dt));
     this.orient(aim, dt, rate, MAX_TILT, this.turnCap);

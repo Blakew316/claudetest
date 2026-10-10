@@ -45,8 +45,16 @@ import * as THREE from 'three';
 import { createRepulsors } from './repulsor.js';
 import { JOINT, POSE, MODEL_HEIGHT, loadModel, suitLights } from './ironman-model.js';
 import { LAND_TIME } from './spider-sim.js';
+import { loadThanos } from './thanos-model.js';
 
 const HEIGHT = 46; // world units: he reads at the distances the camera keeps from the crawler
+// Thanos, on the same driver rig (see rigThanos): his model is THANOS_H units tall, centred THANOS_X off its
+// middle, and drawn THANOS_SIZE times Iron Man's height (scaled about the ground under him).
+const THANOS_H = 63.8;
+const THANOS_X = 1.0;
+const THANOS_SIZE = 1.12;
+// The Power Stone's purple, for his gauntlet's blasts.
+const POWER_STONE = { sheath: [0.78, 0.26, 1.0], edge: [0.45, 0.06, 0.9], light: 0xd28cff };
 const K = HEIGHT / MODEL_HEIGHT; // world units per model unit (feet at y = 0)
 const U = HEIGHT / 2.02; // a body-proportional unit for the few absolute lengths below (tuned on a body 2.02 tall)
 const UP = new THREE.Vector3(0, 1, 0);
@@ -131,6 +139,15 @@ const KICK_ROCK = 0.17;
 // ... and the body pushed back along the beams through his legs (leg lengths), the knees giving a little.
 const KICK_PUSH = 0.09;
 const KICK_SINK = 0.03;
+// Struck by a blast (hit()): the torso rocks away from it (HIT_PITCH rad back for a blast square on
+// the chest, HIT_ROLL to the side for one from the side, turned HIT_TURN with it), the head snaps
+// back (HIT_HEAD) and the hips are driven HIT_PUSH leg lengths along it; the legs take the stagger
+// and he comes back up to stand, each on its own spring.
+const HIT_PITCH = 0.2;
+const HIT_ROLL = 0.14;
+const HIT_TURN = 0.12;
+const HIT_HEAD = 0.16;
+const HIT_PUSH = 0.12;
 
 /*
  * The thumb. The model's rest thumb juts out of the palm, which reads as stuck on, so it is posed in the
@@ -528,11 +545,17 @@ function basisQ(out, a0, b0, a1, b1) {
  * @param {THREE.WebGLRenderer} renderer for the suit's reflections
  * @returns {{group: THREE.Group, fx: THREE.Group, update: Function, chest: Function, up: Function, debug: Function}}
  */
-export function createIronMan(renderer) {
+/**
+ * A figure on the driver rig: Iron Man (the default), or with opts.character 'thanos' the Thanos model
+ * driven by the very same walking, aiming, acting and secondary motion (see rigThanos), firing the
+ * Power Stone from his gauntlet instead of repulsors; he never flies.
+ */
+export function createIronMan(renderer, opts = {}) {
+  const thanos = opts.character === 'thanos';
   const group = new THREE.Group(); // at his pelvis
   const body = new THREE.Group(); // oriented: +y his head, +z his chest
   group.add(body);
-  const repulsors = createRepulsors();
+  const repulsors = createRepulsors(thanos ? POWER_STONE : undefined);
   const fx = repulsors.group; // world-space effects: rays, flares, sparks
 
   // The driver rig and the model's own deform bones, which follow it every frame (see drive());
@@ -546,17 +569,30 @@ export function createIronMan(renderer) {
   rig.add(holder);
   body.add(rig);
   let model = null;
-  loadModel(renderer, (m) => {
-    rig.add(m.scene);
-    model = rigModel(m);
-  }, group);
+  if (thanos) {
+    loadThanos((m) => {
+      const t = new THREE.Group(); // Thanos model units onto Iron Man's, about the ground under him
+      t.scale.setScalar((MODEL_HEIGHT * THANOS_SIZE) / THANOS_H);
+      t.position.x = (-THANOS_X * MODEL_HEIGHT * THANOS_SIZE) / THANOS_H;
+      t.add(m.scene);
+      rig.add(t);
+      rig.updateMatrixWorld(true);
+      model = rigThanos(m);
+    });
+  } else {
+    loadModel(renderer, (m) => {
+      rig.add(m.scene);
+      model = rigModel(m);
+    }, group);
+  }
   const pelvisY0 = sk.root.position.y;
 
   // Lights for the suit (see suitLights): a warm key over the camera's shoulder casting his own shadows, cool
   // rims from behind, a soft fill; they and the reflected studio follow the camera round him.
-  const lights = suitLights(renderer, body);
-  const repulsorLight = new THREE.PointLight(0x9fdcff, 0, 60 * U / 22, 2); // the repulsors light up his own armour
-  group.add(lights.group, repulsorLight);
+  const lights = thanos ? null : suitLights(renderer, body); // (Thanos is lit by the scene's own and Iron Man's)
+  const repulsorLight = new THREE.PointLight(thanos ? POWER_STONE.light : 0x9fdcff, 0, 60 * U / 22, 2); // the blasts light up his own armour
+  group.add(repulsorLight);
+  if (lights) group.add(lights.group);
 
   /* ---------------- state ---------------- */
 
@@ -620,6 +656,7 @@ export function createIronMan(renderer) {
     shift: spring(1.6, 0.9), brace: spring(4, 0.9), wide: spring(4, 0.9), lean: spring(5, 0.9),
     arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(7, 0.75), R: spring(7, 0.75) }, aimEl: { L: spring(6, 0.85), R: spring(6, 0.85) }, secP: spring(6, 0.45), secR: spring(6, 0.45), nod: spring(8, 0.4), lead: spring(5, 0.8), aimWr: { L: spring(7, 0.9), R: spring(7, 0.9) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
     gx: spring(GRADE_W), gz: spring(GRADE_W), gOff: spring(GROUND_W), hV: spring(40), pushX: spring(11, 0.9), pushZ: spring(11, 0.9), apa: spring(10),
+    hitX: spring(6, 0.6), hitZ: spring(6, 0.6), hitP: spring(7, 0.5), hitR: spring(7, 0.5), hitY: spring(6, 0.6), hitH: spring(9, 0.45),
     hurry: spring(10), elev: spring(7), go: spring(14), ext: spring(6),
     // A blast's kick through the arm: back along the beam within ~50 ms, a touch past rest on the
     // way back, settled by ~0.25 s; and its push through the shoulder and torso, a beat later and slower.
@@ -1841,19 +1878,107 @@ export function createIronMan(renderer) {
   }
 
   /** Centre of a palm, just off its face (world): where the repulsor fires from. */
-  function palmOf(md, n, out) {
+  function palmOf(md, n, out, isThanos = false) {
     const b = md.m.bones;
     const [hand, mid, idx, pinky] = pv;
-    b[`DEF-hand${n}`].getWorldPosition(hand);
-    b[`DEF-f_middle01${n}`].getWorldPosition(mid);
-    b[`DEF-f_index01${n}`].getWorldPosition(idx);
-    b[`DEF-f_pinky01${n}`].getWorldPosition(pinky);
+    b[isThanos ? `Wrist_${n}` : `DEF-hand${n}`].getWorldPosition(hand);
+    b[isThanos ? `MiddleFinger1_${n}` : `DEF-f_middle01${n}`].getWorldPosition(mid);
+    b[isThanos ? `IndexFinger1_${n}` : `DEF-f_index01${n}`].getWorldPosition(idx);
+    b[isThanos ? `PinkyFinger1_${n}` : `DEF-f_pinky01${n}`].getWorldPosition(pinky);
     idx.sub(pinky); // across the knuckles
     pinky.copy(mid).sub(hand); // along the hand
     const len = pinky.length();
     hand.crossVectors(pinky, idx).normalize().multiplyScalar(n === 'L' ? 1 : -1); // the palm's face
-    b[`DEF-palm02${n}`].getWorldPosition(out);
+    if (isThanos) b[`Wrist_${n}`].getWorldPosition(out);
+    else b[`DEF-palm02${n}`].getWorldPosition(out);
     return out.add(mid).multiplyScalar(0.5).addScaledVector(hand, 0.3 * len);
+  }
+
+  /**
+   * Thanos on the driver rig: his Advanced Skeleton bones mapped onto the rig's (the twist bones with
+   * their limb, the face with the head), each turned first from his rest pose onto the rig's (an A-pose
+   * onto its T: the limb's direction aligned, and the hand's whole frame, so the palm faces as the rig's
+   * does), then as the rig's bone has turned from rest. Unmapped bones ride with their parent.
+   */
+  function rigThanos(m) {
+    const B = m.bones;
+    const map = {};
+    const set = (bone, names) => names.forEach((nm) => (map[nm] = bone));
+    set(sk.root, ['Root_M', 'RootPart1_M', 'RootPart2_M']);
+    set(sk.spine, ['Spine1_M', 'Spine2_M']);
+    set(sk.chest, ['Chest_M']);
+    set(sk.neck, ['Neck_M', 'NeckPart1_M', 'NeckPart2_M', 'Head_M']);
+    const P = (nm) => rig.worldToLocal(B[nm].getWorldPosition(new THREE.Vector3()));
+    const corr = {};
+    // Swing a bone of his so its rest direction (a to b, his joints) lies along the rig's (pa to pb).
+    const swing = (names, a, b, pa, pb) => {
+      const q = new THREE.Quaternion().setFromUnitVectors(P(b).sub(P(a)).normalize(), V(pb).sub(V(pa)).normalize());
+      names.forEach((nm) => (corr[nm] = q));
+    };
+    for (const n of SIDES) {
+      const g = sk.limbs[n];
+      const sd = n === 'L' ? 1 : -1;
+      const J2 = (k) => side(J[k], sd);
+      const JM = (nm) => side(JOINT[nm], sd);
+      set(g.clav, [`Scapula_${n}`]);
+      set(g.sh, [`Shoulder_${n}`, `ShoulderPart1_${n}`, `ShoulderPart2_${n}`]);
+      set(g.el, [`Elbow_${n}`, `ElbowPart1_${n}`, `ElbowPart2_${n}`]);
+      set(g.wr, [`Wrist_${n}`, `Cup_${n}`]);
+      const fingers = [];
+      for (const f of ['Index', 'Middle', 'Ring', 'Pinky']) for (const k of [1, 2, 3, 4]) fingers.push(`${f}Finger${k}_${n}`);
+      set(g.knuckles, fingers);
+      set(g.hip, [`Hip_${n}`, `HipPart1_${n}`, `HipPart2_${n}`]);
+      set(g.knee, [`Knee_${n}`]);
+      set(g.ankle, [`Ankle_${n}`]);
+      set(g.toe, [`Toes_${n}`, `ToesEnd_${n}`]);
+      swing([`Scapula_${n}`], `Scapula_${n}`, `Shoulder_${n}`, J2('clav'), J2('shoulder'));
+      swing([`Shoulder_${n}`, `ShoulderPart1_${n}`, `ShoulderPart2_${n}`], `Shoulder_${n}`, `Elbow_${n}`, J2('shoulder'), J2('elbow'));
+      swing([`Elbow_${n}`, `ElbowPart1_${n}`, `ElbowPart2_${n}`], `Elbow_${n}`, `Wrist_${n}`, J2('elbow'), J2('wrist'));
+      swing([`Hip_${n}`, `HipPart1_${n}`, `HipPart2_${n}`], `Hip_${n}`, `Knee_${n}`, J2('hip'), J2('knee'));
+      swing([`Knee_${n}`], `Knee_${n}`, `Ankle_${n}`, J2('knee'), J2('ankle'));
+      swing([`Ankle_${n}`], `Ankle_${n}`, `Toes_${n}`, J2('ankle'), J2('ball'));
+      swing([`Toes_${n}`, `ToesEnd_${n}`], `Toes_${n}`, `ToesEnd_${n}`, J2('ball'), J2('toe'));
+      // The hand (and the fingers and thumb with it): its whole frame, along the fingers and across the knuckles.
+      const frame = (along, across) => {
+        const a = along.normalize();
+        const c = across.addScaledVector(a, -across.dot(a)).normalize();
+        return new THREE.Matrix4().makeBasis(a, c, new THREE.Vector3().crossVectors(a, c));
+      };
+      const mT = frame(P(`MiddleFinger1_${n}`).sub(P(`Wrist_${n}`)), P(`IndexFinger1_${n}`).sub(P(`PinkyFinger1_${n}`)));
+      const mR = frame(V(JM('DEF-f_middle01L')).sub(V(J2('wrist'))), V(JM('DEF-f_index01L')).sub(V(JM('DEF-f_pinky01L'))));
+      const qh = new THREE.Quaternion().setFromRotationMatrix(mR.multiply(mT.transpose()));
+      for (const nm of [`Wrist_${n}`, `Cup_${n}`, ...fingers]) corr[nm] = qh;
+      for (const k of [1, 2, 3, 4]) corr[`ThumbFinger${k}_${n}`] = qh;
+    }
+    const root = B['Root_M'];
+    // (His bones' frame is the model's: the root's parents only turn it about and back.)
+    const rigQ = rig.getWorldQuaternion(new THREE.Quaternion());
+    const baseQ = rigQ.clone().invert().multiply(root.parent.getWorldQuaternion(new THREE.Quaternion()));
+    const order = [];
+    const byBone = new Map();
+    const ID = new THREE.Quaternion();
+    root.traverse((b) => {
+      if (!b.isBone) return;
+      const name = b.name.replace(/_\d+$/, '');
+      const parent = b === root ? null : byBone.get(b.parent);
+      const restQ = (parent ? parent.restQ.clone() : baseQ.clone()).multiply(b.quaternion);
+      const e = { bone: b, parent, restQ, q: new THREE.Quaternion(), drv: map[name] || (parent ? parent.drv : sk.root), C: corr[name] || (parent ? parent.C : ID) };
+      byBone.set(b, e);
+      order.push(e);
+    });
+    return { m, order, root, rootRest: root.position.clone(), baseInv: baseQ.clone().invert() };
+  }
+
+  /** Pose Thanos from the rig (see rigThanos): each bone turned onto the rig's rest, then as the rig's bone has turned. */
+  function driveThanos(md) {
+    rigQuats();
+    for (const e of md.order) {
+      e.q.copy(PQ.get(e.drv)).multiply(e.C).multiply(e.restQ);
+      if (e.parent) e.bone.quaternion.copy(e.parent.q).invert().multiply(e.q);
+      else e.bone.quaternion.copy(md.baseInv).multiply(e.q);
+    }
+    // (The pelvis carried as the rig's is, in his units, his bigger body's moves bigger with it.)
+    md.root.position.copy(md.rootRest).addScaledVector(a3.copy(sk.root.position).sub(pelvisRest).applyQuaternion(md.baseInv), THANOS_H / MODEL_HEIGHT);
   }
 
   /**
@@ -1953,6 +2078,7 @@ export function createIronMan(renderer) {
     const att = clamp(ez.att.to((spider.air && spider.taut > 0.05 ? 1 : 0) * smooth(0.1, 0.3, uAir) * (1 - smooth(0.58, 0.85, uAir)) * smooth(0.5 * MPS, 2 * MPS, sp3), sdt), 0, 1);
     const Ks = K * scale;
     const lam = LEG * Ks;
+    st.lam = lam;
 
     fitGround(spider, sdt, g);
     pxz.set(spider.p[0], st.gy, spider.p[2]);
@@ -1973,6 +2099,7 @@ export function createIronMan(renderer) {
       const az = Math.atan2(a3.dot(leftV), a3.dot(heading));
       t.side = az > 0 ? 'L' : 'R';
       if (Math.abs(az) < 0.4 && st.aim.L.has !== st.aim.R.has) t.side = st.aim.L.has ? 'L' : 'R';
+      if (thanos) t.side = 'L'; // (the Power Stone is in his gauntlet)
       // Only a word a person could shoot at: from a little across the chest to straight out to the side,
       // not behind, not straight up or down (wider for the word a hand is already on, so it does not flicker).
       const held = st.aim[t.side].id === t.id ? REACH_HOLD : 0;
@@ -2253,7 +2380,7 @@ export function createIronMan(renderer) {
       landPath(st.time, d3);
       anc.lerp(d3, 1 - LW.rise);
     }
-    const onGround = b3.set(anc.x + pushX, st.gy + ez.pelvisY.x, anc.z + pushZ).addScaledVector(leftV, sway);
+    const onGround = b3.set(anc.x + pushX + ez.hitX.to(0, sdt), st.gy + ez.pelvisY.x, anc.z + pushZ + ez.hitZ.to(0, sdt)).addScaledVector(leftV, sway);
     // (Winding up, the hips back; driving off, forward, as far as the flight leaves forward.)
     onGround.addScaledVector(heading, (-CM_BACK * JW.cm * (1 - JW.rise) + DRIVE_FWD * JW.fwd * JW.rise) * lam);
     group.position.copy(onGround);
@@ -2523,11 +2650,15 @@ export function createIronMan(renderer) {
     const lifeR = 0.5 * LIFE * Math.sin(0.37 * tl + 5.0) * onFeet;
     sk.spine.rotation.set(0.5 * lean + CM_PITCH[1] * fold + 0.012 * breath - 0.45 * KICK_ROCK * kickB - 0.4 * reach, 0.45 * (counter + turnUp) + kickT * 0.4, -pelvisRoll * 0.55);
     sk.chest.rotation.set(0.5 * lean + CM_PITCH[2] * fold + 0.015 * breath - 0.55 * KICK_ROCK * kickB - 0.6 * reach, 0.55 * (counter + turnUp) + kickT * 0.6, -pelvisRoll * 0.3);
-    sk.spine.rotation.x += 0.4 * secP;
-    sk.spine.rotation.z += 0.4 * secR;
-    sk.chest.rotation.x += 0.6 * secP;
-    sk.chest.rotation.y += 0.4 * lifeY + 0.25 * turnLead;
-    sk.chest.rotation.z += 0.6 * secR + lifeR;
+    const hitP = ez.hitP.to(0, sdt);
+    const hitR = ez.hitR.to(0, sdt);
+    const hitY = ez.hitY.to(0, sdt);
+    sk.spine.rotation.x += 0.4 * (secP + hitP);
+    sk.spine.rotation.y += 0.4 * hitY;
+    sk.spine.rotation.z += 0.4 * (secR + hitR);
+    sk.chest.rotation.x += 0.6 * (secP + hitP);
+    sk.chest.rotation.y += 0.4 * lifeY + 0.25 * turnLead + 0.6 * hitY;
+    sk.chest.rotation.z += 0.6 * (secR + hitR) + lifeR;
     if (ld.on) {
       // Landing: folded over the kneel (the pelvis is already), turned and bent toward the fist,
       // breathing hard as he holds it.
@@ -2543,7 +2674,7 @@ export function createIronMan(renderer) {
     q.copy(sk.root.quaternion).multiply(sk.spine.quaternion).multiply(sk.chest.quaternion);
     // (Landing, the head goes down with the trunk and bows further, then comes up first as he rises.)
     q.slerp(q2.identity(), 0.15 + 0.6 * LW.head).invert();
-    q2.setFromEuler(euler.set(neckP - 0.2 * fold - 0.75 * att + 0.2 * LW.head + nod + lifeP, (neckY + turnLead + lifeY) * (1 - LW.head), 0, 'YXZ'));
+    q2.setFromEuler(euler.set(neckP - 0.2 * fold - 0.75 * att + 0.2 * LW.head + nod + lifeP + ez.hitH.to(0, sdt), (neckY + turnLead + lifeY) * (1 - LW.head), 0, 'YXZ'));
     sk.neck.quaternion.copy(q).multiply(q2);
     euler.order = 'XYZ';
 
@@ -2695,16 +2826,19 @@ export function createIronMan(renderer) {
 
     // The model follows the rig; upright in the air, the artist's hover pose blends in.
     const hover = clamp(ez.hover.to(air * (1 - att), sdt), 0, 1) * (1 - LW.on);
-    if (model) drive(model, hover);
+    if (model) {
+      if (thanos) driveThanos(model);
+      else drive(model, hover);
+    }
     group.updateMatrixWorld(true);
 
-    lights.place(camera, group.position);
+    if (lights) lights.place(camera, group.position);
 
     /* ---- effects ---- */
     const L = sk.limbs;
     if (model) {
-      palmOf(model, 'L', palms.L);
-      palmOf(model, 'R', palms.R);
+      palmOf(model, 'L', palms.L, thanos);
+      palmOf(model, 'R', palms.R, thanos);
     } else {
       L.L.palm.getWorldPosition(palms.L);
       L.R.palm.getWorldPosition(palms.R);
@@ -2736,12 +2870,33 @@ export function createIronMan(renderer) {
     }
     repulsorLight.intensity = 40 * Math.min(2, out.light);
     repulsorLight.position.copy(head).multiplyScalar(0.2 * U);
+    return out.hits;
+  }
+
+  /**
+   * Struck by a blast travelling along d (world; any length), k (0..1) how hard: rocked away from
+   * it, his head snapped back, his hips driven along it, each coming back on its own spring.
+   */
+  function hit(d, k = 1) {
+    const x = d[0];
+    const z = d[2];
+    const l = Math.hypot(x, z);
+    if (l < 1e-6 || !st.lam) return;
+    const f = (x * heading.x + z * heading.z) / l; // + from behind him
+    const sd = (x * leftV.x + z * leftV.z) / l; // + toward his left
+    ez.hitP.kick(HIT_PITCH * k * f);
+    ez.hitR.kick(-HIT_ROLL * k * sd);
+    ez.hitY.kick(-HIT_TURN * k * sd);
+    ez.hitH.kick(HIT_HEAD * k * f);
+    ez.hitX.kick((x / l) * HIT_PUSH * st.lam * k);
+    ez.hitZ.kick((z / l) * HIT_PUSH * st.lam * k);
   }
 
   return {
     group,
     fx,
     update,
+    hit,
     /** Arc reactor, world space. */
     chest: () => sk.chest.localToWorld(new THREE.Vector3(0, 0.08, 0.3)).toArray(),
     /** Which way his head points, world space. */
