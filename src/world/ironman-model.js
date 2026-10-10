@@ -135,23 +135,26 @@ function spaceEnvironment(renderer) {
  */
 const NOISE_GLSL = /* glsl */ `
 varying vec2 vOcclusion;
+varying vec3 vRest;
 float sdHash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
-vec3 sdHash32(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yxz + 33.33); return fract((p3.xxy + p3.yzz) * p3.zyx); }
+vec3 sdHash33(vec3 p) { p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.xxy + p.yxx) * p.zyx); }
 float sdNoise1(float x) { float i = floor(x), f = fract(x); return mix(sdHash12(vec2(i, 0.37)), sdHash12(vec2(i + 1.0, 0.37)), f * f * (3.0 - 2.0 * f)); }
 `;
 const AO_GLSL = /* glsl */ `
 float ambientOcclusion = mix(1.0, vOcclusion.x, ${AO_STRENGTH.toFixed(3)});
 float cavity = mix(1.0, vOcclusion.y * mix(1.0, vOcclusion.x, 0.5), ${CAVITY_STRENGTH.toFixed(3)});
-reflectedLight.indirectDiffuse *= ambientOcclusion;
+// A panel line's walls hide most of the sky from its floor, reflections included.
+float cavitySpec = mix(1.0, cavity, 0.7);
+reflectedLight.indirectDiffuse *= ambientOcclusion * cavity;
 reflectedLight.directDiffuse *= cavity;
 reflectedLight.directSpecular *= cavity;
 #if defined( USE_CLEARCOAT )
-  clearcoatSpecularIndirect *= ambientOcclusion;
+  clearcoatSpecularIndirect *= ambientOcclusion * cavitySpec;
   clearcoatSpecularDirect *= cavity;
 #endif
 #if defined( USE_ENVMAP )
   float dotNVao = saturate( dot( geometryNormal, geometryViewDir ) );
-  reflectedLight.indirectSpecular *= computeSpecularOcclusion( dotNVao, ambientOcclusion, material.roughness );
+  reflectedLight.indirectSpecular *= computeSpecularOcclusion( dotNVao, ambientOcclusion, material.roughness ) * cavitySpec;
 #endif
 `;
 const CAP_GLSL = /* glsl */ `
@@ -169,11 +172,14 @@ const CANDY_GLSL = /* glsl */ `
 `;
 const FLAKES_GLSL = /* glsl */ `
 {
-  vec2 fp = vUv * FLAKE_SCALE;
-  vec3 fh = sdHash32(floor(fp));
-  float fw = length(fwidth(fp));
-  float vis = 1.0 - smoothstep(0.25, 0.9, fw);
-  vec3 tilt = (fh - 0.5) * (2.0 * FLAKE_TILT * vis);
+  // One round flake per cell of the suit's own (rest-pose) space, so they sit still on it and are not
+  // stretched by the UV layout.
+  vec3 fp = vRest * FLAKE_SCALE;
+  vec3 cell = floor(fp);
+  vec3 fh = sdHash33(cell);
+  float inFlake = 1.0 - smoothstep(0.3, 0.42, length(fp - cell - 0.5 - 0.3 * (sdHash33(cell + 17.0) - 0.5)));
+  float vis = 1.0 - smoothstep(0.25, 0.9, length(fwidth(fp)));
+  vec3 tilt = (fh - 0.5) * (2.0 * FLAKE_TILT * vis * inFlake);
   normal = normalize(normal + tilt - dot(tilt, normal) * normal);
 }
 `;
@@ -196,11 +202,11 @@ function detail(m, o = {}) {
   if (o.candy) defs.push(`#define CANDY_T vec3(${o.candy.map((x) => x.toFixed(3)).join(', ')})`);
   if (o.flakes) defs.push(`#define FLAKE_SCALE ${o.flakes.scale.toFixed(1)}`, `#define FLAKE_TILT ${o.flakes.tilt.toFixed(3)}`);
   if (o.brushed) defs.push(`#define BRUSH_SCALE ${o.brushed.scale.toFixed(1)}`, `#define BRUSH_AMP ${o.brushed.amp.toFixed(3)}`);
-  if (o.flakes || o.brushed) m.defines = { ...m.defines, USE_UV: '' };
+  if (o.brushed) m.defines = { ...m.defines, USE_UV: '' };
   m.onBeforeCompile = (sh) => {
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec2 occlusion;\nvarying vec2 vOcclusion;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOcclusion = occlusion;');
+      .replace('#include <common>', '#include <common>\nattribute vec2 occlusion;\nvarying vec2 vOcclusion;\nvarying vec3 vRest;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvOcclusion = occlusion;\nvRest = position;');
     let fs = sh.fragmentShader
       .replace('#include <common>', `#include <common>\n${defs.join('\n')}\n${NOISE_GLSL}`)
       .replace('#include <aomap_fragment>', AO_GLSL)
@@ -245,7 +251,7 @@ function materials(renderer) {
         clearcoatRoughness: 0.03,
         envMapIntensity: 0.75,
       }),
-      { candy: [0.93, 0.5, 0.52], flakes: { scale: 3600, tilt: 0.08 } },
+      { candy: [0.93, 0.5, 0.52], flakes: { scale: 650, tilt: 0.09 } },
     ),
     // Champagne gold, satin and brushed; the colour map's grime, brightened to a real metal's reflectance.
     Gold: detail(
@@ -385,21 +391,25 @@ export function loadModel(renderer, onReady, anchor) {
 }
 
 /**
- * Compile the model's shaders for the scene it will join, off the main thread where the browser supports
- * it (KHR_parallel_shader_compile): the physical materials are big, and compiling them at first draw stalls
- * a frame for a noticeable moment.
+ * Start compiling the model's shaders for the scene it will join before it is drawn: the physical materials
+ * are big, and compiling them at first draw stalls a frame for a noticeable moment. Where the browser can
+ * report progress (KHR_parallel_shader_compile) the model waits until they are done; elsewhere the driver
+ * still gets a head start.
  */
 function warmUp(renderer, object, anchor) {
   let root = anchor;
   while (root?.parent) root = root.parent;
-  if (!renderer?.compileAsync || !root?.isScene) return Promise.resolve();
+  if (!renderer?.compile || !root?.isScene) return Promise.resolve();
   // Compile as the composer's passes draw: into a linear render target (no tone mapping or sRGB encoding).
   const rt = new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType });
   const prev = renderer.getRenderTarget();
+  const camera = new THREE.PerspectiveCamera();
   renderer.setRenderTarget(rt);
   let p;
   try {
-    p = renderer.compileAsync(object, new THREE.PerspectiveCamera(), root);
+    p = renderer.extensions.has('KHR_parallel_shader_compile')
+      ? renderer.compileAsync(object, camera, root)
+      : (renderer.compile(object, camera, root), new Promise((resolve) => setTimeout(resolve, 10)));
   } finally {
     renderer.setRenderTarget(prev);
   }
