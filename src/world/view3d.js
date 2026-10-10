@@ -37,6 +37,9 @@ import { createIronMan } from './ironman.js';
 const AVATAR = 'ironman';
 
 export const FOV = 50;
+const FOG_NEAR = 480; // the haze never thickens past what a shot this far out would have
+const DOF_SPAN = 420; // depth of field is never shallower than focusing this far out gives
+const HERO_CLEAR = 48; // stars in front of Iron Man are cleared this far round his middle (world units)
 // Star sprites are sized in reference pixels: pixels of a 900px-tall frame. One
 // is uScale / REF_SCALE device pixels, so a star keeps its share of the frame
 // (and the field its density and brightness) on any window or screen.
@@ -265,8 +268,8 @@ function depthPoints(shared, { size, max, drift, dof, stellar = 1, spikes = 0, g
       attribute float bright;
       attribute float phase;
       attribute float hot;
-      uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDrift, uDof, uGain, uLightR, uLightGain, uFogK, uClear, uStellar, uSpikes, uGiants;
-      uniform vec3 uLight;
+      uniform float uSize, uMax, uScale, uFog, uTime, uFocus, uDrift, uDof, uGain, uLightR, uLightGain, uFogK, uClear, uDofSpan, uStellar, uSpikes, uGiants;
+      uniform vec3 uLight, uClearAt;
       uniform vec3 uColor;
       varying vec3 vC;
       varying float vSize;
@@ -294,7 +297,9 @@ function depthPoints(shared, { size, max, drift, dof, stellar = 1, spikes = 0, g
         float depth = max(1.0, -mv.z);
         float px = uSize * uScale / depth;
         float k = uScale / ${REF_SCALE.toFixed(2)};
-        float blur = uDof * clamp(abs(depth - uFocus) / uFocus - 0.12, 0.0, 1.3);
+        // Relative to the focus distance, but never as shallow as a close focus would make it: filming
+        // him close up, the stars round him stay crisp points rather than melting into bokeh.
+        float blur = uDof * clamp(abs(depth - uFocus) / max(uFocus, uDofSpan) - 0.12, 0.0, 1.3);
         // Scintillation, very subtle: two quick, incommensurate flickers per star.
         float tw = 1.0 + 0.05 * sin(uTime * (2.1 + phase * 2.9) + phase * 41.0) + 0.03 * sin(uTime * (4.3 + phase * 3.7) + phase * 17.0);
         // Apparent brightness: fades below a pixel (toward inverse-square, so distant
@@ -304,13 +309,13 @@ function depthPoints(shared, { size, max, drift, dof, stellar = 1, spikes = 0, g
         float dl = distance(p, uLight);
         float lit = uGain + uLightGain * exp(-dl * dl / (uLightR * uLightR));
         float fz = uFog * depth * uFogK;
-        // Clear the stars between the camera and the spider so it always reads,
-        // however dense the cluster it is crawling through.
-        vec4 lv = viewMatrix * vec4(uLight, 1.0);
+        // Clear the stars between the camera and the crawler (his whole figure) so he
+        // always reads, however dense the cluster he is crawling through.
+        vec4 lv = viewMatrix * vec4(uClearAt, 1.0);
         float ld = max(1.0, -lv.z);
         float lateral = length(mv.xy / depth - lv.xy / ld) * ld;
         float front = 1.0 - smoothstep(ld - 40.0, ld - 6.0, depth);
-        float clear = 1.0 - 0.88 * front * (1.0 - smoothstep(uClear * 0.3, uClear, lateral));
+        float clear = 1.0 - 0.88 * front * (1.0 - smoothstep(uClear * 0.5, uClear, lateral));
         // 0.62: the Gaussian core spreads a star's light over a few pixels; this keeps
         // the frame's total light where it was with one-pixel dots.
         float F = 0.62 * bright * prox * lit * clear * tw * exp(-fz * fz);
@@ -481,7 +486,9 @@ export function createView3D(canvas) {
     uLight: { value: new THREE.Vector3() },
     uLightR: { value: 210 },
     uLightGain: { value: 0.55 },
-    uClear: { value: 80 * SS },
+    uClear: { value: hero ? HERO_CLEAR : 80 * SS },
+    uClearAt: { value: new THREE.Vector3() },
+    uDofSpan: { value: DOF_SPAN },
   };
   const mat4 = new THREE.Matrix4();
   const quat = new THREE.Quaternion();
@@ -730,7 +737,9 @@ export function createView3D(canvas) {
     }
     camera.rotateZ(bank);
     camera.updateMatrixWorld();
-    fog.density = 0.45 / c.dist;
+    // Haze by the scale of the scene, not by how close the shot is: filming him close up
+    // must not fog out his own ball behind him.
+    fog.density = 0.45 / Math.max(c.dist, FOG_NEAR);
     shared.uFog.value = fog.density;
     // Focus pulls onto the spider, so the web in front and behind it softens.
     shared.uFocus.value = Math.max(80, camera.position.distanceTo(tmp.set(focus[0], focus[1], focus[2])));
@@ -788,6 +797,9 @@ export function createView3D(canvas) {
     mp.needsUpdate = true;
     mb.needsUpdate = true;
     shared.uLight.value.set(...spider.b);
+    // The clearing in front of him centres on his middle (between the crawler point and his chest).
+    if (hero) shared.uClearAt.value.fromArray(hero.chest()).add(tmp.set(...spider.b)).multiplyScalar(0.5);
+    else shared.uClearAt.value.copy(shared.uLight.value);
     const ship = run.phase === 'ship';
     const fade = 1 - Math.exp(-4 * dt);
 

@@ -4,22 +4,27 @@
  * ship overview. Pure simulation, no DOM, deterministic at SIM_DT, so
  * seek(t) reproduces exactly what live playback would show.
  *
- * It is also the cinematographer. Every move is keyframed and then spring
- * smoothed (world/camera.js), so there are no cuts:
- *  - intro: far out on the whole nebula from high up, gliding in past the
- *    neighbouring balls while the spider abseils down onto the first one;
- *  - each section: an establishing view of the whole ball, then 2-3 sub-shots
- *    (a slow push-in on the spider, a slow arc round it to another elevation,
- *    in a per-section order), easing back out before the leap;
- *  - leaps: the camera starts turning during the crouch, frames the flight
- *    side-on (from the nearer side, unless a neighbouring ball blocks it) so
- *    the trailing legs and the next ball are both in shot, and settles into the
- *    next establishing view on landing, all on one slow turn;
- *  - finale: a rising orbit of the whole nebula, then a slow closing drift onto
- *    the spider resting on an outer ball with the nebula behind it.
- * Each move is pre-visualised against the world before it is used: the
- * camera never sits inside a ball's dense core, and angles are chosen for a
- * clear line of sight to the spider.
+ * It is also the cinematographer, and Iron Man is its subject: every shot is
+ * framed on him (his size on screen, where he sits in the frame), and every
+ * move is spring smoothed (world/camera.js), so there are no cuts:
+ *  - intro: a brief wide look at the first ball, pushing in onto him;
+ *  - walking, reading, firing: a medium two-shot (he fills about half the view
+ *    height) re-planned a few times a second from where the words he is firing
+ *    at, and the next few, would sit on screen: the camera circles him slowly
+ *    to keep them and his firing hand in frame (over the shoulder, a
+ *    three-quarter view), with lead room toward them or the way he walks;
+ *  - takeoff: as the last words go it drifts round toward a rear
+ *    three-quarter view of the leap, and holds it through the crouch;
+ *  - flight: a chase camera close behind him and to one side, looking a little
+ *    down and ahead along his path through the stars;
+ *  - landing: it flies on ahead and settles low in front of where he lands,
+ *    looking up, before he touches down; it holds the landing, pushes in as he
+ *    rises, and hands back to the two-shot. The camera stays on one side of
+ *    the leap throughout, so the screen direction never flips;
+ *  - finale: after his last leap a rising orbit of the whole nebula, then a
+ *    slow drift back onto him resting with the nebula behind him.
+ * The lens keeps out of every ball's blinding nucleus and clear of him, and
+ * shots that would sit in other balls or look through a nucleus cost more.
  *
  * Pacing: each section's read time grows with its word count (5-12.5 s), and
  * the whole run is held under ~4 minutes however long the prompt.
@@ -31,7 +36,7 @@
 
 import { createRunState, MAX_TENTACLES, SIM_DT } from '../core/contracts.js';
 import { computeScore } from '../analyze/score.js';
-import { clearDistance, fitDistance, followCamera, orbitDir, sampleKeys, shotCost } from '../world/camera.js';
+import { clearDistance, fitDistance, followCamera, orbitDir, sampleKeys, smoothDamp } from '../world/camera.js';
 import { fork, range } from '../core/rng.js';
 import { Spider } from '../world/spider.js';
 
@@ -52,17 +57,7 @@ const LOG_CAP = 40;
 // it lands inside, on the side facing where it came from, and crosses toward
 // the side facing where it goes next, for at most VISIT_CRAWL seconds.
 const VISIT_CRAWL = 3.5;
-const VISIT_EASE = 1.4; // the camera eases back out this long before the next leap
-const VISIT_DIST = 0.7; // of the ball's fit distance, once landed
-const VISIT_TURN = 0.16; // rad/s round it
-const TURN_U = 0.12; // the leap's camera turn finishes this far into the reading
-const LEAP_TURN = 1.1; // rad/s: the turn to the side-on leap view averages no faster than this
-// While the spider crawls through a ball the camera comes in close and keeps
-// revolving round it (rising and dipping once), so the stardust slides past in
-// depth; it eases back out to the keyed wide view before the leap.
-const ORBIT_U = [0.08, 0.92]; // reading-progress window of the close orbit
-const ORBIT_RATE = 0.16; // rad/s round the spider
-const ORBIT_DIST = 0.7; // of the ball's fit distance
+const VISIT_EASE = 1.4; // a beat after crossing, before the next leap
 const PI = Math.PI;
 const ROAM_SPEED = 13; // world units/s it averages over a read, pauses included: a stroll, stopping often to fire
 // He reads from the middle of each ball, the stars all round him, not from its
@@ -78,31 +73,58 @@ const SLOPE = 0.2; // rise over run at most: he walks, he does not climb
 const ROAM_REACH = 0.1; // the goal moves on to the next waypoint once it is this close (radii)
 const ZOOM_MAX = 1.0; // camera zoom rate cap, log distance per second (~1.7% a frame)
 
+// The hero camera. Iron Man (world/ironman.js) stands HERO_H tall with his feet
+// about 10 below the crawler's body point, so his middle is HERO_MID above it.
+const HERO_H = 46;
+const HERO_MID = 13;
+const LENS_TAN = Math.tan((50 * Math.PI) / 360); // half the vertical field of view (view3d FOV)
+// Shot sizes, as the share of the view height he fills standing.
+const SIZE_MEDIUM = 0.48; // walking, reading, firing: a medium two-shot
+const SIZE_WIDE = 0.41; // the two-shot may pull back this far to keep his words in frame
+const SIZE_LAUNCH = 0.46; // the takeoff
+const SIZE_LAND = 0.47; // the landing as he touches down (crouched he is about half that)...
+const SIZE_RISE = 0.54; // ...pushing in to this as he rises
+const SIZE_OPEN = 0.09; // the brief wide look the run opens on
+const SIZE_REST = 0.42; // the finale's last shot of him
+const CHASE_DIST = 2.3 * HERO_H; // in flight, close behind him (lying along his path he reads at ~30%)
+const CHASE_AZ = 0.72; // rad off straight behind him, to one side
+const CHASE_EL = 0.16; // a little above, looking down and ahead along his path
+const LAUNCH_AZ = 1.2; // rad off straight behind: a rear three-quarter view of the takeoff
+const LAND_AZ = 0.95; // rad off straight ahead: a front three-quarter view of the landing
+const LAND_EL = -0.1; // low, looking up at him
+const LAND_HOLD = 0.9; // s after touchdown the landing shot holds before handing back...
+const LAND_BLEND = 2.3; // ...over this long
+const SHOT_Y = -0.06; // he sits a little below the middle of the frame (NDC): headroom
+const PANS = [-0.3, -0.15, 0, 0.15, 0.3]; // where across the frame the two-shot may put him (NDC)
+const ELS = [-0.07, 0.09, 0.25]; // two-shot elevations it chooses between (rad, > 0 looks down)
+const PLAN_EVERY = 0.2; // s between re-plans of the two-shot
+const AHEAD = 4; // s the two-shot looks ahead (see planAhead)...
+const AHEAD_DT = 0.25; // ...in steps of this...
+const AHEAD_N = Math.round(AHEAD / AHEAD_DT) + 1;
+const AHEAD_BINS = 48; // ...over this many angles round him...
+const AHEAD_EVERY = 0.5; // ...again this often...
+const AHEAD_LOOK = 1.1; // ...and the camera aims this far along it (its springs lag about that much)
+const AZ_RATE = 0.5; // rad/s: the two-shot circles him no faster than this
+const SHOT_TURN = 0.4; // s: the two-shot's angle round him eases onto its plan this fast
+const BACK_W = 0.3; // what seeing him from behind costs a two-shot (over the shoulder is fine, but not for long)
+const HAND_W = 0.5; // ...and his body hiding the firing hand
+const MIN_GAP = 40; // the lens never comes nearer his middle than this
+const NUCLEUS = 0.2; // ...nor into a ball's blinding nucleus (radii)
+const PRE_LEAP = 1.6; // s over which it drifts round toward the takeoff view once the last words go
+
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const lerp = (a, b, t) => a + (b - a) * t;
 const smooth = (x) => x * x * (3 - 2 * x);
+/** Smoothstep of x from a to b (either order). */
+const ss = (a, b, x) => smooth(clamp((x - a) / (b - a), 0, 1));
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
+/** Distance at which he fills `share` of the view height. */
+const shotDist = (share) => HERO_H / (share * 2 * LENS_TAN);
 
 /** Planned read time for a section (s): longer sections linger, within limits. */
 const readSeconds = (count) => (count ? clamp(5.5 + 1.5 * Math.sqrt(count), MIN_READ, MAX_READ) : 2.5);
 /** Floaty, unhurried leaps; long gaps take longer and arc higher. */
 const airTime = (L) => clamp(1.7 + L / 380, 2.0, 3.6);
-const AIR_LEAD = 0.45; // s: the in-flight shot aims this far ahead of him along his velocity
-const AIR_FIT = 0.42; // the in-flight shot frames at least this share of the destination ball
-
-/** Elevation classes, radians of pitch (> 0 looks down). */
-const ELEV = { top: 1.12, high: 0.8, three: 0.5, side: 0.12, low: -0.3 };
-// Each section's establishing elevation, cycling, like the reference: three-quarter,
-// top-down, side-on, high three-quarter, low looking up, top, shallow side.
-const EST = ['three', 'top', 'side', 'high', 'low', 'top', 'three'];
-// The arc goes to a clearly different elevation.
-const ARC_TO = {
-  top: ['side', 'three'],
-  high: ['side', 'low'],
-  three: ['top', 'low'],
-  side: ['high', 'top'],
-  low: ['three', 'high'],
-};
 
 /** Program shown in the CRAWLER.PY panel; revealed as the crawl progresses. */
 export function crawlerProgram(fileName) {
@@ -156,13 +178,12 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   let span; // words read per reach in the active section
   let burstLeft; // quick reaches left in the current flurry
   let planRand;
-  let plans; // per-section shot plans
-  let intro; // intro keys (absolute run.t)
+  let plans; // per-section plans: { T } read time
   let ship; // finale plan
-  let lastRecipe;
   let roamIdx; // next waypoint of the active section's route
   let visitQueue; // extra balls still to visit before the next section
-  let visit; // the extra ball being visited: { c, land, exit, crawl, t0, yaw0, pitch0, spin }
+  let visit; // the extra ball being visited: { c, land, exit, crawl, t0, leaveAt }
+  let hc; // the hero camera's state (see resetCamera)
   const key = {};
   const tgt = { x: 0, y: 0, z: 0, dist: 1, yaw: 0, pitch: 0 };
   const dir = [0, 0, 0];
@@ -359,199 +380,10 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return out;
   }
 
-  /* --------------------------------------------------------- shot design */
+  /* ------------------------------------------------------------ planning */
 
   function makeKey(t, w, dist, yaw, pitch, b = 1) {
     return { t, b, w, ld: Math.log(Math.max(1, dist)), yaw, pitch };
-  }
-
-  /** Roughly where the spider is at reading progress u (0..1) of section i. */
-  function spiderAt(i, u) {
-    const route = routes[i];
-    let left = ROAM_SPEED * readT[i] * clamp(u, 0, 1);
-    for (let k = 1; k < route.length; k++) {
-      const a = route[k - 1];
-      const b = route[k];
-      const L = Math.hypot(b.x - a.x, b.y - a.y, b.z - a.z);
-      if (left <= L) {
-        const t = L > 0 ? left / L : 0;
-        return { x: lerp(a.x, b.x, t), y: lerp(a.y, b.y, t), z: lerp(a.z, b.z, t) };
-      }
-      left -= L;
-    }
-    return route[route.length - 1];
-  }
-
-  /**
-   * The reading move for one section: establishing view, then sub-shots in
-   * the recipe's order (u is reading progress 0..1), easing back out at the end.
-   */
-  function shotKeys(recipe, Ye, Pe, Ya, Pa, s, fit, estDist) {
-    const E = makeKey(0, 0.3, estDist, Ye, Pe);
-    if (recipe === 0)
-      // Push in, then arc round to the new elevation.
-      return [
-        E,
-        makeKey(0.16, 0.34, estDist * 0.97, Ye + s * 0.07, Pe),
-        makeKey(0.5, 0.88, 0.7 * fit, Ye + s * 0.24, lerp(Pe, Pa, 0.2)),
-        makeKey(0.84, 0.8, 0.85 * fit, Ya, Pa),
-        makeKey(1, 0.5, 0.95 * fit, Ya + s * 0.12, lerp(Pa, Pe, 0.35)),
-      ];
-    if (recipe === 1)
-      // A slow wide orbit to the new elevation first, then push in from there.
-      return [
-        E,
-        makeKey(0.12, 0.34, estDist * 0.97, Ye + s * 0.06, Pe),
-        makeKey(0.46, 0.55, 0.92 * fit, Ya, Pa),
-        makeKey(0.8, 0.88, 0.7 * fit, Ya + s * 0.16, Pa),
-        makeKey(1, 0.5, 0.95 * fit, Ya + s * 0.26, lerp(Pa, Pe, 0.3)),
-      ];
-    // Drift in close, rise or sink round it, then hang back a little.
-    return [
-      E,
-      makeKey(0.3, 0.86, 0.72 * fit, Ye + s * 0.3, Pe),
-      makeKey(0.62, 0.84, 0.8 * fit, Ya, Pa),
-      makeKey(0.84, 0.72, 0.92 * fit, Ya + s * 0.18, lerp(Pa, Pe, 0.25)),
-      makeKey(1, 0.5, 0.95 * fit, Ya + s * 0.28, lerp(Pa, Pe, 0.4)),
-    ];
-  }
-
-  /**
-   * Pre-visualise a keyed reading move on section i: where the camera would
-   * really sit once kept clear of the balls, how much it loses its framing to
-   * that, and what blocks its view. Lower is better.
-   */
-  function pathCost(i, keys) {
-    const c = clusters[i];
-    let cost = 0;
-    let ref = -1;
-    for (let k = 0; k <= 12; k++) {
-      const u = k / 12;
-      const q = sampleKeys(keys, u, key);
-      const sp = spiderAt(i, u);
-      const w = clamp(q.w, 0, 1);
-      const x = lerp(c.cx, sp.x, w);
-      const y = lerp(c.cy, sp.y, w);
-      const z = lerp(c.cz, sp.z, w);
-      orbitDir(q.yaw, q.pitch, dir);
-      const want = Math.exp(q.ld);
-      const dist = clearDistance(x, y, z, dir, want, clusters, 0.9, Math.max(110, want * 0.45), ref < 0 ? want : ref);
-      ref = dist;
-      cost += shotCost(x, y, z, dir, dist, clusters, [i]) + 0.8 * Math.abs(Math.log(dist / want));
-    }
-    return cost / 13;
-  }
-
-  /**
-   * Plan section i: the leap into it (side-on to the arc, on whichever side
-   * the camera already is), the establishing view, and a sequence of sub-shots
-   * while it reads.
-   */
-  function planSection(i, from, goal) {
-    const c = clusters[i];
-    const sec = analysis.sections[i];
-    const fit = fitR(c.r);
-    const cam = run.camera;
-    const estName = EST[i % EST.length];
-    const Pe = ELEV[estName] + range(planRand, -0.06, 0.06);
-    const opts = ARC_TO[estName];
-    const jitter = range(planRand, -0.06, 0.06);
-
-    let air = null;
-    let turn = planRand() < 0.5 ? -1 : 1;
-    let yawRef = cam.yaw;
-    let moving = false; // the camera already has a direction of turn
-    if (from) {
-      // Pre-visualise the flight from nearby angles and keep the clearest,
-      // preferring a side-on view of the arc and the smallest turn. The camera
-      // passes this angle late in the flight, on one smooth turn from where the
-      // last shot ended to the next establishing view.
-      const tr = run.travel;
-      const tm = tr.crouch + tr.air * 0.08;
-      const tEnd = tr.dur + BREATH + TURN_U * readT[i];
-      const line = lerp(cam.pitch, Pe, tm / tEnd);
-      const leapYaw = Math.atan2(goal.x - from[0], goal.z - from[2]);
-      const skip = [i, i - 1];
-      const flightCost = (y, pitch) => leapCost(from, goal, tr.apex, c, y, pitch, skip);
-      let bestCost = Infinity;
-      air = { yaw: cam.yaw, pitch: line, t: tm, hold: tr.crouch + tr.air + 0.25, end: tEnd };
-      for (const pitch of [line, clamp(line + 0.2, -0.4, 1.0)]) {
-        for (let k = -4; k <= 4; k++) {
-          const y = cam.yaw + k * 0.15;
-          const endOn = Math.abs(Math.cos(y - leapYaw)) * Math.cos(pitch);
-          const cost = 0.8 * Math.abs(y - cam.yaw) + 0.5 * endOn + 0.15 * Math.abs(pitch - line) + flightCost(y, pitch);
-          if (cost < bestCost) {
-            bestCost = cost;
-            air = { yaw: y, pitch, t: tm, hold: tr.crouch + tr.air + 0.25, end: tEnd };
-          }
-        }
-      }
-      if (Math.abs(air.yaw - cam.yaw) > 0.05) {
-        turn = Math.sign(air.yaw - cam.yaw);
-        moving = true;
-      }
-      // Whatever was clearest, watch the leap itself side-on and low, so the arc
-      // reads: from the nearer side, unless the other sees it far more clearly
-      // (leaping out of the middle of one ball into the middle of the next, a
-      // neighbouring ball can stand right in the way of one side).
-      let side = 0;
-      let sideCost = Infinity;
-      for (const off of [PI / 2, -PI / 2]) {
-        const d = wrap(leapYaw + off - cam.yaw);
-        const cost = 0.4 * Math.abs(d) + flightCost(cam.yaw + d, 0.12);
-        if (cost < sideCost) {
-          sideCost = cost;
-          side = d;
-        }
-      }
-      air.yaw = cam.yaw + side;
-      air.pitch = 0.12;
-      // A big turn takes longer (later into the flight), so it never whips round.
-      air.t = Math.min(Math.max(air.t, Math.abs(side) / LEAP_TURN), air.hold - 0.3);
-      yawRef = air.yaw;
-    }
-
-    // Pre-visualise candidate moves (where the establishing view sits, which
-    // way the arc swings, how far, to which elevation) and keep the one with
-    // the clearest view of the spider all the way through, preferring to keep
-    // turning the way the camera already is.
-    const estDist = 1.0 * fit;
-    const recipe = (lastRecipe + 1 + Math.floor(planRand() * 2)) % 3; // never the same twice running
-    lastRecipe = recipe;
-    const base = yawRef + turn * range(planRand, 0.1, 0.25);
-    const calm = clamp((readT[i] - 3) / 6, 0.5, 1); // short reads get smaller moves, never faster ones
-    let keys = null;
-    let bestCost = Infinity;
-    for (let k = -3; k <= 3; k++) {
-      for (const sgn of [turn, -turn]) {
-        for (const amt of [0.55 * calm, 0.8 * calm]) {
-          for (const name of opts) {
-            const Ye = base + k * 0.15;
-            if (moving && turn * (Ye - yawRef) < -0.02) continue; // keep turning the same way, no wobble
-            const Pa = Pe + clamp(ELEV[name] + jitter - Pe, -0.85 * calm, 0.85 * calm);
-            const cand = shotKeys(recipe, Ye, Pe, Ye + sgn * amt, Pa, sgn, fit, estDist);
-            const cost = pathCost(i, cand) + 0.3 * Math.abs(k * 0.15) + (sgn === turn ? 0 : 0.12) + 0.06 * planRand();
-            if (cost < bestCost) {
-              bestCost = cost;
-              keys = cand;
-            }
-          }
-        }
-      }
-    }
-    const E = keys[0];
-    plans[i] = { E, keys, air, T: readT[i], fit, turnKeys: null, walkT: 0, ...chooseOrbit(i, keys, fit, readT[i], turn) };
-    if (air) {
-      // The camera starts turning as the spider crouches (anticipation), is
-      // side-on to the arc mid-flight, and arrives on the establishing view
-      // just as reading begins: one unhurried turn across the whole leap.
-      // It runs on a little into the reading so even a big change of
-      // elevation stays slow.
-      const ang = (t, yaw, pitch) => ({ t, b: 0, w: 0, ld: 0, yaw, pitch });
-      const to = sampleKeys(keys, TURN_U, {});
-      // Side-on is held through the whole flight; the move to the next view starts after touchdown.
-      plans[i].turnKeys = [ang(0, cam.yaw, cam.pitch), ang(air.t, air.yaw, air.pitch), ang(Math.min(air.hold, air.end - 0.3), air.yaw, air.pitch), ang(air.end, to.yaw, to.pitch)];
-    }
   }
 
   /** The finale: where the spider rests and the keys of the orbit and the closing drift. */
@@ -579,16 +411,16 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const rest = best ? { x: best.cx + restDir[0] * best.r * REST_IN, y: best.cy + restDir[1] * best.r * REST_IN, z: best.cz + restDir[2] * best.r * REST_IN } : { x: B.x, y: B.y, z: B.z };
     const closeDist = best ? fitR(best.r) * 1.25 : fitB;
     const keys = [
-      // Pull back while it makes its last leap, keeping it near the middle...
+      // Pull back once he has landed from his last leap...
       makeKey(0, 0.3, fitB * 1.02, startYaw + turn * 0.12, 0.34, 0),
       makeKey(3.6, 0.16, fitB * 1.04, startYaw + turn * 0.5, 0.42, 0),
       // ...orbit the whole nebula, rising over it...
       makeKey(8.6, 0.08, fitB * 0.98, startYaw + turn * 1.3, 0.74, 0),
-      // ...then drift slowly in onto the spider, the nebula behind it.
+      // ...then drift in (the last shot of him takes over from here, see shipTarget).
       makeKey(12.6, 0.55, Math.sqrt(fitB * closeDist) * 1.05, finalYaw - turn * 0.25, 0.46, 0),
       makeKey(SHIP_SETTLE, 0.82, closeDist, finalYaw, pitchEnd, 0),
     ];
-    ship = { keys, rest, cluster: best, turn };
+    ship = { keys, rest, cluster: best, turn, finalYaw };
   }
 
   /* --------------------------------------------------------------- reset */
@@ -601,9 +433,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     run.logSeq = 0;
     planRand = fork(seed, 'camera');
     cadence = fork(seed, 'cadence');
-    plans = [];
+    plans = analysis.sections.map((s, i) => ({ T: readT[i] }));
     ship = null;
-    lastRecipe = Math.floor(planRand() * 3);
     const c0 = clusters[0];
     // Start inside the first ball, a short walk from its first words; it wakes
     // and walks over to them while the camera flies in.
@@ -623,28 +454,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     recent = [];
     run.silk.push({ x: spider.p[0], y: spider.p[1], z: spider.p[2], s: 0, t: 0 });
     scoreTick = 0;
-
-    // The opening: already close on the first ball, looking down past the
-    // spider, then a slow glide round and in to the first reading view.
-    const fitB = fitDistance(B.radius, aspect(), 50, 0.92);
-    run.camera = { x: B.x, y: B.y, z: B.z, dist: fitB * 2.1, yaw: planRand() * PI * 2, pitch: 0.98 };
-    intro = null;
-    if (n && c0) {
-      const goal = landing(0);
-      planSection(0, null, goal);
-      const p = plans[0];
-      const E = p.E;
-      const turn = planRand() < 0.5 ? -1 : 1;
-      const y0 = E.yaw - turn * 0.9;
-      const tEnd = BOOT + INTRO_AIR + LAND + INTRO_HOLD * 0.6;
-      intro = [
-        makeKey(0, 0.55, p.fit * 1.3, y0, 0.85, 1),
-        makeKey(tEnd * 0.5, 0.6, p.fit * 1.0, lerp(y0, E.yaw, 0.55), lerp(0.85, E.pitch, 0.5), 1),
-        { ...E, t: tEnd },
-      ];
-      const s0 = run.spider;
-      run.camera = { x: lerp(c0.cx, s0.x, 0.55), y: lerp(c0.cy, s0.y, 0.55), z: lerp(c0.cz, s0.z, 0.55), dist: p.fit * 1.3, yaw: y0, pitch: 0.85 };
-    }
+    resetCamera();
   }
 
   function log(verb, text, section) {
@@ -654,6 +464,622 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   }
 
   /* -------------------------------------------------------------- camera */
+
+  const RIG = ['x', 'y', 'z', 'dist', 'yaw', 'pitch', 'move', 'turn', 'lead'];
+  /**
+   * A camera target: the orbit rig (look-at, distance, angles; see
+   * world/camera.js) plus how the follow eases onto it: `move` and `turn` are
+   * its smoothing times (s), `lead` how much of his velocity the look-at runs
+   * ahead by to make up the follow's lag (1: all of it).
+   */
+  const rig = () => ({ x: 0, y: 0, z: 0, dist: 1, yaw: 0, pitch: 0, move: 0.5, turn: 0.7, lead: 0 });
+  const setEase = (r, move, turn, lead) => {
+    r.move = move;
+    r.turn = turn;
+    r.lead = lead;
+    return r;
+  };
+  // Scratch for the camera maths.
+  const H = [0, 0, 0]; // his middle
+  const E = [0, 0, 0]; // a lens position
+  const F = [0, 0, 0]; // looking from it: forward, right, up
+  const R = [0, 0, 0];
+  const Up = [0, 0, 0];
+  const A = [0, 0, 0];
+  const scr = { x: 0, y: 0, z: 0 };
+  const cand = { sx: 0, xd: 0 };
+  const vis = new Float64Array(PANS.length);
+  const aimT = rig();
+
+  /** The opening state of the hero camera: a wide look at the first ball, centred on him. */
+  function resetCamera() {
+    const az0 = planRand() * PI * 2;
+    const az = az0 + (planRand() < 0.5 ? -0.7 : 0.7); // it glides round as it pushes in
+    const D = shotDist(SIZE_MEDIUM);
+    hc = {
+      az0,
+      plan: { az, el: ELS[1], D, sx: 0 }, // the two-shot the planner wants...
+      shot: { az, el: ELS[1], lD: Math.log(D), sx: 0, vAz: 0, vEl: 0, vD: 0, vSx: 0 }, // ...and where it has eased to
+      planAt: 0,
+      leap: null, // the leap being filmed (see beginLeap)
+      sched: [], // [x, y, z, t] per word he will fire at soon (see schedule)
+      attAhead: [],
+      aheadAt: 0, // when to look ahead again (see planAhead)
+      path: { t0: 0, n: 0, bin: new Int32Array(AHEAD_N), az: new Float64Array(AHEAD_N), el: new Float64Array(AHEAD_N) },
+      pathAt: { az: 0, el: 0 },
+      dpA: new Float64Array(AHEAD_BINS * ELS.length),
+      dpB: new Float64Array(AHEAD_BINS * ELS.length),
+      dpBack: new Int32Array(AHEAD_N * AHEAD_BINS * ELS.length),
+      preT0: -1, // when his last words went: the takeoff is coming
+      pre: 0,
+      preAz: 0,
+      vel: [0, 0, 0], // his velocity, smoothed, for the look-at's lead
+      screenDir: 0, // which way he walks across the screen: kept unless there is good reason
+      att: [], // [x, y, z, weight] per word he is firing at or about to
+      turnWay: {}, // per blend, which way round its yaw goes (see mixRig)
+      air: 0, // off the ground (see stepAirborne)
+      fly: 0,
+      two: rig(),
+      open: rig(),
+      launch: rig(),
+      chase: rig(),
+      land: rig(),
+      rest: rig(),
+      out: rig(),
+      keyed: rig(),
+    };
+    openRig(hc.open);
+    const o = hc.open;
+    run.camera = { x: o.x, y: o.y, z: o.z, dist: o.dist, yaw: o.yaw, pitch: o.pitch };
+  }
+
+  /**
+   * How far off the ground he is, 0..1, eased as world/ironman.js eases it: in
+   * the air his pelvis rides the crawler point, on the ground it stands over
+   * his feet (settling back there for a second or so after a landing).
+   */
+  function stepAirborne(dt) {
+    const sim = spider.sim;
+    hc.air += ((sim.mode === 'jump' && sim.launched ? 1 : 0) - hc.air) * (1 - Math.exp(-9 * dt));
+    hc.fly += ((spider.taut || 0) - hc.fly) * (1 - Math.exp(-9 * dt));
+  }
+
+  /** His middle in the world: over his feet standing, at the crawler point in the air. */
+  function heroPoint(out) {
+    const s = run.spider;
+    out[0] = s.x;
+    out[1] = s.y + HERO_MID * (1 - clamp(Math.max(hc.air, hc.fly), 0, 1));
+    out[2] = s.z;
+    return out;
+  }
+
+  /** Camera basis looking from e toward p: forward F, right R, up Up. */
+  function lookBasis(e, p) {
+    F[0] = p[0] - e[0];
+    F[1] = p[1] - e[1];
+    F[2] = p[2] - e[2];
+    const l = Math.hypot(F[0], F[1], F[2]) || 1;
+    F[0] /= l;
+    F[1] /= l;
+    F[2] /= l;
+    const rl = Math.hypot(F[0], F[2]) || 1;
+    R[0] = -F[2] / rl;
+    R[1] = 0;
+    R[2] = F[0] / rl;
+    Up[0] = -R[2] * F[1];
+    Up[1] = R[2] * F[0] - R[0] * F[2];
+    Up[2] = R[0] * F[1];
+  }
+
+  /** Where (x, y, z) falls on screen through that basis from e (NDC, x right, y up), and its depth. */
+  function onScreen(e, x, y, z, asp) {
+    const qx = x - e[0];
+    const qy = y - e[1];
+    const qz = z - e[2];
+    const d = qx * F[0] + qy * F[1] + qz * F[2];
+    const iz = 1 / Math.max(1e-3, d);
+    scr.z = d;
+    scr.x = ((qx * R[0] + qz * R[2]) * iz) / (LENS_TAN * asp);
+    scr.y = ((qx * Up[0] + qy * Up[1] + qz * Up[2]) * iz) / LENS_TAN;
+    return scr;
+  }
+
+  /**
+   * Rig target for a shot of point p from azimuth az and elevation el (> 0
+   * above) at distance D, the view turned so p sits at (sx, sy) on screen
+   * (NDC). The look-at point moves off him rather than the lens moving, so
+   * the composition holds however the shot then moves.
+   */
+  function compose(p, az, el, D, sx, sy, out) {
+    orbitDir(az, el, dir);
+    E[0] = p[0] + dir[0] * D;
+    E[1] = p[1] + dir[1] * D;
+    E[2] = p[2] + dir[2] * D;
+    lookBasis(E, p);
+    const a = sx * LENS_TAN * aspect();
+    const b = sy * LENS_TAN;
+    let gx = F[0] - R[0] * a - Up[0] * b;
+    let gy = F[1] - Up[1] * b;
+    let gz = F[2] - R[2] * a - Up[2] * b;
+    const gl = Math.hypot(gx, gy, gz);
+    gx /= gl;
+    gy /= gl;
+    gz /= gl;
+    out.x = E[0] + gx * D;
+    out.y = E[1] + gy * D;
+    out.z = E[2] + gz * D;
+    out.dist = D;
+    out.yaw = Math.atan2(-gx, -gz);
+    out.pitch = Math.asin(clamp(-gy, -1, 1));
+    return out;
+  }
+
+  function copyRig(a, out) {
+    for (const k of RIG) out[k] = a[k];
+    return out;
+  }
+
+  /**
+   * Blend two camera targets: look-at and angles on arcs (so the lens swings
+   * round him, never through him), distance in log. Which way round the yaw
+   * blends is chosen (the short way) when the blend starts and then held, so
+   * a target that wanders past the far side of the other never flips it
+   * (`slot` names the blend, to remember it).
+   */
+  function mixRig(a, b, w, out, slot) {
+    const p = hc.turnWay[slot];
+    const d = w > 0 && p !== undefined ? p + wrap(b.yaw - a.yaw - p) : wrap(b.yaw - a.yaw);
+    hc.turnWay[slot] = d;
+    if (w <= 0) return a === out ? out : copyRig(a, out);
+    if (w >= 1) return copyRig(b, out);
+    out.x = lerp(a.x, b.x, w);
+    out.y = lerp(a.y, b.y, w);
+    out.z = lerp(a.z, b.z, w);
+    out.dist = a.dist * Math.pow(b.dist / a.dist, w);
+    out.yaw = a.yaw + d * w;
+    out.pitch = lerp(a.pitch, b.pitch, w);
+    out.move = lerp(a.move, b.move, w);
+    out.turn = lerp(a.turn, b.turn, w);
+    out.lead = lerp(a.lead, b.lead, w);
+    return out;
+  }
+
+  /** The words he is firing at, and the next few he will (each counting less): [x, y, z, weight] in hc.att. */
+  function attention() {
+    const a = hc.att;
+    a.length = 0;
+    const wp = world.wordPos;
+    const add = (id, w) => a.push(wp[id * 3], wp[id * 3 + 1], wp[id * 3 + 2], w);
+    for (const tn of run.tentacles) add(tn.wordId, tn.stage === 'retract' ? 0.3 : 1);
+    if ((run.phase === 'read' || run.phase === 'walk') && run.active < n) {
+      const sec = analysis.sections[run.active];
+      const end = sec.start + sec.count;
+      for (let k = 0, id = cursor; k < 3 && id < end; k++, id += span) add(id, 0.6 * 0.78 ** k);
+    }
+    return a;
+  }
+
+  /**
+   * How badly a lens at e, looking at p, sits among the stars: in a blinding
+   * nucleus, inside another ball than his (its stars all round the lens), or
+   * looking through a nucleus at him. 0 is clear.
+   */
+  function crowding(e, p) {
+    let cost = 0;
+    const lx = p[0] - e[0];
+    const ly = p[1] - e[1];
+    const lz = p[2] - e[2];
+    const L = Math.hypot(lx, ly, lz) || 1;
+    for (const c of clusters) {
+      if (c.extra) continue; // dim scenery: flown through
+      const ox = c.cx - e[0];
+      const oy = c.cy - e[1];
+      const oz = c.cz - e[2];
+      const d = Math.hypot(ox, oy, oz) / c.r;
+      cost += 1.2 * ss(0.45, 0.18, d);
+      if (d < 0.85 && Math.hypot(p[0] - c.cx, p[1] - c.cy, p[2] - c.cz) > c.r) cost += 0.4 * ss(0.85, 0.6, d);
+      const along = (ox * lx + oy * ly + oz * lz) / L;
+      if (along > 0 && along < L) {
+        const miss = Math.hypot(ox - (lx / L) * along, oy - (ly / L) * along, oz - (lz / L) * along) / c.r;
+        cost += 0.6 * ss(0.3, 0.1, miss);
+      }
+    }
+    return cost;
+  }
+
+  /**
+   * Score a two-shot of him (at H) from (az, el) at distance D; lower is
+   * better. It counts the (weighted) share of his words (hc.att) it would lose,
+   * off screen or hidden behind him, for the best of the pans (cand.sx), and
+   * of the firing hands his body would hide; then how it sees him (from behind
+   * costs more), its elevation, the stars round the lens, and lead room the
+   * way he walks (cand.xd: which way that is across the screen).
+   */
+  function twoShotCost(az, el, D, moving, hx, hz) {
+    const asp = aspect();
+    orbitDir(az, el, dir);
+    E[0] = H[0] + dir[0] * D;
+    E[1] = H[1] + dir[1] * D;
+    E[2] = H[2] + dir[2] * D;
+    lookBasis(E, H);
+    const bx = 10 / (D * LENS_TAN * asp); // his half-width on screen, arms in
+    const by = HERO_H / 2 / (D * LENS_TAN); // his half-height
+    vis.fill(0);
+    let all = 0;
+    let hidden = 0;
+    const a = hc.att;
+    const cy = H[1] + 9; // his chest
+    for (let i = 0; i < a.length; i += 4) {
+      const w = a[i + 3];
+      all += w;
+      // The firing hand: an arm's length out from his chest toward the word.
+      const dx = a[i] - H[0];
+      const dy = a[i + 1] - cy;
+      const dz = a[i + 2] - H[2];
+      const dl = Math.hypot(dx, dy, dz) || 1;
+      onScreen(E, H[0] + (dx / dl) * 20, cy + (dy / dl) * 20, H[2] + (dz / dl) * 20, asp);
+      if (scr.z > D + 2 && Math.abs(scr.x) < bx * 0.75 && Math.abs(scr.y) < by) hidden += w;
+      onScreen(E, a[i], a[i + 1], a[i + 2], asp);
+      if (scr.z < 12) continue; // behind the lens
+      if (scr.z > D && Math.abs(scr.x) < bx && Math.abs(scr.y) < by) continue; // behind him
+      for (let k = 0; k < PANS.length; k++) if (Math.abs(scr.x + PANS[k]) < 0.86 && Math.abs(scr.y + SHOT_Y) < 0.84) vis[k] += w;
+    }
+    let xd = 0;
+    if (moving) {
+      onScreen(E, H[0] + hx * 30, H[1], H[2] + hz * 30, asp);
+      xd = scr.x > 0.02 ? 1 : scr.x < -0.02 ? -1 : 0;
+    }
+    let best = Infinity;
+    for (let k = 0; k < PANS.length; k++) {
+      const sx = PANS[k];
+      let c = (all > 0 ? 2.4 * (1 - vis[k] / all) : 0) + 0.05 * Math.abs(sx);
+      // He walks into the frame, not out of it; with nothing to fire at, from a third of the way across.
+      if (xd) c += 0.8 * Math.max(0, sx * xd) + (all > 0 ? 0 : 0.5 * Math.abs(sx + 0.2 * xd));
+      if (c < best) {
+        best = c;
+        cand.sx = sx;
+      }
+    }
+    let cost = best + (all > 0 ? (HAND_W * hidden) / all : 0);
+    const hl = Math.hypot(dir[0], dir[2]) || 1;
+    const phi = Math.acos(clamp((dir[0] * hx + dir[2] * hz) / hl, -1, 1)); // 0: the lens in front of him
+    cost += BACK_W * ss(1.7, 2.7, phi);
+    if (!all) cost += 0.3 * Math.abs(phi - 0.85); // a front three-quarter tracking shot
+    cost += 0.4 * Math.abs(el - 0.08);
+    cost += crowding(E, H);
+    if (xd && hc.screenDir && xd !== hc.screenDir) cost += 0.25; // he keeps walking the same way across the screen
+    cand.xd = xd;
+    return cost;
+  }
+
+  /**
+   * The words he will fire at over the next few seconds, with when: the ones
+   * going out now, then the rest in reading order at the read's pace (or,
+   * before the read starts, at its opening pace). [x, y, z, t] in hc.sched.
+   */
+  function schedule() {
+    const out = hc.sched;
+    out.length = 0;
+    const wp = world.wordPos;
+    for (const tn of run.tentacles) out.push(wp[tn.wordId * 3], wp[tn.wordId * 3 + 1], wp[tn.wordId * 3 + 2], tn.stage === 'retract' ? -0.6 : -0.2);
+    const sec = analysis.sections[run.active];
+    if (!sec || (run.phase !== 'read' && run.phase !== 'walk')) return out;
+    const end = sec.start + sec.count;
+    const reading = run.phase === 'read';
+    const per = reading ? GAP / Math.max(0.3, rate) : 0.3; // s between reaches
+    let t = reading ? Math.max(0, nextReach - readAcc) : 1.2;
+    for (let id = cursor; id < end && t < AHEAD + 2; id += reading ? span : 1, t += per) out.push(wp[id * 3], wp[id * 3 + 1], wp[id * 3 + 2], t);
+    return out;
+  }
+
+  /**
+   * Look ahead: where round him, and how high, the camera should be over the
+   * next AHEAD seconds so that the words he will fire at then (and his firing
+   * hand) are in frame, he is seen from a good side and the lens stays out of
+   * the stars' cores, circling him no faster than AZ_RATE from where it is
+   * now. He is taken to stay about where he is. Dynamic programming over
+   * angle and time; re-planned every AHEAD_EVERY, so it keeps to what
+   * actually happens. Returns the path sampled every AHEAD_DT from now.
+   */
+  function planAhead() {
+    const sched = schedule();
+    heroPoint(H);
+    const s = run.spider;
+    const hx = Math.cos(s.heading);
+    const hz = Math.sin(s.heading);
+    const moving = Math.hypot(s.vx, s.vz) > 4;
+    const NB = AHEAD_BINS;
+    const NE = ELS.length;
+    const NS = NB * NE;
+    const S = Math.round(AHEAD / AHEAD_DT) + 1;
+    const binW = (2 * PI) / NB;
+    const kmax = Math.max(1, Math.round((AZ_RATE * AHEAD_DT) / binW));
+    const D = shotDist(SIZE_MEDIUM);
+    const az0 = hc.shot.az;
+    const keepAtt = hc.att;
+    const keepDir = hc.screenDir;
+    hc.att = hc.attAhead;
+    let cost = hc.dpA;
+    let next = hc.dpB;
+    const back = hc.dpBack;
+    for (let k = 0; k < S; k++) {
+      const t = k * AHEAD_DT;
+      // The words live then; and keep near the last plan, so re-planning never jumps about.
+      const prev = hc.path.n && run.t - hc.path.t0 < AHEAD ? aheadAt(run.t - hc.path.t0 + t, hc.pathAt).az : null;
+      hc.att.length = 0;
+      for (let j = 0; j < sched.length; j += 4) {
+        const d = sched[j + 3] - t; // a word is live (and its label fresh) for about a second and a half after it goes
+        const wt = ss(-1.9, -1.3, d) * (1 - ss(-0.1, 0.3, d));
+        if (wt > 0.01) hc.att.push(sched[j], sched[j + 1], sched[j + 2], wt);
+      }
+      for (let b = 0; b < NB; b++) {
+        const off = (b - NB / 2) * binW;
+        for (let e = 0; e < NE; e++) {
+          const local = twoShotCost(az0 + off, ELS[e], D, moving, hx, hz) + (prev === null ? 0 : 0.25 * Math.abs(wrap(az0 + off - prev)));
+          const st = b * NE + e;
+          if (k === 0) {
+            next[st] = local + 1.5 * Math.abs(off) + 0.5 * Math.abs(ELS[e] - hc.shot.el);
+            continue;
+          }
+          let m = Infinity;
+          let arg = 0;
+          for (let db = -kmax; db <= kmax; db++) {
+            const pb = (b + db + NB) % NB;
+            for (let pe = Math.max(0, e - 1); pe <= Math.min(NE - 1, e + 1); pe++) {
+              const c = cost[pb * NE + pe] + 0.04 * Math.abs(db) + 0.08 * Math.abs(pe - e);
+              if (c < m) {
+                m = c;
+                arg = pb * NE + pe;
+              }
+            }
+          }
+          next[st] = m + local;
+          back[k * NS + st] = arg;
+        }
+      }
+      [cost, next] = [next, cost];
+    }
+    hc.att = keepAtt;
+    hc.screenDir = keepDir;
+    let st = 0;
+    for (let j = 1; j < NS; j++) if (cost[j] < cost[st]) st = j;
+    const path = hc.path;
+    path.t0 = run.t;
+    path.n = S;
+    let prevB = 0;
+    for (let k = S - 1; k >= 0; k--) {
+      path.bin[k] = Math.floor(st / NE);
+      path.el[k] = ELS[st % NE];
+      if (k > 0) st = back[k * NS + st];
+    }
+    // Unwrapped, so the camera circles the short way between samples.
+    for (let k = 0; k < S; k++) {
+      const b = path.bin[k];
+      path.az[k] = k ? path.az[k - 1] + ((((b - prevB + NB / 2) % NB) + NB) % NB - NB / 2) * binW : az0 + (b - NB / 2) * binW;
+      prevB = b;
+    }
+    return path;
+  }
+
+  /** The look-ahead path at t seconds from when it was planned (held at its end). */
+  function aheadAt(t, out) {
+    const p = hc.path;
+    const x = clamp(t / AHEAD_DT, 0, p.n - 1);
+    const k = Math.min(p.n - 2, Math.floor(x));
+    const f = x - k;
+    out.az = lerp(p.az[k], p.az[k + 1], f);
+    out.el = lerp(p.el[k], p.el[k + 1], f);
+    return out;
+  }
+
+  /**
+   * Re-plan the two-shot. While there are words to fire at it keeps near the
+   * look-ahead path (see planAhead), fitting the angle, height, size and where
+   * he sits in the frame to the words he is firing at now; otherwise it
+   * considers every angle round him, each charged for how far the camera would
+   * travel. The current plan is kept unless another is clearly better, so it
+   * settles, then moves with purpose. While the takeoff nears it leans toward
+   * the takeoff view.
+   */
+  function planTwoShot() {
+    const sec = analysis.sections[run.active];
+    const words = run.tentacles.length > 0 || (sec && (run.phase === 'read' || run.phase === 'walk') && cursor < sec.start + sec.count);
+    let path = null;
+    if (words && hc.pre === 0) {
+      if (run.t >= hc.aheadAt) {
+        planAhead();
+        hc.aheadAt = run.t + AHEAD_EVERY;
+      }
+      path = aheadAt(run.t - hc.path.t0 + AHEAD_LOOK, hc.pathAt);
+    } else hc.aheadAt = 0;
+    attention();
+    heroPoint(H);
+    const s = run.spider;
+    const hx = Math.cos(s.heading);
+    const hz = Math.sin(s.heading);
+    const moving = Math.hypot(s.vx, s.vz) > 4;
+    const p = hc.plan;
+    const Dm = shotDist(SIZE_MEDIUM);
+    const Dw = shotDist(SIZE_WIDE);
+    // Off the path costs; so does travelling, and (while the takeoff nears) facing away from its view.
+    const extra = (az, el, D) =>
+      (path ? 0.8 * Math.abs(wrap(az - path.az)) + 0.5 * Math.abs(el - path.el) : 0.3 * Math.abs(wrap(az - hc.shot.az))) +
+      (hc.pre > 0 ? (0.9 * hc.pre * Math.abs(wrap(az - hc.preAz))) / PI : 0) +
+      (D > Dm * 1.01 ? 0.22 : 0);
+    let bestCost = twoShotCost(p.az, p.el, p.D, moving, hx, hz) + extra(p.az, p.el, p.D) - 0.12;
+    let best = { az: p.az, el: p.el, D: p.D, sx: cand.sx, xd: cand.xd };
+    const from = path ? path.az : hc.shot.az;
+    const steps = path ? 2 : 12;
+    for (let k = -steps; k <= steps; k++) {
+      const az = from + (k * PI) / (path ? 24 : 12);
+      for (const el of ELS) {
+        for (const D of [Dm, Dw]) {
+          const cost = twoShotCost(az, el, D, moving, hx, hz) + extra(az, el, D) + 0.5 * Math.abs(el - p.el);
+          if (cost < bestCost) {
+            bestCost = cost;
+            best = { az, el, D, sx: cand.sx, xd: cand.xd };
+          }
+        }
+      }
+    }
+    p.az = hc.shot.az + wrap(best.az - hc.shot.az);
+    p.el = best.el;
+    p.D = best.D;
+    p.sx = best.sx;
+    if (best.xd) hc.screenDir = best.xd;
+  }
+
+  /** Ease the two-shot toward its plan: slowly, never circling him faster than AZ_RATE. */
+  function stepShot(dt) {
+    const s = hc.shot;
+    const p = hc.plan;
+    [s.az, s.vAz] = smoothDamp(s.az, s.az + wrap(p.az - s.az), s.vAz, SHOT_TURN, dt);
+    s.vAz = clamp(s.vAz, -AZ_RATE, AZ_RATE);
+    [s.el, s.vEl] = smoothDamp(s.el, p.el, s.vEl, 0.9, dt);
+    [s.lD, s.vD] = smoothDamp(s.lD, Math.log(p.D), s.vD, 1.0, dt);
+    [s.sx, s.vSx] = smoothDamp(s.sx, p.sx, s.vSx, 0.8, dt);
+  }
+
+  function twoShotRig(out) {
+    const s = hc.shot;
+    compose(heroPoint(H), s.az, s.el, Math.exp(s.lD), s.sx, SHOT_Y, out);
+    return setEase(out, 0.5, 0.7, 0.6);
+  }
+
+  /** The brief wide look the run opens on: the first ball, him small in the middle of it. */
+  function openRig(out) {
+    compose(heroPoint(H), hc.az0, 0.62, shotDist(SIZE_OPEN), 0, 0, out);
+    return setEase(out, 0.8, 1.0, 0.3);
+  }
+
+  /** Where his next leap will take him, so the camera can start round toward the takeoff view in time. */
+  function nextGoal() {
+    const nx = run.phase === 'read' ? visits[run.active][0] : visitQueue[0];
+    if (nx) return sideFacing(nx, run.spider);
+    if (run.active + 1 < n) return landing(run.active + 1);
+    return { x: B.x, y: B.y, z: B.z };
+  }
+
+  /** Once his last words have gone (or a visit's crossing is done), lean toward the coming takeoff view. */
+  function updatePre() {
+    const sec = analysis.sections[run.active];
+    const ending = (run.phase === 'read' && sec && cursor >= sec.start + sec.count) || (run.phase === 'visit' && visit && visit.leaveAt > 0);
+    if (!ending) {
+      hc.preT0 = -1;
+      hc.pre = 0;
+      return;
+    }
+    if (hc.preT0 < 0) {
+      hc.preT0 = run.t;
+      const g = nextGoal();
+      const s = run.spider;
+      const yaw = Math.atan2(g.x - s.x, g.z - s.z);
+      hc.preAz = yaw + PI - (Math.sin(hc.shot.az - yaw) < 0 ? -1 : 1) * LAUNCH_AZ;
+    }
+    hc.pre = ss(0, PRE_LEAP, run.t - hc.preT0);
+  }
+
+  /** A new leap: which way it goes, and the side of it to film from (the side the camera is on, unless the other is far clearer). */
+  function beginLeap(tr) {
+    const fx = tr.to[0] - tr.from[0];
+    const fz = tr.to[2] - tr.from[2];
+    const yaw = Math.hypot(fx, fz) > 4 ? Math.atan2(fx, fz) : run.camera.yaw + PI;
+    const mid = [(tr.from[0] + tr.to[0]) / 2, (tr.from[1] + tr.to[1]) / 2 + tr.apex, (tr.from[2] + tr.to[2]) / 2];
+    const G = [tr.to[0], tr.to[1] + HERO_MID, tr.to[2]];
+    const look = (p, az, el, D) => {
+      orbitDir(az, el, dir);
+      return crowding([p[0] + dir[0] * D, p[1] + dir[1] * D, p[2] + dir[2] * D], p);
+    };
+    const sideCost = (sd) => look(mid, yaw + PI - sd * CHASE_AZ, CHASE_EL, CHASE_DIST) + look(G, yaw + sd * LAND_AZ, LAND_EL, shotDist(SIZE_LAND));
+    let side = Math.sin(run.camera.yaw - yaw) < 0 ? -1 : 1;
+    if (sideCost(-side) < sideCost(side) - 0.6) side = -side;
+    // The takeoff view leaves room on screen the way he will go.
+    heroPoint(H);
+    orbitDir(yaw + PI - side * LAUNCH_AZ, 0.04, dir);
+    const D = shotDist(SIZE_LAUNCH);
+    E[0] = H[0] + dir[0] * D;
+    E[1] = H[1] + dir[1] * D;
+    E[2] = H[2] + dir[2] * D;
+    lookBasis(E, H);
+    const xd = onScreen(E, H[0] + Math.sin(yaw) * 40, H[1], H[2] + Math.cos(yaw) * 40, aspect()).x;
+    hc.leap = { id: tr.id, yaw, side, sx: xd > 0 ? -0.16 : 0.16, touch: -1, done: false };
+  }
+
+  /** Touchdown: the two-shot will take over from the landing view, so it starts from there. */
+  function touchdown(L) {
+    L.touch = run.t;
+    const s = hc.shot;
+    const p = hc.plan;
+    s.az = p.az = s.az + wrap(L.yaw + L.side * LAND_AZ - s.az);
+    s.el = p.el = ELS[0];
+    p.D = shotDist(SIZE_MEDIUM);
+    s.lD = Math.log(p.D);
+    s.sx = p.sx = 0;
+    s.vAz = s.vEl = s.vD = s.vSx = 0;
+    hc.planAt = run.t + LAND_HOLD;
+  }
+
+  /**
+   * The camera through a leap, from `base` (the shot before it): round to a
+   * rear three-quarter view through the crouch; the chase, close behind and to
+   * the side, as he flies; on ahead to settle low in front of where he lands
+   * (aimed between him and it) before he touches down; holding the landing,
+   * pushing in as he rises, and back to the two-shot.
+   */
+  function leapRig(base, out) {
+    const L = hc.leap;
+    const tr = run.travel;
+    const sim = spider.sim;
+    heroPoint(H);
+    const T = run.t - tr.t0;
+    const u = sim.mode === 'jump' ? (sim.launched ? sim.airU : 0) : 1;
+    const ts = L.touch >= 0 ? run.t - L.touch : 0;
+    compose(H, L.yaw + PI - L.side * LAUNCH_AZ, 0.04, shotDist(SIZE_LAUNCH), L.sx, SHOT_Y, hc.launch);
+    mixRig(base, setEase(hc.launch, 0.45, 0.6, 0.6), ss(0, Math.max(0.05, tr.crouch), T), out, 'launch');
+    compose(H, L.yaw + PI - L.side * CHASE_AZ, CHASE_EL, CHASE_DIST, 0, -0.12, hc.chase);
+    mixRig(out, setEase(hc.chase, 0.22, 0.45, 1), ss(0, 0.3, u), out, 'chase');
+    // The landing view swings in once he is within a few shot lengths of where he lands (at
+    // once, on a short hop), aimed more and more at that spot as he nears it, then onto him
+    // as he rises (his middle low while he is down, rising as he stands; see heroPoint).
+    const Dl = shotDist(SIZE_LAND);
+    const mid = H[1] - run.spider.y; // his middle above the crawler point, as it is now
+    const toG = Math.hypot(H[0] - tr.to[0], H[1] - tr.to[1] - mid, H[2] - tr.to[2]);
+    const g = L.touch >= 0 ? 0.65 * (1 - ss(0, 1.2, ts)) : 0.65 * ss(2.2 * Dl, 0.6 * Dl, toG);
+    A[0] = lerp(H[0], tr.to[0], g);
+    A[1] = lerp(H[1], tr.to[1] + mid, g);
+    A[2] = lerp(H[2], tr.to[2], g);
+    const rise = ss(0.8, 2.8, ts);
+    compose(A, L.yaw + L.side * LAND_AZ, LAND_EL + 0.05 * rise, shotDist(lerp(SIZE_LAND, SIZE_RISE, rise)), 0, SHOT_Y - 0.04, hc.land);
+    const landW = L.touch >= 0 ? 1 : ss(2.6 * Dl, 1.2 * Dl, toG) * ss(0.15, 0.4, u);
+    mixRig(out, setEase(hc.land, 0.35, 0.5, 1 - g), landW, out, 'land');
+    const back = ss(LAND_HOLD, LAND_HOLD + LAND_BLEND, ts);
+    if (back >= 1) L.done = true;
+    return mixRig(out, hc.two, back, out, 'back');
+  }
+
+  /**
+   * The finale: his last leap filmed like any other; once he is down, a rising
+   * orbit of the whole nebula (the keys), then back onto him resting with the
+   * nebula behind him.
+   */
+  function shipTarget() {
+    if (!ship) return setEase(copyRig(fromKey(makeKey(0, 0, fitDistance(B.radius, aspect(), 50, 0.92), run.camera.yaw, 0.4, 0), null), hc.out), 1.3, 1.5, 0);
+    const k = sampleKeys(ship.keys, run.phaseT, key);
+    const settled = Math.max(0, run.phaseT - SHIP_SETTLE);
+    setEase(copyRig(fromKey(k, ship.cluster), hc.keyed), 1.3, 1.5, 0);
+    const L = hc.leap && !hc.leap.done && hc.leap.id === run.travel?.id ? hc.leap : null;
+    let hero = hc.two;
+    if (L) hero = leapRig(hc.two, hc.out);
+    // After a slow drift on round, so it keeps breathing.
+    compose(heroPoint(H), ship.finalYaw + ship.turn * 0.012 * settled, 0.2, shotDist(SIZE_REST), -0.12 * ship.turn, SHOT_Y, hc.rest);
+    hero = mixRig(hero, setEase(hc.rest, 1.0, 1.3, 0.4), ss(9, 13, run.phaseT), hc.out, 'rest');
+    // Pulled back once he is down from his last leap (or at once, if he only strolled to his rest).
+    const since = run.t - run.phaseT;
+    const leapt = hc.leap && run.travel && hc.leap.id === run.travel.id && run.travel.t0 >= since - 1e-6;
+    const down = leapt ? (hc.leap.touch >= 0 ? hc.leap.touch - since : 1e6) : 0;
+    const wide = ss(down + 0.6, down + 3.6, run.phaseT) * (1 - ss(12.6, 19.5, run.phaseT));
+    return mixRig(hero, hc.keyed, wide, hc.out, 'keys');
+  }
 
   /** Turn a sampled key (base b: bounds 0 .. cluster 1, spider weight w) into a camera target. */
   function fromKey(k, c) {
@@ -672,219 +1098,77 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return tgt;
   }
 
-  /**
-   * Leap framing: look between the flying spider and the ball it is leaping
-   * for, far enough back that both (and the legs streaming behind) are in shot.
-   */
-  function airFrame(s, g, c) {
-    // Close on him in flight (led along his velocity, so the following camera keeps him
-    // centred rather than trailing), with a little of where he is heading.
-    const lead = AIR_LEAD;
-    const sx = s.x + (s.vx || 0) * lead;
-    const sy = s.y + (s.vy || 0) * lead;
-    const sz = s.z + (s.vz || 0) * lead;
-    tgt.x = sx * 0.82 + g.x * 0.1 + c.cx * 0.08;
-    tgt.y = sy * 0.82 + g.y * 0.1 + c.cy * 0.08;
-    tgt.z = sz * 0.82 + g.z * 0.1 + c.cz * 0.08;
-    const reach = Math.hypot(s.x - c.cx, s.y - c.cy, s.z - c.cz);
-    tgt.dist = fitDistance(Math.max(c.r * AIR_FIT, reach * 0.22 + 60), aspect(), 50, 1.0);
-    return tgt;
-  }
-
-  /**
-   * Pre-visualise a leap (from, to goal over an arc of height apex, into ball
-   * c) as framed from (yaw, pitch): what blocks it, and how far the camera
-   * would be pushed out of its framing to see past the balls. Lower is better.
-   */
-  function leapCost(from, goal, apex, c, yaw, pitch, skip) {
-    orbitDir(yaw, pitch, dir);
-    let cost = 0;
-    let ref = -1;
-    for (let k = 0; k <= 5; k++) {
-      const u = k / 5;
-      const h = 4 * u * (1 - u) * apex;
-      airFrame({ x: lerp(from[0], goal.x, u), y: lerp(from[1], goal.y, u) + h, z: lerp(from[2], goal.z, u) }, goal, c);
-      const dist = clearDistance(tgt.x, tgt.y, tgt.z, dir, tgt.dist, clusters, 0.9, tgt.dist * 0.45, ref < 0 ? tgt.dist : ref);
-      ref = dist;
-      cost += (shotCost(tgt.x, tgt.y, tgt.z, dir, dist, clusters, skip) + 0.8 * Math.abs(Math.log(dist / tgt.dist))) / 6;
-    }
-    return cost;
-  }
-
-  function cameraTarget() {
-    const c = clusters[run.active];
-    if (run.phase === 'ship' || !c) {
-      if (!ship) return fromKey(makeKey(0, 0, fitDistance(B.radius, aspect(), 50, 0.92), run.camera.yaw, 0.4, 0), null);
-      const k = sampleKeys(ship.keys, run.phaseT, key);
-      // After it settles, keep breathing: a very slow drift on round.
-      if (run.phaseT > SHIP_SETTLE) k.yaw += ship.turn * 0.012 * (run.phaseT - SHIP_SETTLE);
-      return fromKey(k, ship.cluster);
-    }
-    if (run.phase === 'visit') return visitFrame();
-    const p = plans[run.active];
-    if (run.phase === 'read') {
-      const u = run.phaseT / p.T;
-      fromKey(sampleKeys(p.keys, u, key), c);
-      if (p.turnKeys && u < TURN_U) {
-        // Still finishing the turn that began with the leap.
-        const a = sampleKeys(p.turnKeys, p.walkT + run.phaseT, key);
-        tgt.yaw = a.yaw;
-        tgt.pitch = a.pitch;
+  function cameraTarget(dt) {
+    const L = hc.leap && !hc.leap.done && hc.leap.id === run.travel?.id ? hc.leap : null;
+    // The two-shot plans on whenever he is on his feet (it is frozen through the flight
+    // and the landing, then restarts from the landing view).
+    const sim = spider.sim;
+    const flying = L && (sim.launched || sim.mode !== 'jump') && (L.touch < 0 || run.t - L.touch < LAND_HOLD);
+    if (!flying) {
+      updatePre();
+      if (run.t >= hc.planAt) {
+        planTwoShot();
+        hc.planAt = run.t + PLAN_EVERY;
       }
-      // The close orbit round the crawling spider (pre-checked in chooseOrbit).
-      // The extra turn only ever grows, so the pan never reverses; the pull in
-      // eases off at the end of the window.
-      return applyOrbit(tgt, run.active, u, p.spin, p.orbitRate, p.T, run.spider, p.fit, p.orbitNear);
+      stepShot(dt);
     }
-    if (run.active === 0 && intro) return fromKey(sampleKeys(intro, run.t, key), c);
-    const tr = run.travel;
-    // The angles turn smoothly from where the last shot ended, through the
-    // side-on leap view, into the next establishing view (p.turnKeys).
-    const a = p.turnKeys ? sampleKeys(p.turnKeys, run.phaseT, key) : p.E;
-    const yaw = a.yaw;
-    const pitch = a.pitch;
-    if (p.air && tr && run.phaseT < tr.crouch + tr.air) {
-      // Crouch and flight: frame the whole arc, the spider with its legs
-      // streaming behind and the ball it is leaping for both in shot.
-      airFrame(run.spider, run.spiderGoal, c);
-    } else {
-      // Landed: settle into the establishing view of the whole ball.
-      fromKey(p.E, c);
+    twoShotRig(hc.two);
+    if (run.phase === 'ship' || !clusters[run.active]) return shipTarget();
+    let out = hc.two;
+    if (run.active === 0 && (run.phase === 'boot' || run.phase === 'walk')) out = mixRig(openRig(hc.open), hc.two, ss(0.5, 6.0, run.t), hc.out, 'open');
+    if (L) out = leapRig(out, hc.out);
+    return out;
+  }
+
+  /** Backstops: the lens never comes nearer him than MIN_GAP, nor into a nucleus (eased out, so it can't fight the springs). */
+  function guard(dt) {
+    const cam = run.camera;
+    orbitDir(cam.yaw, cam.pitch, dir);
+    heroPoint(H);
+    const ox = cam.x - H[0];
+    const oy = cam.y - H[1];
+    const oz = cam.z - H[2];
+    const b = ox * dir[0] + oy * dir[1] + oz * dir[2];
+    const disc = b * b - (ox * ox + oy * oy + oz * oz - MIN_GAP * MIN_GAP);
+    if (disc > 0) {
+      const near = -b - Math.sqrt(disc);
+      const far = -b + Math.sqrt(disc);
+      if (cam.dist > near && cam.dist < far) cam.dist = far;
     }
-    tgt.yaw = yaw;
-    tgt.pitch = pitch;
-    return tgt;
-  }
-
-  /** Weight of the close orbit at orbit progress v (0..1): eases in and out. */
-  function orbitWeight(v) {
-    return smooth(clamp(v / 0.25, 0, 1)) * (1 - smooth(clamp((v - 0.75) / 0.25, 0, 1)));
-  }
-
-  /** Close-orbit target for section i at reading progress u, written over a keyed target t. */
-  function applyOrbit(t, i, u, spin, rate, T, sp, fit, near = ORBIT_DIST) {
-    if (!near) return t;
-    const c = clusters[i];
-    const v = clamp((u - ORBIT_U[0]) / (ORBIT_U[1] - ORBIT_U[0]), 0, 1);
-    const ow = orbitWeight(v);
-    t.x = lerp(t.x, lerp(c.cx, sp.x, 0.9), ow);
-    t.y = lerp(t.y, lerp(c.cy, sp.y, 0.9), ow);
-    t.z = lerp(t.z, lerp(c.cz, sp.z, 0.9), ow);
-    t.dist = lerp(t.dist, fit * near, ow);
-    t.yaw += spin * rate * T * (ORBIT_U[1] - ORBIT_U[0]) * smooth(v);
-    t.pitch = clamp(t.pitch + ow * 0.3 * Math.sin(2 * PI * v), -0.5, 1.25);
-    return t;
-  }
-
-  /**
-   * Pre-visualise the close orbit on section i: which way round and how far
-   * it can turn without the camera passing through another ball (or deep
-   * into this one). Prefers the full orbit the same way as the keyed arc.
-   */
-  function chooseOrbit(i, keys, fit, T, turn) {
-    const c = clusters[i];
-    const base = Math.sign(keys[keys.length - 1].yaw - keys[0].yaw) || turn;
-    let best = { spin: base, orbitRate: 0, orbitNear: ORBIT_DIST };
-    let bestCost = Infinity;
-    const probe = { x: 0, y: 0, z: 0, dist: 0, yaw: 0, pitch: 0 };
-    const pos = [0, 0, 0];
-    for (const near of [ORBIT_DIST, ORBIT_DIST * 1.25, ORBIT_DIST * 0.8])
-    for (const spin of [base, -base]) {
-      for (const rate of [ORBIT_RATE, ORBIT_RATE * 0.6, ORBIT_RATE * 0.3]) {
-        let cost = (spin === base ? 0 : 0.3) + (ORBIT_RATE - rate) * 3 + Math.abs(near - ORBIT_DIST);
-        for (let k = 0; k <= 16; k++) {
-          const u = lerp(ORBIT_U[0], ORBIT_U[1], k / 16);
-          const ky = sampleKeys(keys, u, key);
-          const sp = spiderAt(i, u);
-          probe.x = lerp(c.cx, sp.x, ky.w);
-          probe.y = lerp(c.cy, sp.y, ky.w);
-          probe.z = lerp(c.cz, sp.z, ky.w);
-          probe.dist = Math.exp(ky.ld);
-          probe.yaw = ky.yaw;
-          probe.pitch = ky.pitch;
-          applyOrbit(probe, i, u, spin, rate, T, sp, fit, near);
-          orbitDir(probe.yaw, probe.pitch, pos);
-          const x = probe.x + pos[0] * probe.dist;
-          const y = probe.y + pos[1] * probe.dist;
-          const z = probe.z + pos[2] * probe.dist;
-          for (const o of clusters) {
-            const d = Math.hypot(x - o.cx, y - o.cy, z - o.cz);
-            if (o !== c && !o.extra && d < o.r * 0.95) cost += 1;
-            else if (o === c && d < o.r * 0.6) cost += 0.5;
-          }
-        }
-        if (cost < bestCost) {
-          bestCost = cost;
-          best = { spin, orbitRate: rate, orbitNear: near };
-        }
-      }
-    }
-    if (bestCost >= 2) best.orbitNear = 0; // boxed in: no close orbit, keep to the keyed moves
-    return best;
-  }
-
-  /**
-   * Camera through a visit: in the air it frames the spider and the ball it
-   * is leaping for; once it lands it closes in and circles it over the ball.
-   * The angles keep turning the way they were, easing to a three-quarter view.
-   */
-  function visitFrame() {
-    const c = visit.c;
-    const s = run.spider;
-    const tr = run.travel;
-    if (tr && run.phaseT < tr.crouch + tr.air) airFrame(s, run.spiderGoal, c);
-    else {
-      tgt.x = lerp(c.cx, s.x, 0.8);
-      tgt.y = lerp(c.cy, s.y, 0.8);
-      tgt.z = lerp(c.cz, s.z, 0.8);
-      const out = visit.leaveAt ? smooth(clamp(1 - (visit.leaveAt - run.phaseT) / VISIT_EASE, 0, 1)) : 0;
-      tgt.dist = fitR(c.r) * lerp(VISIT_DIST, 1.0, out);
-    }
-    // Low and side-on through the leap; once landed, rise into a slow circle round it.
-    const flown = tr ? tr.crouch + tr.air : 0;
-    const since = Math.max(0, run.phaseT - flown);
-    tgt.yaw = visit.yaw0 + visit.spin * VISIT_TURN * since;
-    const airPitch = lerp(visit.pitch0, 0.18, smooth(clamp(run.phaseT / 1.2, 0, 1)));
-    tgt.pitch = lerp(airPitch, 0.42 + 0.16 * Math.sin(since * 0.5), smooth(clamp(since / 2, 0, 1)));
-    return tgt;
-  }
-
-  /** Keep the target camera position out of every ball's dense core. */
-  function keepClear(t) {
-    orbitDir(t.yaw, t.pitch, dir);
-    t.dist = clearDistance(t.x, t.y, t.z, dir, t.dist, clusters, 0.9, Math.max(110, t.dist * 0.45), run.camera.dist);
-    return t;
+    const safe = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, NUCLEUS, 0, cam.dist);
+    if (safe !== cam.dist) cam.dist += (safe - cam.dist) * (1 - Math.exp(-4 * dt));
   }
 
   function stepCamera(dt) {
+    const tr = run.travel;
+    if (tr && (!hc.leap || hc.leap.id !== tr.id)) beginLeap(tr);
+    const L = hc.leap;
+    if (L && tr && L.id === tr.id && L.touch < 0 && run.t > tr.t0 + tr.crouch + 0.05 && spider.sim.mode !== 'jump') touchdown(L);
+    stepAirborne(dt);
     const d0 = run.camera.dist;
-    const t = keepClear(cameraTarget());
-    // The springs lag the target's angles (always, in an orbit), so clear the
-    // target distance along the camera's actual direction too; otherwise the
-    // spring steers it into a core and the backstop shoves it out, every frame.
-    const cam0 = run.camera;
-    orbitDir(cam0.yaw, cam0.pitch, dir);
-    t.dist = clearDistance(cam0.x, cam0.y, cam0.z, dir, t.dist, clusters, 0.9, Math.max(90, t.dist * 0.45), cam0.dist);
-    // Spring smoothing (seconds): the keyframes carry the shape, the springs
-    // round off every change so nothing lurches.
-    if (run.phase === 'ship') followCamera(run.camera, t, dt, 1.3, 1.5);
-    else if (run.active === 0 && run.phase !== 'read') followCamera(run.camera, t, dt, 0.7, 0.8);
-    else if (run.phase === 'walk') followCamera(run.camera, t, dt, 0.85, 0.7);
-    else if (run.phase === 'visit') followCamera(run.camera, t, dt, 0.85, 1.0);
-    else followCamera(run.camera, t, dt, 0.8, 1.4);
-    // Backstop for corners the springs cut through a ball: only ever outward,
-    // and gently, so it can't fight the springs.
-    const cam = run.camera;
-    orbitDir(cam.yaw, cam.pitch, dir);
-    const safe = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, 0.85, cam.dist);
-    if (safe > cam.dist) cam.dist += (safe - cam.dist) * (1 - Math.exp(-3 * dt));
+    const t = cameraTarget(dt);
+    // The look-at runs ahead along his (smoothed) velocity by as much as the follow lags.
+    const s = run.spider;
+    const kv = 1 - Math.exp(-dt / 0.12);
+    hc.vel[0] += (s.vx - hc.vel[0]) * kv;
+    hc.vel[1] += (s.vy - hc.vel[1]) * kv;
+    hc.vel[2] += (s.vz - hc.vel[2]) * kv;
+    copyRig(t, aimT);
+    const lead = t.lead * t.move;
+    aimT.x += hc.vel[0] * lead;
+    aimT.y += hc.vel[1] * lead;
+    aimT.z += hc.vel[2] * lead;
+    // Critically damped springs: every change of shot accelerates and settles, nothing lurches.
+    followCamera(run.camera, aimT, dt, t.move, t.turn);
     // Never zoom faster than ZOOM_MAX (log distance per second), whatever the
-    // geometry asks for: a blocked shot that suddenly clears must not lurch.
+    // shot asks for: a big change of size must not lurch.
+    const cam = run.camera;
     const step = Math.log(cam.dist / d0);
     if (Math.abs(step) > ZOOM_MAX * dt) {
       cam.dist = d0 * Math.exp(Math.sign(step) * ZOOM_MAX * dt);
       if (cam.v) cam.v.dist = clamp(cam.v.dist, -ZOOM_MAX, ZOOM_MAX);
     }
+    guard(dt);
   }
 
   /* ---------------------------------------------------------- timeline */
@@ -895,7 +1179,6 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   }
 
   function enterWalk(i) {
-    const from = i > 0 ? [run.spider.x, run.spider.y, run.spider.z] : null;
     run.active = i;
     run.status[i] = 'reading';
     run.silkSection = i;
@@ -908,10 +1191,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const goal = landing(i);
     run.spiderGoal = { x: goal.x, y: goal.y, z: goal.z };
     // The first ball: it is already there, so it walks over instead of leaping.
-    if (i > 0) {
-      travelTo(run.spiderGoal, i);
-      planSection(i, from, goal);
-    }
+    if (i > 0) travelTo(run.spiderGoal, i);
   }
 
   /** Jump to a point: crouch, a floaty ballistic arc, landing (the spider follows run.travel). */
@@ -955,7 +1235,6 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   }
 
   function enterRead() {
-    plans[run.active].walkT = run.phaseT;
     setPhase('read');
     roamIdx = 1;
     const sec = analysis.sections[run.active];
@@ -1091,67 +1370,11 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     setPhase('visit');
     const nx = visitQueue[0];
     const next = nx ? { x: nx.cx, y: nx.cy, z: nx.cz } : legEnd(run.active);
-    const cam = run.camera;
-    const sp = run.spider;
-    const land = sideFacing(c, sp);
+    const land = sideFacing(c, run.spider);
     run.visit = { cluster: c.index };
     run.spiderGoal = { ...land };
     travelTo(run.spiderGoal, `x${c.index}`);
-    // Watch the leap side-on, turning at most 1.1 rad: from the nearer side,
-    // unless the other sees the flight far more clearly.
-    const tr = run.travel;
-    const leapYaw = Math.atan2(land.x - sp.x, land.z - sp.z);
-    const a = clusters[run.active];
-    const skip = a && Math.hypot(sp.x - a.cx, sp.y - a.cy, sp.z - a.cz) < a.r ? [a.index] : [];
-    let airYaw = cam.yaw;
-    let bestCost = Infinity;
-    for (const side of [PI / 2, -PI / 2]) {
-      const d = clamp(wrap(leapYaw + side - cam.yaw), -1.1, 1.1);
-      const cost = 0.4 * Math.abs(d) + leapCost(tr.from, land, tr.apex, c, cam.yaw + d, 0.18, skip);
-      if (cost < bestCost) {
-        bestCost = cost;
-        airYaw = cam.yaw + d;
-      }
-    }
-    visit = {
-      c,
-      land,
-      exit: sideFacing(c, next),
-      crawl: false,
-      t0: 0,
-      leaveAt: 0,
-      yaw0: airYaw,
-      pitch0: cam.pitch,
-      spin: 0,
-    };
-    visit.spin = visitSpin(c, visit.land, airYaw, Math.abs(cam.v?.yaw || 0) > 0.01 ? Math.sign(cam.v.yaw) : 1);
-  }
-
-  /**
-   * Which way to circle a visited ball (preferring the way the camera already
-   * turns) so the camera stays clear of every section ball; 0 if neither is.
-   */
-  function visitSpin(c, land, yaw0, prefer) {
-    const fit = fitR(c.r);
-    const pos = [0, 0, 0];
-    let best = 0;
-    let bestCost = Infinity;
-    for (const spin of [prefer, -prefer]) {
-      let cost = spin === prefer ? 0 : 0.2;
-      for (let k = 0; k <= 10; k++) {
-        const yaw = yaw0 + spin * VISIT_TURN * (k / 10) * (VISIT_CRAWL + 2);
-        orbitDir(yaw, 0.42, pos);
-        const x = lerp(c.cx, land.x, 0.8) + pos[0] * fit * VISIT_DIST;
-        const y = lerp(c.cy, land.y, 0.8) + pos[1] * fit * VISIT_DIST;
-        const z = lerp(c.cz, land.z, 0.8) + pos[2] * fit * VISIT_DIST;
-        for (const o of clusters) if (!o.extra && Math.hypot(x - o.cx, y - o.cy, z - o.cz) < o.r * 0.95) cost += 1;
-      }
-      if (cost < bestCost) {
-        bestCost = cost;
-        best = spin;
-      }
-    }
-    return bestCost >= 2 ? 0 : best;
+    visit = { c, land, exit: sideFacing(c, next), crawl: false, t0: 0, leaveAt: 0 };
   }
 
   function stepVisit() {

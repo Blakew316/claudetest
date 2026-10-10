@@ -18,7 +18,7 @@
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 /** Critically damped spring step (Unity-style SmoothDamp). Returns [value, velocity]. */
-function smoothDamp(cur, target, vel, smoothTime, dt) {
+export function smoothDamp(cur, target, vel, smoothTime, dt) {
   const omega = 2 / Math.max(1e-4, smoothTime);
   const x = omega * dt;
   const e = 1 / (1 + x + 0.48 * x * x + 0.235 * x * x * x);
