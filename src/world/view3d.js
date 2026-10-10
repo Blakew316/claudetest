@@ -32,6 +32,7 @@ import { mulberry32 } from '../core/rng.js';
 import { LEG_COUNT, MAX_TENTACLES } from '../core/contracts.js';
 import { ABDOMEN, CEPH, SCALE as SS } from './spider.js';
 import { createIronMan } from './ironman.js';
+import { setSuitSurroundings, suitFrame, suitQuality } from './ironman-model.js';
 
 /** Who crawls the clusters: 'ironman' (the suit, hovering and flying) or 'spider'. */
 const AVATAR = 'ironman';
@@ -533,8 +534,9 @@ export function createView3D(canvas) {
     size.h = h;
     renderer.setPixelRatio(dpr);
     renderer.setSize(w, h, false);
-    // A 1.5x+ screen hides the stairs, and its multisampled half-float buffers would be heavy.
-    const samples = dpr < 1.5 ? MSAA : 0;
+    // A 1.5x+ screen hides the stairs, and its multisampled half-float buffers would be heavy (as they are
+    // for a weak GPU: see suitQuality).
+    const samples = dpr < 1.5 && (!hero || suitQuality() === 'high') ? MSAA : 0;
     if (composer.renderTarget1.samples !== samples) {
       for (const rt of [composer.renderTarget1, composer.renderTarget2]) {
         rt.samples = samples;
@@ -554,6 +556,35 @@ export function createView3D(canvas) {
       o.geometry?.dispose();
       if (o.material) [].concat(o.material).forEach((m) => m.dispose());
     });
+  }
+
+  /**
+   * Tell the suit about the stardust round him (it lights him from below, and glows where he touches it):
+   * the cluster he is deepest in, in its colour as drawn.
+   */
+  const heroTint = new THREE.Color();
+  const heroGround = { y: 0, gx: 0, gz: 0, x: 0, z: 0 };
+  function surroundings(spider, dt) {
+    const p = spider.p;
+    let best = 0;
+    let gap = Infinity;
+    W.world.clusters.forEach((c, i) => {
+      const d = Math.hypot(p[0] - c.cx, p[1] - c.cy, p[2] - c.cz) - c.r;
+      if (d < gap) [gap, best] = [d, i];
+    });
+    const cl = W.clusters[best];
+    heroTint.copy(cl.tint).multiplyScalar(cl.gain);
+    // (He walks well inside a cluster's outer haze; between clusters, only its edge is round him.)
+    const glow = 1 - 0.7 * Math.min(1, Math.max(0, (gap + 120) / 140));
+    // The ground under him as his body fits it (last frame's), while he is on it.
+    const st = hero.debug?.() || {};
+    const on = st.grounded && Number.isFinite(st.gy);
+    heroGround.y = st.gy;
+    heroGround.gx = st.gx || 0;
+    heroGround.gz = st.gz || 0;
+    heroGround.x = st.gpx ?? spider.p[0];
+    heroGround.z = st.gpz ?? spider.p[2];
+    setSuitSurroundings(heroTint, glow, on ? heroGround : null, dt);
   }
 
   /** Build the scene for a world. */
@@ -899,6 +930,8 @@ export function createView3D(canvas) {
     if (hero) {
       const wpos = W.world.wordPos;
       const targets = run.tentacles.map((tn) => ({ at: [wpos[tn.wordId * 3], wpos[tn.wordId * 3 + 1], wpos[tn.wordId * 3 + 2]], id: tn.wordId, p: tn.p }));
+      surroundings(spider, dt);
+      if (suitFrame(dt)) resize(size.w, size.h, renderer.getPixelRatio());
       hero.update(spider, dt, camera, targets, (size.h * renderer.getPixelRatio()) / 2);
       // His repulsor flashes light the dust round them.
       const flashes = hero.fx.userData.flashes || [];

@@ -47,17 +47,17 @@ const HEAD_BONE = 'DEF-spine006'; // what carries the faceplate
 // scaled together so hot gold keeps its colour (there is no tone mapping after: per-channel clipping turned
 // the brightest plates into a flat yellow-white haze that bloomed). A point light's glint on the near-mirror
 // clear coat is otherwise thousands of times white. The lights' own emission is left alone: they should burn.
-const HIGHLIGHT_KNEE = 0.8;
-const HIGHLIGHT_CAP = 1.3;
+const HIGHLIGHT_KNEE = 0.75;
+const HIGHLIGHT_CAP = 1.1;
 // The lights' emission at their white cores (linear): well over the bloom threshold, so even the eye slits glow.
 const LIGHT_GLOW = 3.5;
 
 /*
  * The environment the armour reflects, drawn on the GPU into an equirect: deep space with faint nebulae and
  * stars, lit like a studio (a big warm softbox over the camera's left shoulder, a hard strip on its right for
- * the long highlights down the plates, a soft top light), cyan and blue-white rim strips behind him, and the
- * glow of the stardust under his feet. Its frame: +z toward the camera, +x the camera's right; the materials
- * turn it with the camera (see suitLights().place).
+ * the long highlights down the plates, a soft top light) and cyan and blue-white rim strips behind him (the
+ * glow of the stardust below him is added in the shader: see GROUND_GLSL). Its frame: +z toward the camera,
+ * +x the camera's right; the materials turn it with the camera (see suitLights().place).
  */
 const ENV_FRAG = /* glsl */ `
 varying vec2 vUv;
@@ -91,8 +91,7 @@ void main() {
   float n1 = fbm(d * 2.3 + 4.1), n2 = fbm(d * 3.1 - 2.7);
   col += vec3(0.30, 0.16, 0.62) * 0.10 * smoothstep(0.45, 0.85, n1);
   col += vec3(0.10, 0.42, 0.62) * 0.08 * smoothstep(0.5, 0.9, n2);
-  // The stardust underfoot (periwinkle and white, like the clusters he walks on): a glow from below.
-  col += vec3(0.72, 0.70, 1.0) * 0.12 * smoothstep(0.0, -0.75, d.y) * (0.6 + 0.8 * n2);
+  // (The glow of the stardust below him is added in the suit's shader, in the colour of where he is.)
   // Stars, soft and a texel or two across (so their reflections are points, not squares).
   vec3 g = d * 180.0;
   vec3 cell = floor(g);
@@ -146,6 +145,7 @@ const NOISE_GLSL = /* glsl */ `
 varying vec2 vOcclusion;
 varying vec3 vRest;
 varying float vHead;
+uniform vec3 uGroundGlow;
 float sdHash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
 vec3 sdHash33(vec3 p) { p = fract(p * vec3(0.1031, 0.1030, 0.0973)); p += dot(p, p.yxz + 33.33); return fract((p.xxy + p.yxx) * p.zyx); }
 float sdNoise1(float x) { float i = floor(x), f = fract(x); return mix(sdHash12(vec2(i, 0.37)), sdHash12(vec2(i + 1.0, 0.37)), f * f * (3.0 - 2.0 * f)); }
@@ -165,6 +165,24 @@ reflectedLight.directSpecular *= cavity;
 #if defined( USE_ENVMAP )
   float dotNVao = saturate( dot( geometryNormal, geometryViewDir ) );
   reflectedLight.indirectSpecular *= computeSpecularOcclusion( dotNVao, ambientOcclusion, material.roughness ) * cavitySpec;
+#endif
+`;
+// The stardust below him glows up at the suit in its own colour (uGroundGlow, set from the scene each
+// frame): reflected in the metal and the clear coat, and as a soft light from below. In world space (the
+// environment only ever turns about the vertical).
+const GROUND_GLSL = /* glsl */ `
+#include <lights_fragment_maps>
+#if defined( USE_ENVMAP ) && defined( RE_IndirectSpecular )
+{
+  vec3 nW = inverseTransformDirection(geometryNormal, viewMatrix);
+  vec3 rW = inverseTransformDirection(reflect(-geometryViewDir, geometryNormal), viewMatrix);
+  iblIrradiance += PI * envMapIntensity * uGroundGlow * pow2(0.5 - 0.5 * nW.y);
+  radiance += envMapIntensity * uGroundGlow * (1.0 - smoothstep(-0.7, 0.1 + 0.4 * material.roughness, rW.y));
+  #ifdef USE_CLEARCOAT
+    vec3 rC = inverseTransformDirection(reflect(-geometryViewDir, geometryClearcoatNormal), viewMatrix);
+    clearcoatRadiance += envMapIntensity * uGroundGlow * (1.0 - smoothstep(-0.7, 0.1 + 0.4 * material.clearcoatRoughness, rC.y));
+  #endif
+}
 #endif
 `;
 const CAP_GLSL = /* glsl */ `
@@ -238,12 +256,14 @@ function detail(m, o = {}) {
     // How much of a vertex the head carries (for the faceplate).
     const head = '#ifdef USE_SKINNING\nvHead = dot(skinWeight, vec4(equal(skinIndex, vec4(uHeadBone))));\n#else\nvHead = 0.0;\n#endif';
     sh.uniforms.uHeadBone = m.userData.headBone;
+    sh.uniforms.uGroundGlow = groundGlow;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nattribute vec2 occlusion;\nvarying vec2 vOcclusion;\nvarying vec3 vRest;\nuniform float uHeadBone;\nvarying float vHead;')
       .replace('#include <begin_vertex>', `#include <begin_vertex>\nvOcclusion = occlusion;\nvRest = position;\n${head}`);
     let fs = sh.fragmentShader
       .replace('#include <common>', `#include <common>\n${defs.join('\n')}\n${NOISE_GLSL}`)
       .replace('#include <aomap_fragment>', AO_GLSL)
+      .replace('#include <lights_fragment_maps>', GROUND_GLSL)
       .replace('#include <opaque_fragment>', CAP_GLSL);
     if (o.brushed) {
       fs = fs
@@ -259,8 +279,64 @@ function detail(m, o = {}) {
   return m;
 }
 
+/*
+ * Quality. On a weak GPU the suit drops its costliest touches: his self-shadows (a second skinned pass of
+ * the whole mesh, and the shadow lookups on every pixel of him) and the brushed metals' anisotropy (the
+ * brush streaks stay); the view drops its multisampling too (see suitQuality). Decided once, from how fast
+ * the frames come once he is in (suitFrame), or forced with ?suit=low or ?suit=high in the address.
+ */
+const PROBE_SKIP = 1.5; // seconds after he appears before timing (shader compiles, textures uploading)
+const PROBE_FRAMES = 90; // frames timed
+const SLOW_FRAME = 1 / 40; // a frame slower than this (s) counts as slow ...
+const SLOW_SHARE = 0.6; // ... and this share of slow frames means a weak GPU
+const forced = /[?&]suit=(low|high)/.exec(globalThis.location?.search || '')?.[1];
+const suit = { quality: forced || 'high', keys: [], materials: [], readyAt: 0, last: 0, timed: 0, slow: 0 };
+
+/** Apply suit.quality to every key light and material made. */
+function applyQuality() {
+  const high = suit.quality === 'high';
+  for (const k of suit.keys) k.castShadow = high;
+  for (const m of suit.materials) if (m.userData.anisotropy) m.anisotropy = high ? m.userData.anisotropy : 0;
+}
+
+/**
+ * Set the suit's quality ('high' or 'low').
+ * @param {'high'|'low'} q
+ */
+export function setSuitQuality(q) {
+  suit.quality = q;
+  applyQuality();
+}
+
+/** @returns {'high'|'low'} the suit's quality */
+export const suitQuality = () => suit.quality;
+
+/**
+ * Call once a drawn frame (the view does): times the live frames for a while after he appears, and drops
+ * to the low quality if most are slow. Frames stepped by hand (captures) run far slower than the clock
+ * they carry, and are not counted.
+ * @param {number} dt the frame's clock step (s)
+ * @returns {boolean} whether the quality has just dropped
+ */
+export function suitFrame(dt) {
+  const now = performance.now();
+  const wall = (now - suit.last) / 1000;
+  suit.last = now;
+  if (forced || !suit.readyAt || suit.timed >= PROBE_FRAMES || now - suit.readyAt < PROBE_SKIP * 1000) return false;
+  // (The live loop's step is the frame's time, capped at 0.1 s; a seek's is longer.)
+  const live = dt > 0.1001 ? false : dt >= 0.099 ? wall >= 0.075 : Math.abs(wall - dt) < 0.25 * dt + 0.004;
+  if (!live) return false;
+  suit.timed++;
+  if (wall > SLOW_FRAME) suit.slow++;
+  if (suit.timed < PROBE_FRAMES || suit.slow <= SLOW_SHARE * PROBE_FRAMES) return false;
+  setSuitQuality('low');
+  return true;
+}
+
 /** The environment's turn about the vertical, shared by every suit material (set by suitLights().place). */
 const envRotation = new THREE.Euler();
+/** The radiance of the stardust below him (linear), shared by every suit material (set by suitLights().place). */
+const groundGlow = { value: new THREE.Color() };
 
 /** The suit's materials, by the names the mesh carries: candy-red clear-coated paint, gold, gunmetal and the lights. */
 function materials(renderer) {
@@ -301,7 +377,7 @@ function materials(renderer) {
         roughness: 1.9,
         metalness: 1,
         anisotropy: 0.45,
-        envMapIntensity: 0.85,
+        envMapIntensity: 0.72,
       }),
       { brushed: { scale: 3400, amp: 0.22 } },
     ),
@@ -336,9 +412,81 @@ function materials(renderer) {
       }),
     ),
   };
-  for (const m of Object.values(mats)) m.envMapRotation = envRotation;
+  for (const m of Object.values(mats)) {
+    m.envMapRotation = envRotation;
+    m.userData.anisotropy = m.anisotropy;
+    suit.materials.push(m);
+  }
+  applyQuality();
   return mats;
 }
+
+/*
+ * Where he is (setSuitSurroundings, from the view each frame): the stardust he stands in lights him. Its
+ * glow comes up at the suit from below in the cluster's colour (GROUND_GLSL, and the fill light's ground
+ * colour), and where a boot, a knee or a fist meets it, it glows round the contact and lights the armour
+ * just above (one small light), flaring as he lands.
+ */
+const SPACE_GLOW = new THREE.Color(0.72, 0.7, 1.0).multiplyScalar(0.12); // below him in open space: faint periwinkle
+const GROUND_GLOW = 0.22; // the glow below him inside a cluster, per unit of its colour as drawn
+const FILL_GROUND = new THREE.Color(0x2a1a12); // the fill light's own ground colour
+const CONTACT_GLOW = 0.16; // a contact's glow at its centre, per unit of the cluster's colour ...
+const CONTACT_WHITE = 0.35; // ... paled toward white (stardust is white stars as much as coloured haze)
+const UNDER_LIGHT = 30; // the light the stardust throws up round his contacts (candela per unit of colour)
+const UNDER_RANGE = 26; // ... and how far it reaches (world units: boots and shins)
+const LAND_FLARE = 2; // extra glow as he lands, fading over FLARE_TIME seconds
+const FLARE_TIME = 0.45;
+const TOUCH_NEAR = 0.08; // a contact this close to the ground (model units) touches it ...
+const TOUCH_FAR = 0.22; // ... and one this far does not;
+const REST_SPEED = 0.6; // a contact moving slower than this (model units/s) rests on the ground ...
+const MOVE_SPEED = 1.6; // ... and one faster only passes by (a foot coming down through it)
+/** What touches the ground: bone, how high its origin sits above the ground when it does, glow radius (model units). */
+const CONTACTS = [
+  ['DEF-toeL', 0.054, 0.26],
+  ['DEF-toeR', 0.054, 0.26],
+  ['DEF-footL', 0.2, 0.24], // (the heel, under the ankle)
+  ['DEF-footR', 0.2, 0.24],
+  ['DEF-shinL', 0.09, 0.24], // the knee (kneeling)
+  ['DEF-shinR', 0.09, 0.24],
+  ['DEF-handL', 0.15, 0.26], // a fist planted
+  ['DEF-handR', 0.15, 0.26],
+];
+const FOOT_LEN = Math.hypot(...JOINTS['DEF-toeL'].map((x, i) => x - JOINTS['DEF-footL'][i])); // for his scale
+const surroundings = { color: new THREE.Color(), glow: 0, ground: null, dt: 0 };
+
+/**
+ * Tell the suit where he is.
+ * @param {THREE.Color} color the stardust round him as drawn (linear)
+ * @param {number} glow how much of it is round him (0 open space .. 1 inside a cluster)
+ * @param {{y:number, gx:number, gz:number, x:number, z:number}|null} ground the ground he stands on (null in
+ *   the air): its height y at (x, z), and its rise per unit along x and z (world)
+ * @param {number} dt seconds since the last frame
+ */
+export function setSuitSurroundings(color, glow, ground, dt) {
+  surroundings.color.copy(color);
+  surroundings.glow = glow;
+  surroundings.ground = ground;
+  surroundings.dt = dt;
+}
+
+// A contact's glow: lit dust round it, a flattened ellipse facing the camera (as flat as a pool on the
+// ground seen from above, never a thin line seen from the side).
+const GLOW_VERT = /* glsl */ `
+uniform float uSquash;
+varying vec2 vUv;
+void main() {
+  vUv = uv;
+  vec4 c = modelViewMatrix * vec4(0.0, 0.0, 0.0, 1.0);
+  c.xy += position.xy * length(modelMatrix[0].xyz) * vec2(1.0, uSquash);
+  gl_Position = projectionMatrix * c;
+}`;
+const GLOW_FRAG = /* glsl */ `
+uniform vec3 uColor;
+varying vec2 vUv;
+void main() {
+  float r2 = dot(vUv - 0.5, vUv - 0.5) * 4.0;
+  gl_FragColor = vec4(uColor * (exp(-4.0 * r2) - exp(-4.0)) * step(r2, 1.0), 1.0);
+}`;
 
 const UP = new THREE.Vector3(0, 1, 0);
 const LIGHT_DIST = 90; // world units from him: well outside his reach, inside the shadow camera's range
@@ -362,7 +510,8 @@ export function suitLights(renderer, target) {
   const key = new THREE.DirectionalLight(0xfff0de, 2.4);
   const rimC = new THREE.DirectionalLight(0x6fd0ff, 3);
   const rimB = new THREE.DirectionalLight(0xc4ccff, 1.6);
-  key.castShadow = true;
+  suit.keys.push(key);
+  applyQuality();
   const sc = key.shadow.camera;
   sc.left = sc.bottom = -SHADOW_HALF;
   sc.right = sc.top = SHADOW_HALF;
@@ -373,9 +522,117 @@ export function suitLights(renderer, target) {
   key.shadow.normalBias = 0.06;
   key.shadow.radius = 3;
   for (const l of [key, rimC, rimB]) l.target = target;
-  group.add(fill, key, rimC, rimB);
+  const under = new THREE.PointLight(0xffffff, 0, UNDER_RANGE, 2);
+  const quad = new THREE.PlaneGeometry(2, 2);
+  const glows = CONTACTS.map(() => {
+    const m = new THREE.Mesh(
+      quad,
+      new THREE.ShaderMaterial({
+        uniforms: { uColor: { value: new THREE.Color() }, uSquash: { value: 1 } },
+        vertexShader: GLOW_VERT,
+        fragmentShader: GLOW_FRAG,
+        transparent: true,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+        fog: false,
+      }),
+    );
+    m.visible = false;
+    m.frustumCulled = false; // (the quad is placed in the shader)
+    return m;
+  });
+  group.add(fill, key, rimC, rimB, under, ...glows);
   const f = new THREE.Vector3();
   const r = new THREE.Vector3();
+  const tint = new THREE.Color(); // the stardust's colour
+  const tmpC = new THREE.Color();
+  const pale = new THREE.Color(); // ... paled, for the contact glows
+  const pos = CONTACTS.map(() => new THREE.Vector3());
+  const touch = new Float32Array(CONTACTS.length);
+  const floor = new Float32Array(CONTACTS.length); // the ground under each
+  const rest = new Float32Array(CONTACTS.length).fill(1); // how still each is
+  const last = CONTACTS.map(() => new THREE.Vector3());
+  let tracked = false; // (last holds last frame's positions)
+  const gnd = { y: 0, gx: 0, gz: 0, x: 0, z: 0 }; // the ground he last stood on
+  let k = 1; // world units per model unit (his size)
+  const mid = new THREE.Vector3();
+  const eye = new THREE.Vector3();
+  let bones = null;
+  let level = 0; // how much he is on the ground, eased
+  let flare = 0;
+  let airTime = 0; // seconds off the ground
+  /** The contact bones, once the model is in. */
+  const findBones = () => {
+    const found = {};
+    group.parent?.traverse((o) => {
+      if (o.isBone) found[o.name] = o;
+    });
+    return CONTACTS.every(([b]) => found[b]) ? CONTACTS.map(([b]) => found[b]) : null;
+  };
+  /**
+   * The glow round his contacts with the ground, and the light it throws up at him.
+   * @param {THREE.Camera} camera
+   */
+  const ground = (camera) => {
+    const sur = surroundings;
+    const dt = sur.dt;
+    if (!bones) bones = findBones();
+    const parent = group.parent;
+    let w = 0;
+    const gr = gnd;
+    if (bones && parent && sur.ground) {
+      Object.assign(gnd, sur.ground);
+      bones.forEach((b, i) => {
+        last[i].copy(pos[i]);
+        b.getWorldPosition(pos[i]);
+      });
+      k = pos[0].distanceTo(pos[2]) / FOOT_LEN;
+      CONTACTS.forEach(([, lift], i) => {
+        floor[i] = gr.y + gr.gx * (pos[i].x - gr.x) + gr.gz * (pos[i].z - gr.z);
+        // Near the ground and at rest on it (a seek's jump in time counts as at rest).
+        const speed = dt > 0 && dt < 0.3 && tracked ? pos[i].distanceTo(last[i]) / dt / k : 0;
+        rest[i] += ((1 - THREE.MathUtils.smoothstep(speed, REST_SPEED, MOVE_SPEED)) - rest[i]) * (1 - Math.exp(-dt / 0.05));
+        touch[i] = (1 - THREE.MathUtils.smoothstep(Math.abs(pos[i].y - lift * k - floor[i]) / k, TOUCH_NEAR, TOUCH_FAR)) * rest[i];
+        w += touch[i];
+      });
+      tracked = true;
+    } else {
+      // Off the ground: the glows fade where they were.
+      tracked = false;
+      for (let i = 0; i < touch.length; i++) touch[i] *= Math.exp(-dt / 0.1);
+    }
+    // In quickly as he touches down (flaring if he comes down from the air), out quickly as he leaves.
+    const on = sur.ground ? Math.min(1, w) : 0;
+    if (on > 0.5 && airTime > 0.3) flare = 1;
+    airTime = on > 0.5 ? 0 : airTime + dt;
+    flare *= Math.exp(-dt / FLARE_TIME);
+    level += (on - level) * (1 - Math.exp(-dt / (on > level ? 0.04 : 0.1)));
+    if (level < 0.01 || !bones || !parent) {
+      for (const g of glows) g.visible = false;
+      under.intensity = 0;
+      return;
+    }
+    const gain = 1 + LAND_FLARE * flare;
+    pale.copy(tint).lerp(tmpC.setScalar(tint.r * 0.2126 + tint.g * 0.7152 + tint.b * 0.0722), CONTACT_WHITE);
+    mid.set(0, 0, 0);
+    CONTACTS.forEach(([, , radius], i) => {
+      const g = glows[i];
+      g.visible = touch[i] > 0.01;
+      if (!g.visible) return;
+      g.position.set(pos[i].x, floor[i], pos[i].z);
+      g.material.uniforms.uSquash.value = Math.max(0.35, Math.abs(eye.copy(camera.position).sub(g.position).normalize().y));
+      parent.worldToLocal(g.position);
+      g.scale.setScalar(radius * k);
+      g.material.uniforms.uColor.value.copy(pale).multiplyScalar(CONTACT_GLOW * touch[i] * level * gain);
+      mid.addScaledVector(pos[i], touch[i]);
+    });
+    // One light for them all, in the dust under the middle of his contacts.
+    mid.divideScalar(Math.max(w, 1e-6));
+    mid.y = gr.y + gr.gx * (mid.x - gr.x) + gr.gz * (mid.z - gr.z) - 0.15 * k;
+    under.position.copy(parent.worldToLocal(mid));
+    under.color.copy(tint);
+    under.intensity = UNDER_LIGHT * level * gain;
+  };
   const at = (l, x, y, z) => l.position.set(0, 0, 0).addScaledVector(r, x).addScaledVector(UP, y).addScaledVector(f, z).setLength(LIGHT_DIST);
   return {
     group,
@@ -392,6 +649,12 @@ export function suitLights(renderer, target) {
       at(rimC, -0.8, 0.35, -0.7);
       at(rimB, 0.85, 0.2, -0.65);
       envRotation.y = Math.atan2(f.x, f.z);
+      // The stardust round him: its glow from below, in the reflections and the fill.
+      const sur = surroundings;
+      tint.copy(sur.color);
+      groundGlow.value.copy(SPACE_GLOW).lerp(tmpC.copy(tint).multiplyScalar(GROUND_GLOW), sur.glow);
+      fill.groundColor.copy(FILL_GROUND).lerp(tmpC.copy(tint).multiplyScalar(0.5), sur.glow);
+      ground(camera);
     },
   };
 }
@@ -423,7 +686,10 @@ export function loadModel(renderer, onReady, anchor) {
         }
         if (o.isBone) bones[o.name] = o;
       });
-      const done = () => onReady({ scene: gltf.scene, bones, materials: mats });
+      const done = () => {
+        suit.readyAt = performance.now();
+        onReady({ scene: gltf.scene, bones, materials: mats });
+      };
       warmUp(renderer, gltf.scene, anchor).then(done, done);
     },
     (e) => console.error('Iron Man model failed to load', e),
