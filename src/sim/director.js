@@ -11,10 +11,10 @@
  *  - each section: an establishing view of the whole ball, then 2-3 sub-shots
  *    (a slow push-in on the spider, a slow arc round it to another elevation,
  *    in a per-section order), easing back out before the leap;
- *  - leaps: the camera starts turning during the crouch, frames the flight (as
- *    side-on as a small turn allows) so the trailing legs and the next ball are
- *    both in shot, and settles into the next establishing view on landing, all
- *    on one slow turn;
+ *  - leaps: the camera starts turning during the crouch, frames the flight
+ *    side-on (from the nearer side, unless a neighbouring ball blocks it) so
+ *    the trailing legs and the next ball are both in shot, and settles into the
+ *    next establishing view on landing, all on one slow turn;
  *  - finale: a rising orbit of the whole nebula, then a slow closing drift onto
  *    the spider resting on an outer ball with the nebula behind it.
  * Each move is pre-visualised against the world before it is used: the
@@ -23,6 +23,10 @@
  *
  * Pacing: each section's read time grows with its word count (5-12.5 s), and
  * the whole run is held under ~4 minutes however long the prompt.
+ *
+ * Placement: the crawler lands, strolls and reads in the middle of each ball
+ * (about a quarter of its radius out, round its heart), its words all round
+ * it, and leaps on from there (see planRoutes).
  */
 
 import { createRunState, MAX_TENTACLES, SIM_DT } from '../core/contracts.js';
@@ -45,13 +49,14 @@ const MIN_READ = 7;
 const MAX_READ = 18;
 const LOG_CAP = 40;
 // Between sections the spider also leaps through the extra (no-word) balls:
-// it lands on the side facing where it came from and crawls toward the side
-// facing where it goes next, for at most VISIT_CRAWL seconds.
+// it lands inside, on the side facing where it came from, and crosses toward
+// the side facing where it goes next, for at most VISIT_CRAWL seconds.
 const VISIT_CRAWL = 3.5;
 const VISIT_EASE = 1.4; // the camera eases back out this long before the next leap
 const VISIT_DIST = 0.7; // of the ball's fit distance, once landed
 const VISIT_TURN = 0.16; // rad/s round it
 const TURN_U = 0.12; // the leap's camera turn finishes this far into the reading
+const LEAP_TURN = 1.1; // rad/s: the turn to the side-on leap view averages no faster than this
 // While the spider crawls through a ball the camera comes in close and keeps
 // revolving round it (rising and dipping once), so the stardust slides past in
 // depth; it eases back out to the keyed wide view before the leap.
@@ -59,7 +64,18 @@ const ORBIT_U = [0.08, 0.92]; // reading-progress window of the close orbit
 const ORBIT_RATE = 0.16; // rad/s round the spider
 const ORBIT_DIST = 0.7; // of the ball's fit distance
 const PI = Math.PI;
-const ROAM_SPEED = 19; // world units/s the spider averages over a read, pauses included
+const ROAM_SPEED = 13; // world units/s it averages over a read, pauses included: a stroll, stopping often to fire
+// He reads from the middle of each ball, the stars all round him, not from its
+// rim: he lands, strolls and leaves about a quarter of its radius out (in the
+// dense half of its stars), circling its heart but out of the blinding nucleus.
+const LAND_IN = 0.24; // lands this far out from the middle, toward the section's first words
+const EXIT_IN = 0.26; // leaves from this far out, on the side facing where it leaps next
+const RING = [0.15, 0.28]; // strolls round the middle this far out (radii)
+const VISIT_IN = 0.3; // crosses the extra balls this far in
+const REST_IN = 0.32; // and rests this far in for the finale
+const WAY = 0.2; // a waypoint every this much of the stroll (radii): a few strides apart
+const SLOPE = 0.2; // rise over run at most: he walks, he does not climb
+const ROAM_REACH = 0.1; // the goal moves on to the next waypoint once it is this close (radii)
 const ZOOM_MAX = 1.0; // camera zoom rate cap, log distance per second (~1.7% a frame)
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
@@ -189,22 +205,42 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return { x: x / k, y: y / k, z: z / k };
   }
 
-  /** Where the spider lands on section i: among its first words. */
-  function landing(i) {
+  /**
+   * The point k radii out from the middle of ball c toward P (heights
+   * flattened, so it stays near the ball's waist), or P itself if nearer.
+   */
+  function toward(c, P, k) {
+    if (!P) return { x: c.cx, y: c.cy, z: c.cz };
+    const dx = P.x - c.cx;
+    const dy = (P.y - c.cy) * 0.6;
+    const dz = P.z - c.cz;
+    const l = Math.hypot(dx, dy, dz);
+    if (l < 1e-6) return { x: c.cx, y: c.cy, z: c.cz + k * c.r }; // no side to favour (a section with no words): any, but not the nucleus
+    const s = Math.min(l, k * c.r) / l;
+    return { x: c.cx + dx * s, y: c.cy + dy * s, z: c.cz + dz * s };
+  }
+
+  /** Where section i's first words hang (the middle of its ball if it has none). */
+  function firstWords(i) {
     const sec = analysis.sections[i];
     const c = clusters[i];
     return centroid(sec.start, Math.min(sec.start + 6, sec.start + sec.count)) || { x: c.cx, y: c.cy, z: c.cz };
   }
 
-  /** Where the spider leaves section i from: among its last words. */
+  /** Where the spider lands on section i: well inside the ball, on the side its first words hang. */
+  function landing(i) {
+    return toward(clusters[i], firstWords(i), LAND_IN);
+  }
+
+  /** Where section i's last words hang. */
   function leaving(i) {
     const a = analysis.sections[i];
     return centroid(Math.max(a.start, a.start + a.count - 4), a.start + a.count) || { x: clusters[i].cx, y: clusters[i].cy, z: clusters[i].cz };
   }
 
-  /** Where the leg after section i ends: the next section's first words, or the middle for the finale. */
+  /** Where the leg after section i heads: the next section's first words, or the middle for the finale. */
   function legEnd(i) {
-    return i + 1 < n ? landing(i + 1) : { x: B.x, y: B.y, z: B.z };
+    return i + 1 < n ? firstWords(i + 1) : { x: B.x, y: B.y, z: B.z };
   }
 
   /**
@@ -239,9 +275,11 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   }
 
   /**
-   * Each read is a walk across its ball: from where it lands, through
-   * waypoints spread over the ball (as many as it can cover in the read),
-   * ending on the side facing where it goes next.
+   * Each read is a stroll round the heart of its ball: from where it lands,
+   * curving round the middle (whichever way round suits the read's length and
+   * carries on the way it came in, swinging in or out a little), level but for
+   * a gentle rise or fall, to the side facing where it goes next. No sharp
+   * turns and nothing steep: he walks it.
    */
   function planRoutes() {
     return analysis.sections.map((sec, i) => {
@@ -249,27 +287,53 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       const rand = fork(seed, `roam:${i}`);
       const start = landing(i);
       const nx = visits[i][0];
-      const next = nx ? { x: nx.cx, y: nx.cy, z: nx.cz } : legEnd(i);
-      const route = [start];
-      let length = 0;
-      const want = ROAM_SPEED * readT[i];
-      for (let guard = 0; guard < 40 && length < want * 0.8; guard++) {
-        const prev = route[route.length - 1];
-        const u = rand() * 2 - 1;
-        const th = rand() * PI * 2;
-        const sq = Math.sqrt(1 - u * u);
-        const rr = c.r * range(rand, 0.3, 0.68);
-        const q = { x: c.cx + sq * Math.cos(th) * rr, y: c.cy + u * rr * 0.8, z: c.cz + sq * Math.sin(th) * rr };
-        const step = Math.hypot(q.x - prev.x, q.y - prev.y, q.z - prev.z);
-        if (step < c.r * 0.4) continue; // a real walk, not a shuffle on the spot
-        route.push(q);
-        length += step;
+      const exit = toward(c, nx ? { x: nx.cx, y: nx.cy, z: nx.cz } : legEnd(i), EXIT_IN);
+      const want = ROAM_SPEED * readT[i] * 0.8;
+      const lo = RING[0] * c.r;
+      const hi = RING[1] * c.r;
+      // Round the middle, seen from above: where it lands and where it leaves.
+      const a0 = Math.atan2(start.z - c.cz, start.x - c.cx);
+      const a1 = Math.atan2(exit.z - c.cz, exit.x - c.cx);
+      const rs = clamp(Math.hypot(start.x - c.cx, start.z - c.cz), lo, hi);
+      const re = clamp(Math.hypot(exit.x - c.cx, exit.z - c.cz), lo, hi);
+      // The way it was leaping as it came in, from the previous ball.
+      const from = i > 0 ? visits[i - 1][visits[i - 1].length - 1] || clusters[i - 1] : null;
+      const inX = from ? start.x - from.cx : 0;
+      const inZ = from ? start.z - from.cz : 0;
+      const inL = Math.hypot(inX, inZ) || 1;
+      const short = wrap(a1 - a0);
+      let best = null;
+      for (const sweep of [short, short - (short < 0 ? -1 : 1) * 2 * PI]) {
+        // Swing in or out so the way round is about as long as the read wants.
+        const mid = (rs + re) / 2;
+        const bulge = clamp(((want / Math.max(0.2, Math.abs(sweep)) - mid) * PI) / 2, lo - mid, hi - mid);
+        const len = Math.abs(sweep) * (mid + (2 / PI) * bulge);
+        // How well setting off round this way carries on from the leap in (1: straight on).
+        const along = ((sweep < 0 ? -1 : 1) * (Math.cos(a0) * inZ - Math.sin(a0) * inX)) / inL;
+        // Too short leaves him standing about; too long only means he leaves from partway round.
+        const cost = (1.5 * Math.max(0, want - len) + 0.4 * Math.max(0, len - want)) / want + 0.1 * (1 - along) + 0.05 * rand();
+        if (!best || cost < best.cost) best = { sweep, bulge, len, cost };
       }
-      const dx = next.x - c.cx;
-      const dy = next.y - c.cy;
-      const dz = next.z - c.cz;
-      const l = Math.hypot(dx, dy, dz) || 1;
-      route.push({ x: c.cx + (dx / l) * c.r * 0.5, y: c.cy + (dy / l) * c.r * 0.5, z: c.cz + (dz / l) * c.r * 0.5 });
+      const K = Math.max(2, Math.round(best.len / (WAY * c.r)));
+      const ph = rand() * PI * 2;
+      const route = [start];
+      for (let k = 1; k < K; k++) {
+        const f = k / K;
+        const a = a0 + best.sweep * f;
+        const rr = clamp(lerp(rs, re, f) + best.bulge * Math.sin(PI * f) + c.r * 0.025 * Math.sin(3 * PI * f + ph), lo, hi);
+        const x = c.cx + Math.cos(a) * rr;
+        const z = c.cz + Math.sin(a) * rr;
+        // Level, drifting gently toward the exit's height, never steeper than SLOPE.
+        const prev = route[route.length - 1];
+        const run = Math.hypot(x - prev.x, z - prev.z);
+        const y = prev.y + clamp(lerp(start.y, exit.y, f) + c.r * 0.04 * Math.sin(2 * PI * f + ph) - prev.y, -SLOPE * run, SLOPE * run);
+        route.push({ x, y, z });
+      }
+      // ...and no steeper into the exit.
+      const last = route[route.length - 1];
+      const run = Math.hypot(exit.x - last.x, exit.z - last.z);
+      exit.y = last.y + clamp(exit.y - last.y, -SLOPE * run, SLOPE * run);
+      route.push(exit);
       return route;
     });
   }
@@ -406,24 +470,14 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       const line = lerp(cam.pitch, Pe, tm / tEnd);
       const leapYaw = Math.atan2(goal.x - from[0], goal.z - from[2]);
       const skip = [i, i - 1];
+      const flightCost = (y, pitch) => leapCost(from, goal, tr.apex, c, y, pitch, skip);
       let bestCost = Infinity;
       air = { yaw: cam.yaw, pitch: line, t: tm, hold: tr.crouch + tr.air + 0.25, end: tEnd };
       for (const pitch of [line, clamp(line + 0.2, -0.4, 1.0)]) {
         for (let k = -4; k <= 4; k++) {
           const y = cam.yaw + k * 0.15;
           const endOn = Math.abs(Math.cos(y - leapYaw)) * Math.cos(pitch);
-          orbitDir(y, pitch, dir);
-          let cost = 0.8 * Math.abs(y - cam.yaw) + 0.5 * endOn + 0.15 * Math.abs(pitch - line);
-          let ref = -1;
-          for (let n5 = 0; n5 <= 5; n5++) {
-            const u = n5 / 5;
-            const h = 4 * u * (1 - u) * tr.apex;
-            const sp = { x: lerp(from[0], goal.x, u), y: lerp(from[1], goal.y, u) + h, z: lerp(from[2], goal.z, u) };
-            airFrame(sp, goal, c);
-            const dist = clearDistance(tgt.x, tgt.y, tgt.z, dir, tgt.dist, clusters, 0.9, tgt.dist * 0.45, ref < 0 ? tgt.dist : ref);
-            ref = dist;
-            cost += (shotCost(tgt.x, tgt.y, tgt.z, dir, dist, clusters, skip) + 0.8 * Math.abs(Math.log(dist / tgt.dist))) / 6;
-          }
+          const cost = 0.8 * Math.abs(y - cam.yaw) + 0.5 * endOn + 0.15 * Math.abs(pitch - line) + flightCost(y, pitch);
           if (cost < bestCost) {
             bestCost = cost;
             air = { yaw: y, pitch, t: tm, hold: tr.crouch + tr.air + 0.25, end: tEnd };
@@ -434,14 +488,24 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         turn = Math.sign(air.yaw - cam.yaw);
         moving = true;
       }
-      // Whatever was clearest, watch the leap itself side-on and low, so the arc reads.
-      let side = Infinity;
+      // Whatever was clearest, watch the leap itself side-on and low, so the arc
+      // reads: from the nearer side, unless the other sees it far more clearly
+      // (leaping out of the middle of one ball into the middle of the next, a
+      // neighbouring ball can stand right in the way of one side).
+      let side = 0;
+      let sideCost = Infinity;
       for (const off of [PI / 2, -PI / 2]) {
-        const d = Math.atan2(Math.sin(leapYaw + off - cam.yaw), Math.cos(leapYaw + off - cam.yaw));
-        if (Math.abs(d) < Math.abs(side)) side = d;
+        const d = wrap(leapYaw + off - cam.yaw);
+        const cost = 0.4 * Math.abs(d) + flightCost(cam.yaw + d, 0.12);
+        if (cost < sideCost) {
+          sideCost = cost;
+          side = d;
+        }
       }
       air.yaw = cam.yaw + side;
       air.pitch = 0.12;
+      // A big turn takes longer (later into the flight), so it never whips round.
+      air.t = Math.min(Math.max(air.t, Math.abs(side) / LEAP_TURN), air.hold - 0.3);
       yawRef = air.yaw;
     }
 
@@ -510,7 +574,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const fitB = fitDistance(B.radius, aspect(), 50, 0.92);
     const pitchEnd = 0.24;
     const restDir = orbitDir(finalYaw, pitchEnd * 0.6, [0, 0, 0]);
-    const rest = best ? { x: best.cx + restDir[0] * best.r * 0.5, y: best.cy + restDir[1] * best.r * 0.5, z: best.cz + restDir[2] * best.r * 0.5 } : { x: B.x, y: B.y, z: B.z };
+    const rest = best ? { x: best.cx + restDir[0] * best.r * REST_IN, y: best.cy + restDir[1] * best.r * REST_IN, z: best.cz + restDir[2] * best.r * REST_IN } : { x: B.x, y: B.y, z: B.z };
     const closeDist = best ? fitR(best.r) * 1.25 : fitB;
     const keys = [
       // Pull back while it makes its last leap, keeping it near the middle...
@@ -617,6 +681,26 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const reach = Math.hypot(s.x - c.cx, s.y - c.cy, s.z - c.cz);
     tgt.dist = fitDistance(Math.max(c.r * 0.9, reach * 0.6 + 70), aspect(), 50, 1.0);
     return tgt;
+  }
+
+  /**
+   * Pre-visualise a leap (from, to goal over an arc of height apex, into ball
+   * c) as framed from (yaw, pitch): what blocks it, and how far the camera
+   * would be pushed out of its framing to see past the balls. Lower is better.
+   */
+  function leapCost(from, goal, apex, c, yaw, pitch, skip) {
+    orbitDir(yaw, pitch, dir);
+    let cost = 0;
+    let ref = -1;
+    for (let k = 0; k <= 5; k++) {
+      const u = k / 5;
+      const h = 4 * u * (1 - u) * apex;
+      airFrame({ x: lerp(from[0], goal.x, u), y: lerp(from[1], goal.y, u) + h, z: lerp(from[2], goal.z, u) }, goal, c);
+      const dist = clearDistance(tgt.x, tgt.y, tgt.z, dir, tgt.dist, clusters, 0.9, tgt.dist * 0.45, ref < 0 ? tgt.dist : ref);
+      ref = dist;
+      cost += (shotCost(tgt.x, tgt.y, tgt.z, dir, dist, clusters, skip) + 0.8 * Math.abs(Math.log(dist / tgt.dist))) / 6;
+    }
+    return cost;
   }
 
   function cameraTarget() {
@@ -858,7 +942,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const s = run.spider;
     const away = Math.hypot(s.x - ship.cluster.cx, s.y - ship.cluster.cy, s.z - ship.cluster.cz);
     run.spiderGoal = { ...ship.rest };
-    // Leap across to the resting ball, or just stroll round to its outer face.
+    // Leap across to the resting ball, or just stroll over to where it rests in it.
     if (away > ship.cluster.r * 1.1) travelTo(run.spiderGoal, 'ship');
   }
 
@@ -971,7 +1055,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const route = routes[run.active];
     const s = run.spider;
     const g = route[Math.min(roamIdx, route.length - 1)];
-    if (roamIdx < route.length - 1 && Math.hypot(s.x - g.x, s.y - g.y, s.z - g.z) < 40) roamIdx++;
+    if (roamIdx < route.length - 1 && Math.hypot(s.x - g.x, s.y - g.y, s.z - g.z) < ROAM_REACH * clusters[run.active].r) roamIdx++;
     const goal = route[Math.min(roamIdx, route.length - 1)];
     run.spiderGoal = { x: goal.x, y: goal.y, z: goal.z };
     const T = plans[run.active].T;
@@ -990,13 +1074,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     else enterShip();
   }
 
-  /** A point on ball c, half its radius out, on the side facing P. */
+  /** A point inside ball c, well in from its rim, on the side facing P. */
   function sideFacing(c, P) {
-    const dx = P.x - c.cx;
-    const dy = P.y - c.cy;
-    const dz = P.z - c.cz;
-    const l = Math.hypot(dx, dy, dz) || 1;
-    return { x: c.cx + (dx / l) * c.r * 0.5, y: c.cy + (dy / l) * c.r * 0.5, z: c.cz + (dz / l) * c.r * 0.5 };
+    return toward(c, P, VISIT_IN);
   }
 
   function enterVisit(c) {
@@ -1004,19 +1084,30 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const nx = visitQueue[0];
     const next = nx ? { x: nx.cx, y: nx.cy, z: nx.cz } : legEnd(run.active);
     const cam = run.camera;
-    // Watch the leap side-on (whichever side is nearer the current view, turning at most 1.1 rad).
     const sp = run.spider;
-    const leapYaw = Math.atan2(sideFacing(c, sp).x - sp.x, sideFacing(c, sp).z - sp.z);
+    const land = sideFacing(c, sp);
+    run.visit = { cluster: c.index };
+    run.spiderGoal = { ...land };
+    travelTo(run.spiderGoal, `x${c.index}`);
+    // Watch the leap side-on, turning at most 1.1 rad: from the nearer side,
+    // unless the other sees the flight far more clearly.
+    const tr = run.travel;
+    const leapYaw = Math.atan2(land.x - sp.x, land.z - sp.z);
+    const a = clusters[run.active];
+    const skip = a && Math.hypot(sp.x - a.cx, sp.y - a.cy, sp.z - a.cz) < a.r ? [a.index] : [];
     let airYaw = cam.yaw;
-    let bestTurn = Infinity;
+    let bestCost = Infinity;
     for (const side of [PI / 2, -PI / 2]) {
-      const d = Math.atan2(Math.sin(leapYaw + side - cam.yaw), Math.cos(leapYaw + side - cam.yaw));
-      if (Math.abs(d) < Math.abs(bestTurn)) bestTurn = d;
+      const d = clamp(wrap(leapYaw + side - cam.yaw), -1.1, 1.1);
+      const cost = 0.4 * Math.abs(d) + leapCost(tr.from, land, tr.apex, c, cam.yaw + d, 0.18, skip);
+      if (cost < bestCost) {
+        bestCost = cost;
+        airYaw = cam.yaw + d;
+      }
     }
-    airYaw = cam.yaw + clamp(bestTurn, -1.1, 1.1);
     visit = {
       c,
-      land: sideFacing(c, run.spider),
+      land,
       exit: sideFacing(c, next),
       crawl: false,
       t0: 0,
@@ -1026,9 +1117,6 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       spin: 0,
     };
     visit.spin = visitSpin(c, visit.land, airYaw, Math.abs(cam.v?.yaw || 0) > 0.01 ? Math.sign(cam.v.yaw) : 1);
-    run.visit = { cluster: c.index };
-    run.spiderGoal = { ...visit.land };
-    travelTo(run.spiderGoal, `x${c.index}`);
   }
 
   /**
