@@ -94,7 +94,7 @@ const LENS_TAN = Math.tan((50 * Math.PI) / 360); // half the vertical field of v
 const SIZE_MEDIUM = 0.48; // walking, reading, firing: a full-figure two-shot
 const SIZE_WIDE = 0.41; // the two-shot may pull back this far to keep his words in frame...
 const SIZE_REVEAL = 0.34; // ...and eases out to this for a moment as a flag lands, so the flagged word shares the frame
-const SIZE_TIGHT = 0.86; // now and then, as a linked word goes, in to a medium shot: the suit, the firing hand and its beam up close
+const SIZE_TIGHT = 0.8; // now and then, as a linked word goes, in to a medium shot: the suit, the firing hand and its beam up close
 const SIZE_VISIT = 0.56; // crossing a ball with no words: a slow push in on him
 const SIZE_LAUNCH = 0.46; // the takeoff
 const SIZE_OPEN = 0.09; // the brief wide look the run opens on
@@ -164,6 +164,7 @@ const WORD_W = 1.5; // losing his words off screen (their labels are then pinned
 const HAND_W = 0.5; // ...and his body hiding the firing hand
 // Beats: a tight shot at most every TIGHT_EVERY, held until TIGHT_HOLD after its word goes; a reveal held REVEAL_HOLD.
 const TIGHT_EVERY = 10;
+const TIGHT_LEVEL = 0.6; // rad: a tight shot's word is at most this far above or below his chest
 const TIGHT_HOLD = 2.2;
 const REVEAL_EVERY = 4;
 const REVEAL_HOLD = 1.6;
@@ -920,9 +921,12 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       for (let k = 0; k < PANS.length; k++) if (Math.abs(scr.x + PANS[k]) < 0.86 && Math.abs(scr.y + sy) < 0.84) vis[k] += w;
     }
     const xd = walkDir(moving, hx, hz, asp);
+    // Closer in, he keeps nearer the middle: off to the side his raised arms would leave the frame.
+    const panMax = lerp(0.3, 0.1, ss(SIZE_MEDIUM, SIZE_TIGHT, HERO_H / (D * 2 * LENS_TAN))) + 1e-6;
     let best = Infinity;
     for (let k = 0; k < PANS.length; k++) {
       const sx = PANS[k];
+      if (Math.abs(sx) > panMax) continue;
       let c = (all > 0 ? WORD_W * (1 - vis[k] / all) : 0) + 0.05 * Math.abs(sx);
       // He walks into the frame, not out of it; with nothing to fire at, from a third of the way across.
       if (xd) c += 0.8 * Math.max(0, sx * xd) + (all > 0 ? 0 : 0.5 * Math.abs(sx + 0.2 * xd));
@@ -1100,13 +1104,16 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       b.at = run.t; // back out: a deliberate move too
     }
     if (run.phase !== 'read' || hc.pre > 0 || run.t - b.at < BEAT_GAP) return;
+    heroPoint(H);
     const s = hc.sched;
     for (let j = 0; j < s.length; j += 6) {
       const go = s[j + 3]; // s until it goes
       if (go < 0 || go > 0.6) continue;
       const w = s[j + 4];
       const reveal = w >= 2 && run.t - hc.lastReveal > REVEAL_EVERY;
-      if (!reveal && !(w >= 1.4 && run.t - hc.lastTight > TIGHT_EVERY)) continue;
+      // (In close only on a word level enough with his chest that the arm firing at it stays in frame.)
+      const level = Math.abs(Math.atan2(s[j + 1] - H[1] - 9, Math.hypot(s[j] - H[0], s[j + 2] - H[2]))) < TIGHT_LEVEL;
+      if (!reveal && !(w >= 1.4 && level && run.t - hc.lastTight > TIGHT_EVERY)) continue;
       b.kind = reveal ? 'reveal' : 'tight';
       b.t1 = run.t + go + (reveal ? REVEAL_HOLD : TIGHT_HOLD);
       b.at = run.t;
