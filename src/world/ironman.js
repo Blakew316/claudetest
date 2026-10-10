@@ -29,7 +29,7 @@
 
 import * as THREE from 'three';
 import { createRepulsors } from './repulsor.js';
-import { JOINT, POSE, MODEL_HEIGHT, loadModel } from './ironman-model.js';
+import { JOINT, POSE, MODEL_HEIGHT, loadModel, suitLights } from './ironman-model.js';
 
 const HEIGHT = 46; // world units: he reads at the distances the camera keeps from the crawler
 const K = HEIGHT / MODEL_HEIGHT; // world units per model unit (feet at y = 0)
@@ -398,17 +398,14 @@ export function createIronMan(renderer) {
   loadModel(renderer, (m) => {
     rig.add(m.scene);
     model = rigModel(m);
-  });
+  }, group);
   const pelvisY0 = sk.root.position.y;
 
-  // Lights for the suit: a soft sky fill, a warm key from over the camera's shoulder, a cool rim.
-  const hemi = new THREE.HemisphereLight(0xc8d8ff, 0x1a1020, 1.7);
-  const key = new THREE.DirectionalLight(0xfff1e0, 4.2);
-  const rim = new THREE.DirectionalLight(0x7fb0ff, 3.2);
+  // Lights for the suit (see suitLights): a warm key over the camera's shoulder casting his own shadows, cool
+  // rims from behind, a soft fill; they and the reflected studio follow the camera round him.
+  const lights = suitLights(renderer, body);
   const repulsorLight = new THREE.PointLight(0x9fdcff, 0, 60 * U / 22, 2); // the repulsors light up his own armour
-  key.target = body;
-  rim.target = body;
-  group.add(hemi, key, rim, repulsorLight);
+  group.add(lights.group, repulsorLight);
 
   /* ---------------- state ---------------- */
 
@@ -1797,11 +1794,7 @@ export function createIronMan(renderer) {
     if (model) drive(model, hover);
     group.updateMatrixWorld(true);
 
-    // Key over the camera's shoulder, rim from behind him.
-    a3.copy(camera.position).sub(group.position);
-    const dist = a3.length() || 1;
-    key.position.copy(a3).addScaledVector(UP, dist * 0.6).addScaledVector(X, -dist * 0.3);
-    rim.position.copy(a3).multiplyScalar(-1).addScaledVector(UP, dist * 0.3);
+    lights.place(camera, group.position);
 
     /* ---- effects ---- */
     const L = sk.limbs;
