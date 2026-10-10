@@ -51,7 +51,10 @@ const CRUISE = 52; // walking speed, sim units/s (26 in the world at SCALE 0.5)
 const MAX_TURN = 0.7; // rad/s
 const MAX_TILT = 1.05;
 const MAX_TILT_AIR = 0.9;
-const LAND_TIME = 0.6; // touchdown: compress, rebound once, settle
+// Touchdown to walking on (s): the hero's three-point landing (the impact, a held kneel, the rise:
+// see ironman.js), the body's compress, rebound and settle taking the first LAND_ABSORB of it.
+export const LAND_TIME = 1.9;
+const LAND_ABSORB = 0.6;
 const PUSH_TIME = 0.1; // the rear legs stay planted this long after launch, extending as they push off
 const LET_GO = 0.5; // a foot letting go of its star still lags the body by this share of the body's speed
 const IMPACT = 0.08; // a landing's kick to the body and abdomen is spread over this long
@@ -982,7 +985,7 @@ export class Spider {
   /** Absorb the landing: the spring dips and recovers, then it settles its feet and crawls. */
   land(dt, run, tr) {
     this.landT += dt;
-    const k = Math.min(1, this.landT / LAND_TIME);
+    const k = Math.min(1, this.landT / LAND_ABSORB);
     const K = 220;
     const C = 2 * 0.72 * Math.sqrt(K);
     for (let j = 0; j < 3; j++) {
@@ -995,7 +998,7 @@ export class Spider {
     const dip = (A * Math.exp(-3.4 * k) * Math.sin(Math.PI * 2.1 * k) * smooth(0, 0.12, k)) / 0.5;
     this.p = add(add(tr.to, this.landOff), this.hU, -dip);
     this.orient([this.hF[0], 0, this.hF[2]], dt, 3);
-    if (k >= 1) {
+    if (this.landT >= LAND_TIME) {
       this.mode = 'crawl';
       run.spider.arrived = true;
       this.anchor(run);

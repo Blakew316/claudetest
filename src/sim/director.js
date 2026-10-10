@@ -34,12 +34,13 @@ import { computeScore } from '../analyze/score.js';
 import { clearDistance, fitDistance, followCamera, orbitDir, sampleKeys, shotCost } from '../world/camera.js';
 import { fork, range } from '../core/rng.js';
 import { Spider } from '../world/spider.js';
+import { LAND_TIME } from '../world/spider-sim.js';
 
 const BOOT = 0.4;
 const INTRO_AIR = 7.5; // the opening fly-in, while the spider wakes and walks on the first ball
 const INTRO_HOLD = 1.0; // breath on the first ball before reading starts
 const BREATH = 0.8; // after a landing, before the first reach
-const LAND = 0.36; // the spider's landing absorb (spider.js LAND_TIME)
+const LAND = LAND_TIME; // touchdown to walking on (the hero's three-point landing)
 const SHIP_SETTLE = 22; // the finale: orbit the nebula, then drift onto the spider
 const TAIL = 1.5; // last reach + hold + retract after the final word
 const GAP = 1.04; // mean gap between reaches, in units of 1/rate (see nextGap)
