@@ -10,8 +10,9 @@
  * scene's render and before the bloom looks the scene up through it, with a
  * touch of dispersion where it bends hardest, as a real lens of hot air would.
  * It also holds every pixel to a finite value before the bloom (an overflowing
- * one would be smeared into a glowing square). With nothing distorting and
- * nothing burning bright the pass switches itself off and costs nothing.
+ * one, from anything in the scene, would be smeared into a glowing square), so
+ * it stays on; with nothing distorting it is a single fetch a pixel and the
+ * half-res buffer is not drawn at all.
  *
  * Wiring (view3d.js): createDistortPass(renderer) -> { pass, setSize, render };
  * add `pass` to the composer right after the RenderPass, call setSize with the
@@ -115,7 +116,7 @@ export function createDistortPool(n) {
           // (outward ahead of the front, inward behind it), a little uneven round its circumference.
           float ang = atan(vUv.y, vUv.x);
           float R = vD.z * (1.0 + 0.025 * sin(ang * 5.0 + seed) + 0.02 * sin(ang * 11.0 - seed * 1.3));
-          float w = 0.12 * vD.z + 0.035;
+          float w = 0.07 * vD.z + 0.02;
           float x = (r - R) / w;
           float h = exp(-x * x);
           o = (vUv / max(r, 1e-4)) * (-2.0 * x * h);
@@ -212,9 +213,11 @@ export function createDistortPass(renderer) {
         } else {
           c = texture2D(tDiffuse, vUv);
         }
-        // An overflowing pixel (inf or nan: a light too close to a mirror-like plate) would be smeared by
-        // the bloom into a glowing square: hold every pixel to a bright but finite value.
-        c.rgb = clamp(c.rgb, 0.0, 48.0);
+        // A pixel that overflowed (inf, or nan from a degenerate normal on a skinned plate) would be smeared by
+        // the bloom into a glowing square: drop it, and hold every other to a bright but finite value.
+        vec3 v = c.rgb;
+        if (any(isnan(v)) || any(isinf(v))) v = vec3(0.0);
+        c.rgb = clamp(v, 0.0, 48.0);
         gl_FragColor = c;
       }`,
     depthTest: false,
@@ -238,14 +241,12 @@ export function createDistortPass(renderer) {
      */
     render(camera, flashP, flashK) {
       let any = false;
-      let hot = false;
       best[0] = best[1] = null;
       for (const fx of fxs) {
         const on = shown(fx.group);
         fx.mesh.visible = on && fx.mesh.geometry.drawRange.count > 0;
         any = any || fx.mesh.visible;
         if (!on) continue;
-        hot = hot || !!fx.active;
         for (let i = 0; i < 2; i++) if (fx.flashes[i].k > (best[i] ? best[i].k : 0)) best[i] = fx.flashes[i];
       }
       if (flashP && flashK) {
@@ -255,7 +256,9 @@ export function createDistortPass(renderer) {
           flashK.setComponent(i, f ? f.k : 0);
         }
       }
-      pass.enabled = any || hot;
+      // (Always on: it also keeps a bad pixel from anything in the scene out of the bloom; one cheap
+      // fetch a pixel while nothing distorts.)
+      pass.enabled = true;
       material.uniforms.uOn.value = any ? 1 : 0;
       if (!any) return;
       const prev = renderer.getRenderTarget();

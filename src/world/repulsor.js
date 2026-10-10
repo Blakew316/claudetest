@@ -64,8 +64,8 @@ const BOLT_MIN = 0.15; // ... though a near target still takes this long (second
 const BOLT_MAX = 0.35; // ... and a far one no longer
 const SHUTTER = 1 / 48; // film shutter: a moving thing is smeared over its travel in this long
 const SLUG = 1.8; // the white-hot slug's own length (world units at unit 1); the shutter adds the rest
-const BOLT_W = 0.7; // the bolt's half-width (outer glow) at the head; the palm is about 2 wide
-const TRAIL_TAU = 0.16; // seconds: how fast the ionised trail behind the bolt fades
+const BOLT_W = 1.05; // the bolt's half-width (outer glow) at the head; the palm is about 2 wide
+const TRAIL_TAU = 0.07; // seconds: how fast the faint ionised trail behind the bolt fades (the heat haze lingers)
 const MISS_RUN = 1.5; // a miss flies on to this many times its distance to the target, fading
 const GRAVITY = 200; // world units/s^2 (9.8 m/s^2 on figures 46-51 units tall)
 const HEAVY = 0.8; // power from which a hit is heavy
@@ -77,8 +77,8 @@ const PALM_LIGHT_RANGE = 20; // world units (at unit 1) a palm's light reaches: 
 // Lights (candela). The scene's key light is a directional 2.4: an impact's flash, IMPACT_BACK units off the
 // armour toward the shooter, is ~50x that on the armour it strikes and ~1x on the shooter 60-80 units away.
 // (None may sit much closer to a glossy surface than its own few units: a half-float buffer overflows.)
-const IMPACT_LIGHT = 7000; // at the peak of a blast striking a fighter (it lights both, and the dust)
-const IMPACT_BACK = 10; // world units it stands off the struck armour, toward the shooter
+const IMPACT_LIGHT = 4200; // at the peak of a blast striking a fighter (it lights both, and the dust)
+const IMPACT_BACK = 16; // world units it stands off the struck armour, toward the shooter
 const BOLT_LIGHT = 280; // a bolt in flight (x unit), once clear of the hand
 const MUZZLE_LIGHT = 450; // the palm's flash as it fires (x power)
 const IMPACT_LIGHT_RANGE = 320; // world units
@@ -658,6 +658,7 @@ export function createRepulsors(palette = {}) {
 
   const streaks = ribbonPool(STREAKS, streakMaterial(), false);
   streaks.mesh.renderOrder = 17;
+  streaks.mesh.material.uniforms.uMinPx.value = 1.0; // (sparks are fine lines: thinner than that, they give up brightness)
   const beams = ribbonPool(RIBBONS, beamMaterial(), true);
   const streak = streaks.add;
   const beam = beams.add;
@@ -710,8 +711,7 @@ export function createRepulsors(palette = {}) {
   ];
   group.userData.flashes = flashes;
   group.userData.distort = distort.mesh;
-  const reg = { group, mesh: distort.mesh, flashes, active: false };
-  registerFx(reg);
+  registerFx({ group, mesh: distort.mesh, flashes });
 
   const shots = Array.from({ length: SHOTS }, () => ({
     live: false,
@@ -730,6 +730,7 @@ export function createRepulsors(palette = {}) {
     ground: 0,
     burst: false, // its impact's sparks, smoke and debris are out
     fizz: false, // (a miss) its end's fizzle is out
+    key: null, // (an explicit shot) which
   }));
   const seen = new Map(); // word id -> last reach p (+10 once it is retracting)
   const fired0 = new Map(); // explicit shots already fired: key -> tFire
@@ -1065,8 +1066,9 @@ export function createRepulsors(palette = {}) {
     return out3.copy(s.to).addScaledVector(s.dir, s.id < 0 ? -SURFACE * S : 0);
   }
 
+  const side3 = new THREE.Vector3();
   /** Start a blast from a hand at time T (seconds), from the palm at a point. */
-  function addShot(side, seed, T, palm, at, S, id, power, miss, ground, tau, tHit) {
+  function addShot(side, seed, T, palm, at, S, id, power, miss, ground, tau, tHit, key = null) {
     let s = shots[0];
     for (const c of shots) {
       if (!c.live) {
@@ -1084,6 +1086,15 @@ export function createRepulsors(palette = {}) {
     s.miss = !!miss;
     s.burst = false;
     s.fizz = false;
+    s.key = key;
+    if (s.miss) {
+      // Wide: past him over a shoulder (to one side and high), not through him.
+      side3.copy(at).sub(palm).cross(UPV);
+      if (side3.lengthSq() < 1e-6) side3.set(1, 0, 0);
+      side3.normalize();
+      const sgn = hash(seed + 0.5) < 0.5 ? -1 : 1;
+      at = a3.copy(at).addScaledVector(side3, sgn * (6 + 4 * hash(seed + 1.5))).addScaledVector(UPV, 5 + 4 * hash(seed + 2.5));
+    }
     s.dir.copy(at).sub(palm);
     s.dist = Math.max(1e-3, s.dir.length());
     s.dir.multiplyScalar(1 / s.dist);
@@ -1127,20 +1138,23 @@ export function createRepulsors(palette = {}) {
     const vs = 0.55 + 0.45 * (SI / DUEL_IMPACT);
     const rs = Math.sqrt(SI / DUEL_IMPACT);
     const ground = s.ground;
-    const nMetal = stone ? (heavy ? 18 : 12) : heavy ? 70 : 40;
-    const nCrackle = stone ? (heavy ? 60 : 38) : 0;
-    const nEmber = heavy ? 20 : 11;
-    // Metal: torn off hot and thrown out (mostly back off the armour and up), then drag and gravity.
+    const nMetal = stone ? (heavy ? 24 : 16) : heavy ? 110 : 64;
+    const nCrackle = stone ? (heavy ? 70 : 44) : 0;
+    const nEmber = heavy ? 22 : 12;
+    // Metal: torn off hot and thrown out (mostly back off the armour and up), then drag and gravity. Most
+    // are small and slow and cool fast to orange; a few are fast and white-hot and fly far.
     for (let i = 0; i < nMetal; i++) {
       const h = (k) => hash(sd + i * 7.31 + k * 1.913);
-      sphereDir(h(1), h(2), c3).addScaledVector(n3, 1.0).addScaledVector(UPV, 0.35).normalize();
-      born.push(emit(METAL, P, c3, (90 + 430 * h(3) * h(3)) * vs, 0.6 + 0.9 * h(4), (0.05 + 0.05 * h(5)) * rs, 0.95 + 0.2 * h(6), 0.2 + 0.35 * h(7), 1.3 + 1.7 * h(8), GRAVITY, ground, sd + i * 3.3));
+      sphereDir(h(1), h(2), c3).addScaledVector(n3, 0.9).addScaledVector(UPV, 0.3).normalize();
+      const x = h(3);
+      born.push(emit(METAL, P, c3, (35 + 420 * x * x * x) * vs, 0.45 + 1.0 * h(4), (0.022 + 0.03 * h(5) + 0.02 * x) * rs, 0.72 + 0.38 * h(6) * (0.5 + 0.5 * x), 0.12 + 0.3 * h(7), 1.5 + 2.0 * h(8), GRAVITY, ground, sd + i * 3.3));
     }
     // The Stone's energy: flecks of violet fire flung out fast, flickering out in a fraction of a second.
     for (let i = 0; i < nCrackle; i++) {
       const h = (k) => hash(sd + i * 5.13 + k * 2.371);
       sphereDir(h(1), h(2), c3).addScaledVector(n3, 0.75).normalize();
-      born.push(emit(CRACKLE, P, c3, (150 + 560 * h(3) * h(3)) * vs, 0.12 + 0.45 * h(4), (0.06 + 0.05 * h(5)) * rs, 1, 0.1, 4.5, 30, ground, sd + i * 1.7));
+      const x = h(3);
+      born.push(emit(CRACKLE, P, c3, (60 + 520 * x * x * x) * vs, 0.1 + 0.4 * h(4), (0.03 + 0.04 * h(5)) * rs, 1, 0.1, 4.5, 30, ground, sd + i * 1.7));
     }
     // Embers: slower, bigger fragments glowing as they fall.
     for (let i = 0; i < nEmber; i++) {
@@ -1150,7 +1164,7 @@ export function createRepulsors(palette = {}) {
     }
     for (const i of born) presim(i, ai);
     // Smoke: a few puffs blown back off the armour, lit by the flash as they form.
-    const nSmoke = heavy ? 9 : 5;
+    const nSmoke = heavy ? 12 : 7;
     for (let i = 0; i < nSmoke; i++) {
       const h = (k) => hash(sd + i * 3.77 + k * 4.219);
       const j = sm.next;
@@ -1162,15 +1176,15 @@ export function createRepulsors(palette = {}) {
       c3.multiplyScalar(6 + 6 * h(4)).addScaledVector(n3, 9 + 16 * h(5)).addScaledVector(UPV, 2 + 4 * h(6)).multiplyScalar(SI / DUEL_IMPACT);
       sm.v.set([c3.x, c3.y, c3.z], j * 3);
       sm.age[j] = 0;
-      sm.life[j] = (1.3 + 0.7 * h(7)) * (heavy ? 1.25 : 1);
-      sm.s0[j] = (1.8 + 0.8 * h(8)) * SI;
-      sm.s1[j] = (5.5 + 3.5 * h(9)) * SI * (heavy ? 1.2 : 1);
+      sm.life[j] = (1.5 + 0.7 * h(7)) * (heavy ? 1.25 : 1);
+      sm.s0[j] = (2.0 + 1.0 * h(8)) * SI;
+      sm.s1[j] = (6.5 + 4.0 * h(9)) * SI * (heavy ? 1.2 : 1);
       sm.ang[j] = 6.283 * h(10);
       sm.spin[j] = (h(11) - 0.5) * 0.9;
       sm.cell[j] = Math.floor(h(12) * 4);
-      sm.a0[j] = (0.42 + 0.25 * h(13)) * (heavy ? 1.2 : 1);
+      sm.a0[j] = Math.min(0.95, (0.62 + 0.25 * h(13)) * (heavy ? 1.15 : 1));
       sm.rise[j] = (2.5 + 2.5 * h(14)) * (SI / DUEL_IMPACT);
-      sm.grey[j] = 0.018 + 0.02 * h(15);
+      sm.grey[j] = 0.014 + 0.016 * h(15);
       if (stone) sm.hot.set([BLUE[0] * 0.9, BLUE[1] * 0.9, BLUE[2] * 0.9], j * 3);
       else sm.hot.set([1.0, 0.36, 0.08], j * 3);
       sm.fl.set([CYAN[0] * 0.5 + 0.5, CYAN[1] * 0.5 + 0.5, CYAN[2] * 0.5 + 0.5], j * 3);
@@ -1216,7 +1230,7 @@ export function createRepulsors(palette = {}) {
    * Blasts come from two sources, drawn alike:
    * - the slot schedule: each hand up on a target (o.targets with side set, its arm aimed,
    *   o.aim > 0.5) fires on a jittered rhythm (a volley at an opponent, id < 0);
-   * - explicit shots (o.shots): each fires EXACTLY at its tFire from palms[hand] toward at, the
+   * - explicit shots (o.shots): each fires EXACTLY at its tFire (on o.shotTime's clock, or o.time's) from palms[hand] toward at, the
    *   palm charging for 0.3 s before. Its flight time is tHit - tFire when tHit is given (it arrives
    *   at `at` exactly at tHit), else clamp(distance / (520 x unit), 0.15, 0.35) s, as the schedule's.
    *   A shot is identified by key (or id, hand and tFire together), fires once, and is drawn from
@@ -1225,7 +1239,8 @@ export function createRepulsors(palette = {}) {
    * A blast reaching its target reports the target's id in `hits` on the frame whose clock crosses
    * its arrival (not on a frame that seeks past it). A miss (shot.miss or target.miss) flies on past
    * `at` to 1.5 x its distance, fading, with no burst on the fighter, and is reported in `misses`
-   * instead. A blast on a fighter (id < 0) bursts big (light, shock, sparks bouncing on its ground,
+   * instead (it passes him to one side and high, not through him). A hit in flight follows its shot's
+   * `at` frame to frame (the victim's chest as he moves) and lands on it. A blast on a fighter (id < 0) bursts big (light, shock, sparks bouncing on its ground,
    * smoke, a camera kick; heavy ones, power >= 0.8, more of all and debris); on a word, small.
    *
    * @param {object} o
@@ -1248,6 +1263,8 @@ export function createRepulsors(palette = {}) {
    * @param {{L:number, R:number}} o.aim how far each arm is raised onto its target (0..1)
    * @param {{id:number, hand:'L'|'R', at:number[], tFire:number, tHit?:number, power?:number, miss?:boolean, ground?:number, key?:string}[]} [o.shots]
    *   explicit shots (see above), in addition to the schedule
+   * @param {number} [o.shotTime] the clock the shots' tFire and tHit are on, now (seconds; default o.time):
+   *   a shot fires when that clock reaches its tFire, whatever o.time reads then
    * @param {number} [o.power] default power (0..1) of blasts whose target or shot gives none
    * @returns {{fired:{L:number, R:number}, light:number, hits:number[], misses:number[]}} blasts fired this frame per
    *   hand (the body recoils per blast), how bright the repulsors burn (lights his armour), the ids of the targets
@@ -1256,6 +1273,8 @@ export function createRepulsors(palette = {}) {
   function update(o) {
     const { dt, time, camera, halfH, unit, scale, palms, soles, head, vel, thrust, fly, targets, aim } = o;
     const explicit = o.shots || NONE;
+    // (Shots may be timed on another clock than o.time, e.g. the fight's: o.shotTime is that clock now.)
+    const off = Number.isFinite(o.shotTime) ? time - o.shotTime : 0;
     const power0 = Number.isFinite(o.power) ? o.power : 0.5;
     curTargets = targets;
     const aspect = camera.aspect || 1;
@@ -1323,24 +1342,37 @@ export function createRepulsors(palette = {}) {
         const t = targets[elig[n][((k % elig[n].length) + elig[n].length) % elig[n].length]];
         a3.set(t.at[0], t.at[1], t.at[2]);
         const pw = Number.isFinite(t.power) ? t.power : power0;
-        addShot(n, hash(k * 0.917 + (n === 'R' ? 5.1 : 2.3)) * 1000, T, palms[n], a3, S, t.id, pw, t.miss, t.ground);
+        addShot(n, hash(k * 0.917 + (n === 'R' ? 5.1 : 2.3)) * 1000, T, palms[n], a3, S, t.id, pw, t.miss, t.ground, 0, undefined, null);
         if (!jumped || T > time - 0.07) fired[n]++;
       }
     }
     // Explicit shots: each exactly at its tFire.
     for (const sh of explicit) {
-      if (!sh || !(sh.tFire <= time) || !sh.at) continue;
+      if (!sh || !(sh.tFire + off <= time) || !sh.at) continue;
+      const tFire = sh.tFire + off;
       const hand = sh.hand === 'L' ? 'L' : 'R';
       const key = sh.key !== undefined ? sh.key : `${sh.id}|${hand}|${sh.tFire}`;
-      if (fired0.has(key)) continue;
-      fired0.set(key, sh.tFire);
+      if (fired0.has(key)) {
+        // In flight at a fighter: it follows him (the aim point is his chest as he moves) until it lands.
+        if (!sh.miss && tFire < time) {
+          for (const s of shots) {
+            if (!s.live || s.key !== key || time >= s.tHit) continue;
+            s.to.set(sh.at[0], sh.at[1], sh.at[2]);
+            s.dir.copy(s.to).sub(s.from);
+            s.dist = Math.max(1e-3, s.dir.length());
+            s.dir.multiplyScalar(1 / s.dist);
+          }
+        }
+        continue;
+      }
+      fired0.set(key, tFire);
       const tau = Number.isFinite(sh.tHit) && sh.tHit > sh.tFire ? sh.tHit - sh.tFire : 0;
       a3.set(sh.at[0], sh.at[1], sh.at[2]);
       const est = tau || flight(a3.distanceTo(palms[hand]), S);
-      if (time - sh.tFire > est * MISS_RUN + REFILL) continue; // long over
+      if (time - tFire > est * MISS_RUN + REFILL) continue; // long over
       const pw = Number.isFinite(sh.power) ? sh.power : power0;
-      addShot(hand, hash(sh.tFire * 13.71 + (hand === 'R' ? 5.1 : 2.3) + (sh.id || 0) * 0.377) * 1000, sh.tFire, palms[hand], a3, S, sh.id, pw, sh.miss, sh.ground, tau, tau ? sh.tHit : undefined);
-      if (!jumped && sh.tFire > t0) fired[hand]++;
+      addShot(hand, hash(sh.tFire * 13.71 + (hand === 'R' ? 5.1 : 2.3) + (sh.id || 0) * 0.377) * 1000, tFire, palms[hand], a3, S, sh.id, pw, sh.miss, sh.ground, tau, tau ? sh.tHit + off : undefined, key);
+      if (!jumped && tFire > t0) fired[hand]++;
     }
     if (fired0.size > 64) for (const [k, tf] of fired0) if (tf < time - REFILL - 10) fired0.delete(k);
 
@@ -1373,7 +1405,7 @@ export function createRepulsors(palette = {}) {
       }
       for (const sh of explicit) {
         if (!sh || !sh.at || (sh.hand === 'L' ? 'L' : 'R') !== n) continue;
-        const lead = sh.tFire - time;
+        const lead = sh.tFire + off - time;
         if (!(lead > 0 && lead <= CHARGE)) continue;
         const x = 1 - lead / CHARGE;
         if (x <= C.x) continue;
@@ -1577,8 +1609,9 @@ export function createRepulsors(palette = {}) {
           a3.copy(s.from).addScaledVector(dir, xTail);
         }
         // The slug seen through the lens, and the air round it lit.
-        glow(b3, 2.4 * S * pk, CYAN[0] * 0.5 * k, CYAN[1] * 0.5 * k, CYAN[2] * 0.5 * k, 2.2 * k);
-        wisp(b3, 9 * S * pk, CYAN[0] * 0.035 * k, CYAN[1] * 0.035 * k, CYAN[2] * 0.035 * k);
+        f3.copy(b3).addScaledVector(dir, -0.25 * L);
+        glow(b3, 3.6 * S * pk, CYAN[0] * 0.6 * k, CYAN[1] * 0.6 * k, CYAN[2] * 0.6 * k, 3.2 * k);
+        wisp(f3, (10 + 0.4 * L / S) * S * pk, CYAN[0] * 0.07 * k, CYAN[1] * 0.07 * k, CYAN[2] * 0.07 * k);
         lightUp(b3, BOLT_LIGHT * S * k * smooth(3 * S, 12 * S, xHead));
       }
       // The ionised trail it leaves, and the heat haze in the air behind it, fading from the palm end
@@ -1586,9 +1619,9 @@ export function createRepulsors(palette = {}) {
       {
         const ageA = a;
         const ageB = Math.max(0, a - xTail / v);
-        const kB = 0.07 * Math.exp(-ageB / TRAIL_TAU) * fade;
-        if (kB > 0.003 && xTail > 0.01 * S) {
-          const kA = 0.07 * Math.exp(-ageA / TRAIL_TAU) * fade;
+        const kB = 0.035 * Math.exp(-ageB / TRAIL_TAU) * fade;
+        if (kB > 0.002 && xTail > 0.01 * S) {
+          const kA = 0.035 * Math.exp(-ageA / TRAIL_TAU) * fade;
           b3.copy(s.from).addScaledVector(dir, xTail);
           const tw = stone ? 1.6 : 1;
           beam(s.from, b3, (0.3 + 2.2 * ageA) * S * tw, (0.3 + 2.2 * ageB) * S * tw, BLUE[0] * kA, BLUE[1] * kA, BLUE[2] * kA, 0, CYAN[0] * kB, CYAN[1] * kB, CYAN[2] * kB, 0.2 * kB, seed + 3, stone ? 1.4 : 0.6, 1.1);
@@ -1618,26 +1651,28 @@ export function createRepulsors(palette = {}) {
         const rise = 1 - Math.exp(-ai / 0.012);
         // A blinding white point and the glare round it.
         glow(P, (3.2 + 2.2 * rise) * SI, CYAN[0] * 1.4 * pf, CYAN[1] * 1.4 * pf, CYAN[2] * 1.4 * pf, 9 * pf * hk, pull);
-        if (duel) glare(P, 34 * SI * hk, (CYAN[0] * 0.5 + 0.5) * 0.9 * pf, (CYAN[1] * 0.5 + 0.5) * 0.9 * pf, (CYAN[2] * 0.5 + 0.5) * 0.9 * pf, pull + 4);
+        if (duel) glare(P, 16 * SI * hk, (CYAN[0] * 0.5 + 0.5) * 0.7 * pf, (CYAN[1] * 0.5 + 0.5) * 0.7 * pf, (CYAN[2] * 0.5 + 0.5) * 0.7 * pf, pull + 4);
         // The fireball: the bolt's energy dumped into a ball of plasma, swelling and going out.
         const fb = Math.exp(-ai / (duel ? 0.08 : 0.05)) * (1 - Math.exp(-ai / 0.008));
         glow(P, (2.5 + 3.5 * (1 - Math.exp(-ai / 0.05))) * SI, CYAN[0] * 0.55 * fb, CYAN[1] * 0.55 * fb, CYAN[2] * 0.55 * fb, 1.6 * fb, pull);
         // Plasma lobes thrown off it, back toward the shooter and out, dissipating.
         n3.copy(dir).multiplyScalar(-1);
         const lobes = duel ? 6 : 3;
-        for (let i = 0; i < lobes && ai < 0.45; i++) {
+        for (let i = 0; i < lobes && ai < 0.25; i++) {
           sphereDir(hash(seed + i * 7.07), hash(seed + i * 2.22), c3).addScaledVector(n3, 0.6).normalize();
-          a3.copy(P).addScaledVector(c3, (0.8 + 7 * (1 - Math.exp(-ai / 0.07))) * SI);
-          const k = 0.22 * Math.exp(-ai / 0.1) * (1 - Math.exp(-ai / 0.01)) * hk;
-          wisp(a3, (2.2 + 9 * ai) * SI, CYAN[0] * k, CYAN[1] * k, CYAN[2] * k, pull);
+          a3.copy(P).addScaledVector(c3, (0.6 + 4.5 * (1 - Math.exp(-ai / 0.05))) * SI);
+          const k = 0.2 * Math.exp(-ai / 0.045) * (1 - Math.exp(-ai / 0.008)) * hk;
+          wisp(a3, (2 + 7 * ai) * SI, CYAN[0] * k, CYAN[1] * k, CYAN[2] * k, pull);
         }
-        // A thin shell of plasma racing out, gone in a tenth of a second.
-        if (ai < 0.14) {
-          const fs = Math.exp(-ai / 0.03);
-          shell(P, (0.8 + (duel ? 10 : 5) * (1 - Math.exp(-ai / 0.035))) * SI * (heavy ? 1.2 : 1), 0.07 * SI * 3, CYAN[0], CYAN[1], CYAN[2], 0.9 * fs, 0.1 * fs * pf, seed, pull);
+        // A thin shell of plasma racing out, gone in a few frames: on a fighter the barest flicker of it at
+        // the front of the shock (which shows as the view bending behind it), on a word a faint bubble.
+        if (ai < 0.1) {
+          const fs = Math.exp(-ai / (duel ? 0.018 : 0.03));
+          const R = (0.8 + (duel ? 7 : 5) * (1 - Math.exp(-ai / 0.03))) * SI * (heavy ? 1.2 : 1);
+          shell(P, R, 0.05 * R, CYAN[0], CYAN[1], CYAN[2], (duel ? 0.25 : 0.6) * fs, 0.05 * fs * pf, seed, pull);
         }
         // The shock front bending the view behind it, and the heat over the struck area.
-        if (ai < 0.6) distort.ring(P, (1.5 + (duel ? 26 : 9) * (1 - Math.exp(-ai / 0.13))) * SI * (heavy ? 1.25 : 1), (duel ? 1.1 : 0.4) * SI * hk * Math.exp(-ai / 0.16) * (1 - Math.exp(-ai / 0.006)), hash(seed + 4.4));
+        if (ai < 0.5) distort.ring(P, (1.5 + (duel ? 24 : 9) * (1 - Math.exp(-ai / 0.1))) * SI * (heavy ? 1.25 : 1), (duel ? 0.32 : 0.18) * SI * hk * Math.exp(-ai / 0.12) * (1 - Math.exp(-ai / 0.006)), hash(seed + 4.4));
         if (duel) distort.heat(P, 7 * SI, 0.3 * SI * Math.exp(-ai / 0.45) * (1 - Math.exp(-ai / 0.03)), 3, hash(seed + 5.5));
         // Its light: blinding for a frame or two, a short afterglow; on the dust round it too.
         a3.copy(P).addScaledVector(n3, duel ? IMPACT_BACK : 4 * S);
@@ -1677,7 +1712,7 @@ export function createRepulsors(palette = {}) {
       b3.set(pt.p[i * 3], pt.p[i * 3 + 1], pt.p[i * 3 + 2]);
       // Smeared over the shutter (but never longer than a few body widths).
       const sp = Math.hypot(vx, vy, vz);
-      const sh = sp > 1e-3 ? Math.min(SHUTTER, (12 * S) / sp) : 0;
+      const sh = sp > 1e-3 ? Math.min(SHUTTER, (7 * S) / sp) : 0;
       a3.set(b3.x - vx * sh, b3.y - vy * sh, b3.z - vz * sh);
       const w = pt.size[i];
       const kind = pt.kind[i];
@@ -1728,9 +1763,9 @@ export function createRepulsors(palette = {}) {
       const alpha = sm.a0[i] * smooth(0, 0.07, age) * (1 - u) ** 1.6;
       if (alpha < 0.004) continue;
       // Lit by the flash it was born in (and its afterglow), over a dim ambient grey.
-      const fl = 3.0 * Math.exp(-age / 0.05) + 0.25 * Math.exp(-age / 0.3);
+      const fl = 1.6 * Math.exp(-age / 0.04) + 0.15 * Math.exp(-age / 0.3);
       const g = sm.grey[i];
-      const hot = 0.9 * Math.exp(-age / 0.22);
+      const hot = 0.7 * Math.exp(-age / 0.18);
       b3.set(sm.src[i * 3], sm.src[i * 3 + 1], sm.src[i * 3 + 2]).sub(a3);
       const la = Math.atan2(b3.dot(camU), b3.dot(camR));
       puff(a3, size / 2, sm.ang[i] + sm.spin[i] * age, sm.cell[i], size * 0.35, g + sm.fl[i * 3] * fl, g + sm.fl[i * 3 + 1] * fl, g * 1.05 + sm.fl[i * 3 + 2] * fl, alpha, sm.hot[i * 3] * hot, sm.hot[i * 3 + 1] * hot, sm.hot[i * 3 + 2] * hot, la);
@@ -1839,8 +1874,6 @@ export function createRepulsors(palette = {}) {
     }
     blastLight.position.copy(blast.p);
     blastLight.intensity = blast.k;
-    // (Anything burning bright this frame: the pass guards the bloom against an overflowing pixel.)
-    reg.active = blast.k > 1 || lightK.L > 30 || lightK.R > 30 || streaks.count > 0 || beams.count > 0;
     out.light = Math.min(light, 2);
     return out;
   }
