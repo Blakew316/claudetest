@@ -13,8 +13,10 @@
  * shading: ambient occlusion baked per vertex (the _OCCLUSION attribute: x the
  * crevices and joints within ~10 cm, y the panel lines within ~1.5 cm),
  * candy-red paint under a clear coat (with metallic flake), brushed gold and
- * gunmetal, lights with hot white cores, a studio-in-space environment that
- * turns with the camera, and a key light that casts his own shadows.
+ * gunmetal (MikkTSpace tangents on those two, so the anisotropic highlight
+ * runs smoothly instead of breaking on every triangle), lights with hot white
+ * cores, a studio-in-space environment that turns with the camera, and a key
+ * light that casts his own shadows.
  */
 
 import * as THREE from 'three';
