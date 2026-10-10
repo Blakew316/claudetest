@@ -21,6 +21,17 @@ const HOLD_PLAIN = 1.4;
 const HOLD_LINK = 3.2;
 const FADE_OUT = 0.7;
 
+/**
+ * How long (s) a word's label is up once it is read (Infinity for a flag,
+ * which stays the whole section; 0 for a filler word, which gets none). The
+ * camera uses this to keep the labels on screen while they are.
+ */
+export function labelLife(word) {
+  if (word.vague) return Infinity;
+  if (word.kind) return HOLD_LINK + FADE_OUT;
+  return STOPWORDS.has(word.text.toLowerCase()) ? 0 : HOLD_PLAIN + FADE_OUT;
+}
+
 const LABEL_FONT = `11px ${MONO}`;
 const TITLE_FONT = `500 20px ${MONO}`;
 const SUB_FONT = `11px ${MONO}`;
