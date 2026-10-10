@@ -227,6 +227,7 @@ const CM_PITCH = [0.2, 0.35, 0.2]; // pelvis, spine and chest pitched forward (r
 const CM_ARMS = 0.95; // the arms swung back (rad) ...
 const PUSH_ARMS = 0.55; // ... and through, forward and up, by the launch
 const PUSH_ROLL = 1.0; // the heels up off the ground by the launch (rad)
+const TK_HAND = 0.35; // ... and hands back to the flight's own path over this long (s)
 const TAKEOFF_W = 2.6; // the flight takes him over from where he left at this rate (rad/s): about a gravity's pull, not a yank
 // As the toes leave the ground the ankles ease onto the end of the legs' reach about the hips (this
 // much of it) at this rate (rad/s), so the feet are taken up over a few frames as the knees lock, not in one.
@@ -631,7 +632,7 @@ export function createIronMan(renderer) {
   // (t0: the countdown when the dip began, -1 before; depth: how deep it goes (leg lengths); drive: how hard
   // the push is, by how steeply the flight climbs; fwd: how much of the departure is forward.)
   const JW = { cm: 0, push: 0, unfold: 0, rise: 0, heel: 0, arms: 0, t0: -1, depth: CM_DROP, drive: 1, fwd: 0 };
-  const tk = { on: false, t: 0, T: 1, off: new THREE.Vector3(), offV: new THREE.Vector3(), v: new THREE.Vector3(), last: new THREE.Vector3(), p0: new THREE.Vector3(), vL: new THREE.Vector3(), aL: new THREE.Vector3(), dp: new THREE.Vector3(), dpT: 0 };
+  const tk = { on: false, t: 0, T: 1, off: new THREE.Vector3(), offV: new THREE.Vector3(), v: new THREE.Vector3(), last: new THREE.Vector3(), p0: new THREE.Vector3(), vL: new THREE.Vector3(), aL: new THREE.Vector3(), dp: new THREE.Vector3(), dpT: 0, gap: new THREE.Vector3(), gapT: -9 };
 
   /**
    * The leap's parts in time (into JW).
@@ -769,8 +770,9 @@ export function createIronMan(renderer) {
       ld.a0.copy(ld.K);
       ld.av.set(0, 0, 0);
     } else {
-      ld.a0.set(spider.p[0], 0, spider.p[2]);
-      ld.av.set(spider.v[0], 0, spider.v[2]);
+      // (From where he is carried and as he is moving, less his body's own sway over the crawler's path.)
+      ld.a0.set(group.position.x - (spider.b[0] - spider.p[0]), 0, group.position.z - (spider.b[2] - spider.p[2])).addScaledVector(tk.v, 1 / 60);
+      ld.av.set(tk.v.x, 0, tk.v.z);
     }
     ld.aT0 = st.time;
     ld.aT = tRem + LAND_STOP;
@@ -2295,8 +2297,12 @@ export function createIronMan(renderer) {
       }
       c3.fromArray(spider.p).addScaledVector(tk.dp, 1 - smooth(tk.dpT, tk.dpT + 0.5, t));
       carry(c3, sdt, jumped, carriedTk, tk.vL); // (as drawn between the crawler's steps its speed jumps a little at each: taken as a body's mass takes it)
-      a3.copy(c3).addScaledVector(tk.off, 1 - smooth(0, tk.T, t)).addScaledVector(tk.offV, t * Math.exp(-TAKEOFF_W * t));
-    }
+      c3.addScaledVector(tk.off, 1 - smooth(0, tk.T, t)).addScaledVector(tk.offV, t * Math.exp(-TAKEOFF_W * t));
+      // (What is left of the takeoff's own path when the flight's takes over again is handed over smoothly.)
+      tk.gap.copy(c3).sub(a3);
+      tk.gapT = jumped ? -9 : st.time;
+      a3.copy(c3);
+    } else if (st.time - tk.gapT < TK_HAND) a3.addScaledVector(tk.gap, 1 - smooth(tk.gapT, tk.gapT + TK_HAND, st.time));
     group.position.copy(a3);
     group.updateMatrixWorld(true);
     ld.vy = dt > 0 && !jumped ? (group.position.y - ld.lastY) / dt : 0; // (for the drop he lands with)
