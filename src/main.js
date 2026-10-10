@@ -37,6 +37,7 @@ let director;
 let hud;
 let speed = 1;
 let paused = false;
+let scripted = false; // captures drive the frames (crawler.step)
 let acc = 0;
 // The camera and clock one step back, so frames between 60 Hz steps are drawn
 // in between (see Spider.at); `fresh` after a jump in time draws the latest step as is.
@@ -118,27 +119,30 @@ function render(dt, force = false) {
   hud.update(run, { force });
 }
 
+/** Run the simulation on by dt seconds of play. */
+function advance(dt) {
+  acc += dt;
+  let guard = 0;
+  while (acc >= SIM_DT && guard++ < 40) {
+    Object.assign(camPrev, director.run.camera);
+    tPrev = director.run.t;
+    director.step();
+    acc -= SIM_DT;
+    fresh = false;
+  }
+}
+
 function frame(now) {
   const dt = Math.min(0.1, (now - lastFrame) / 1000);
   lastFrame = now;
-  if (!paused && !(reducedMotion && director.run.done)) {
-    acc += dt * speed;
-    let guard = 0;
-    while (acc >= SIM_DT && guard++ < 40) {
-      Object.assign(camPrev, director.run.camera);
-      tPrev = director.run.t;
-      director.step();
-      acc -= SIM_DT;
-      fresh = false;
-    }
-  }
+  if (!paused && !(reducedMotion && director.run.done)) advance(dt * speed);
   // Released drag eases the view back to the director's camera.
   if (view3d && !dragging) {
     const k = Math.exp(-1.2 * dt);
     view3d.orbit.yaw *= k;
     view3d.orbit.pitch *= k;
   }
-  render(dt);
+  if (!scripted) render(dt);
   requestAnimationFrame(frame);
 }
 
@@ -205,8 +209,14 @@ window.crawler = {
     resync();
     render(10, true);
   },
-  play: () => (paused = false),
+  play: () => (paused = scripted = false),
   pause: () => (paused = true),
+  /** Play exactly dt seconds and draw one frame (for frame-by-frame captures; the live loop stops drawing until play()). */
+  step(dt = 1 / 60) {
+    paused = scripted = true;
+    advance(dt);
+    render(dt);
+  },
   restart: (t) => start(t ?? SAMPLE_PROMPT, t ? undefined : SAMPLE_FILE_NAME),
   get state() {
     return director.run;
@@ -218,4 +228,7 @@ window.crawler = {
     return world;
   },
   project: (x, y, z) => view3d?.project(x, y, z, {}),
+  get hero() {
+    return view3d?.hero;
+  },
 };

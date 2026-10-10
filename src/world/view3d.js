@@ -1070,5 +1070,5 @@ export function createView3D(canvas) {
     composer.render();
   }
 
-  return { resize, setWorld, render, project, orbit, camera };
+  return { resize, setWorld, render, project, orbit, camera, hero };
 }
