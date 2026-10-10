@@ -37,6 +37,13 @@ import { setSuitSurroundings, suitFrame, suitQuality } from './ironman-model.js'
 
 /** Who crawls the clusters: 'ironman' (the suit, hovering and flying) or 'spider'. */
 const AVATAR = 'ironman';
+// The duel: through a volley, beats of MISS_BEAT s; MISS_SHARE of them the aim is off and the blasts go
+// wide by MISS_BY (world units) round him, high (near misses: a flinch, not a hit). A blast arrives about
+// MISS_FLIGHT s after it was fired, in the beat it was fired in.
+const MISS_BEAT = 0.9;
+const MISS_SHARE = 0.4;
+const MISS_BY = 16;
+const MISS_FLIGHT = 0.2;
 
 export const FOV = 50;
 const FOG_NEAR = 480; // the haze never thickens past what a shot this far out would have
@@ -954,6 +961,13 @@ export function createView3D(canvas) {
         for (const w of F.fire) {
           if (t < w.t0) continue;
           const tg = { at: w.by === 'hero' ? foeHero.chest() : hero.chest(), id: w.id, p: Math.min(1, (t - w.t0) / 0.25) };
+          // Not every blast finds him: now and then through a volley the aim is off and they go wide.
+          const miss = wide(w.id, t);
+          if (miss) {
+            tg.at[0] += miss[0];
+            tg.at[1] += miss[1];
+            tg.at[2] += miss[2];
+          }
           (w.by === 'hero' ? targets : foeTargets).push(tg);
         }
       }
@@ -961,8 +975,8 @@ export function createView3D(canvas) {
       const fighting = foeOn && F.state === 'here';
       const struck = hero.update(spider, dt, camera, targets, halfH, fighting ? foeHero.chest() : null);
       if (foeOn) {
-        for (const id of struck) if (id < 0) foeHero.hit(dirTo(hero.chest(), foeHero.chest()), 0.85);
-        drawFoe(foe, dt, foeTargets, halfH, F.portal, fighting);
+        for (const id of struck) if (id < 0) foeHero.hit(dirTo(hero.chest(), foeHero.chest()), wide(id, t - MISS_FLIGHT) ? 0.15 : 0.85);
+        drawFoe(foe, dt, foeTargets, halfH, F.portal, fighting, t);
       } else if (foeHero) foeHero.group.visible = foeHero.fx.visible = false;
       if (portal) portal.update(F && F.portal, t);
       // His repulsor flashes light the dust round them.
@@ -1286,7 +1300,23 @@ export function createView3D(canvas) {
   }
 
   /** Thanos for a frame: clipped at his portal, firing at Iron Man, and Iron Man struck by what lands. */
-  function drawFoe(foe, dt, targets, halfH, P, fighting) {
+  /**
+   * Whether a volley's aim is off at time t (a near miss: the offset it goes wide by, world units), else null.
+   * In beats of MISS_BEAT s, MISS_SHARE of them wide; the same for a given volley and time, so the blasts
+   * fired in a wide beat and the flinch (not a hit) when they arrive agree.
+   */
+  function wide(id, t) {
+    const beat = Math.floor(t / MISS_BEAT);
+    const h = (x) => {
+      const s = Math.sin(x * 12.9898 + id * 78.233) * 43758.5453;
+      return s - Math.floor(s);
+    };
+    if (h(beat) > MISS_SHARE) return null;
+    const a = 2 * Math.PI * h(beat + 0.37);
+    return [Math.cos(a) * MISS_BY, 10 + 8 * h(beat + 0.71), Math.sin(a) * MISS_BY];
+  }
+
+  function drawFoe(foe, dt, targets, halfH, P, fighting, t) {
     // (His materials take the clipping plane once his model has loaded.)
     if (!foeView.clipped) {
       foeHero.group.traverse((o) => {
@@ -1304,7 +1334,7 @@ export function createView3D(canvas) {
     foeView.last = foe;
     foeHero.group.visible = foeHero.fx.visible = true;
     const struck = foeHero.update(foe, jump ? 1 : dt, camera, targets, halfH, fighting ? hero.chest() : null);
-    for (const id of struck) if (id < 0) hero.hit(dirTo(foeHero.chest(), hero.chest()), 1);
+    for (const id of struck) if (id < 0) hero.hit(dirTo(foeHero.chest(), hero.chest()), wide(id, t - MISS_FLIGHT) ? 0.2 : 1);
   }
 
   return { resize, setWorld, render, project, orbit, camera, hero, foe: foeHero, silhouette: sil };

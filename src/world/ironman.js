@@ -2972,9 +2972,11 @@ export function createIronMan(renderer, opts = {}) {
     const z = d[2];
     const l = Math.hypot(x, z);
     if (l < 1e-6 || !st.lam) return;
-    k = Math.min(1, k);
+    // (Still reeling from the last one, the next lands on what is left of it: the trunk can only go so far.)
+    const reel = 1 - smooth(0, 0.9, st.time - st.knockT);
+    k = Math.min(1, k) * (1 - 0.65 * reel);
     st.knockT = st.time;
-    st.stunK = k;
+    st.stunK = Math.max(k, (st.stunK || 0) * reel);
     const f = (x * heading.x + z * heading.z) / l; // + from behind him
     const sd = (x * leftV.x + z * leftV.z) / l; // + toward his left
     ez.hitP.kick(HIT_PITCH * k * f);
