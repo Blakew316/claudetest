@@ -49,6 +49,7 @@ const CELL = 30;
 const STRIDE = 28; // sim units of body travel per gait cycle: about half a leg length, as a real spider strides
 const CRUISE = 52; // walking speed, sim units/s (26 in the world at SCALE 0.5)
 const MAX_TURN = 0.7; // rad/s
+const FIRE_SLOW = 0.55; // walking speed while he fires, of the usual
 const MAX_TILT = 1.05;
 const MAX_TILT_AIR = 0.9;
 // Touchdown to walking on (s): the hero's three-point landing (the impact, a held kneel, the rise:
@@ -1107,7 +1108,8 @@ export class Spider {
     const n = this.goalN;
     const facing = Math.max(0.15, dot(this.hF, n));
     // The speed it means to go eases too, so a burst gathers and dies away rather than kicking in.
-    const target = this.walking ? Math.min(CRUISE, dist * 1.2) * facing : 0;
+    // (Firing, he slows to a purposeful step rather than strolling on at full pace.)
+    const target = this.walking ? Math.min(CRUISE, dist * 1.2) * facing * (run.tentacles && run.tentacles.length ? FIRE_SLOW : 1) : 0;
     this.speedT += (target - this.speedT) * (1 - Math.exp(-10 * dt));
     this.speedV += ((this.speedT - this.speed) * 36 - this.speedV * 12) * dt;
     this.speed = Math.max(0, this.speed + this.speedV * dt);

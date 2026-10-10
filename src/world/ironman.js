@@ -115,7 +115,7 @@ const ELBOW_REST = 0.33; // a relaxed elbow's bend (rad)
 const LOOK_NEW = 0.15;
 const LOOK_T = [0.22, 0.24];
 const LOOK_HOLD = 0.6;
-const LOOK_LEAD = [0.1, 0.3];
+const LOOK_LEAD = [0.25, 0.5];
 // Recoil. The hand's kick (spring rad/s, damping) and how far it drives the hand back along the beam
 // (share of the arm's reach), climbs the muzzle and flicks the wrist back (rad), at a kick of 1.
 const RECOIL_W = 17;
@@ -205,33 +205,34 @@ const HANG_W = 8; // airborne, the feet come in under him this quickly (rad/s)
 const CARRY_W = 30; // how quickly the body takes up a kick in its speed (rad/s): see carry()
 const LAND_BLEND = 0.035; // landing, the legs settle from where they reached onto where they stand over about this long (s)
 /*
- * The leap (times to the launch in s, lengths in leg lengths). While the crawler turns to face where it
- * will leap he steps round to face it too; then, his feet under him, he winds up: the countermovement
- * deepens from (at most) CM_LEAD before the launch to its bottom PUSH_T before it (the hips down and
- * back, the knees and ankles loading, the trunk forward, the arms swung back, his eyes on where he is
- * going), no faster than a body can drop on its own legs (CM_ACC); then he drives up, hips first, then
- * the knees, then the heels and toes, the arms swinging forward and up, and leaves the ground as the jets
- * light. The drive is as hard as the flight climbs (V_LEAP: a leap off level or downhill is a lean and a
- * spring forward, not a jump up), and the flight takes him from where he left it, not from where the
- * crawler's body is.
+ * The takeoff (times to the launch in s, lengths in leg lengths): Iron Man's, not a jumper's. While the
+ * crawler turns to face where it will leap he steps round to face it too; then, his feet under him, he
+ * braces: a shallow dip from (at most) CM_LEAD before the launch to its bottom PUSH_T before it (the knees
+ * giving a little, his eyes on where he is going), no faster than a body can drop on its own legs
+ * (CM_ACC); then the boot jets light and lift him, the legs straightening under him and the heels barely
+ * leaving the ground before the toes, his arms going out to his sides palms down to steady him
+ * (TAKEOFF_OUT). He rises upright and tips into the flight's head-first attitude only once he is clear.
+ * The lift is as strong as the flight climbs (V_LEAP), and the flight takes him from where he left it,
+ * not from where the crawler's body is.
  */
 const CM_LEAD = 0.7;
 const PUSH_T = 0.36;
 const CM_BOTTOM = 0.6 * PUSH_T; // the dip bottoms out as the drive gets going
-const CM_DROP = 0.3; // the countermovement takes the pelvis this much lower (at most) ...
+const CM_DROP = 0.12; // the countermovement takes the pelvis this much lower (at most): a brace, not a jumper's crouch (the jets lift him) ...
 const CM_BACK = 0.06; // ... and back
 const MPS = HEIGHT / 1.8; // a metre (a metre a second) in world units: he is 1.8 m tall
 const G_W = 9.81 * MPS; // gravity (world units/s^2)
 const CM_ACC = 0.85; // the dip's hardest acceleration (g): it never yanks him down faster than he could fall
 const V_LEAP = 3.2 * MPS; // a flight leaving upward this fast (world units/s) gets the full drive ...
 const LEAP_MIN = 0.3; // ... and the gentlest still this much of it
-const DRIVE_FWD = 0.1; // the drive takes the hips forward this much (at a level departure)
+const DRIVE_FWD = 0.04; // the drive takes the hips forward this much (at a level departure)
 const PIVOT_W = 5; // winding up, a planted foot turns on its ball at most this fast (rad/s) ...
 const PIVOT_CAP = 0.5; // ... and, both feet down in the dip, at most this far (rad): more takes a step
-const CM_PITCH = [0.2, 0.35, 0.2]; // pelvis, spine and chest pitched forward (rad)
-const CM_ARMS = 0.8; // the arms swung back (rad) ...
-const PUSH_ARMS = 0.45; // ... and through, forward and up, by the launch
-const PUSH_ROLL = 1.0; // the heels up off the ground by the launch (rad)
+const CM_PITCH = [0.06, 0.12, 0.06]; // pelvis, spine and chest pitched forward (rad)
+const CM_ARMS = 0.15; // the arms drawn back a little (rad) ...
+const PUSH_ARMS = 0.05; // ... and hardly forward by the launch: they go out to his sides, palms down (TAKEOFF_OUT)
+const TAKEOFF_OUT = 0.45; // rad out from his sides as the jets lift him, steadying him
+const PUSH_ROLL = 0.35; // the heels a little off the ground by the launch (rad): the jets lift him, the toes do not spring him
 const TK_HAND = 0.35; // ... and hands back to the flight's own path over this long (s)
 const TAKEOFF_W = 2.6; // the flight takes him over from where he left at this rate (rad/s): about a gravity's pull, not a yank
 // As the toes leave the ground the ankles ease onto the end of the legs' reach about the hips (this
@@ -671,7 +672,7 @@ export function createIronMan(renderer) {
   // roll, the arms' swing; and, from the launch, the flight taking him over from where he left.
   // (t0: the countdown when the dip began, -1 before; depth: how deep it goes (leg lengths); drive: how hard
   // the push is, by how steeply the flight climbs; fwd: how much of the departure is forward.)
-  const JW = { cm: 0, push: 0, unfold: 0, rise: 0, heel: 0, arms: 0, t0: -1, depth: CM_DROP, drive: 1, fwd: 0 };
+  const JW = { cm: 0, push: 0, unfold: 0, rise: 0, heel: 0, arms: 0, out: 0, t0: -1, depth: CM_DROP, drive: 1, fwd: 0 };
   const tk = { on: false, t: 0, T: 1, off: new THREE.Vector3(), offV: new THREE.Vector3(), v: new THREE.Vector3(), last: new THREE.Vector3(), p0: new THREE.Vector3(), vL: new THREE.Vector3(), aL: new THREE.Vector3(), dp: new THREE.Vector3(), dpT: 0, gap: new THREE.Vector3(), gapT: -9 };
 
   /**
@@ -706,7 +707,7 @@ export function createIronMan(renderer) {
       JW.cm = 1;
       JW.push = 1;
     } else {
-      JW.cm = JW.push = JW.unfold = JW.rise = JW.heel = JW.arms = 0;
+      JW.cm = JW.push = JW.unfold = JW.rise = JW.heel = JW.arms = JW.out = 0;
       JW.t0 = -1;
       return JW;
     }
@@ -719,6 +720,8 @@ export function createIronMan(renderer) {
     JW.heel = PUSH_ROLL * (0.3 + 0.7 * JW.drive) * h * h + (tA >= 0 ? 0.6 * smooth(0, 0.12, tA) : 0); // (on over the toe tips as they leave)
     // The arms: back with the dip, then through and up with the drive, and on into the flight.
     JW.arms = -CM_ARMS * JW.cm * (1 - smooth(0, 0.6, p)) + PUSH_ARMS * smooth(0.15, 0.95, p) * (tA >= 0 ? 1 - smooth(0, 0.3, tA) : 1);
+    // ...and out to his sides, palms down, as the jets light and lift him (into the flight's own pose after).
+    JW.out = TAKEOFF_OUT * smooth(0.1, 0.8, p) * (tA >= 0 ? 1 - smooth(0.2, 0.6, tA) : 1);
     return JW;
   }
 
@@ -1947,7 +1950,7 @@ export function createIronMan(renderer) {
     // brake on his boots before he lands.
     const uAir = spider.airU || 0;
     const sp3 = Math.hypot(spider.v[0], spider.v[1], spider.v[2]);
-    const att = clamp(ez.att.to((spider.air && spider.taut > 0.05 ? 1 : 0) * smooth(0, 0.1, uAir) * (1 - smooth(0.58, 0.85, uAir)) * smooth(0.5 * MPS, 2 * MPS, sp3), sdt), 0, 1);
+    const att = clamp(ez.att.to((spider.air && spider.taut > 0.05 ? 1 : 0) * smooth(0.1, 0.3, uAir) * (1 - smooth(0.58, 0.85, uAir)) * smooth(0.5 * MPS, 2 * MPS, sp3), sdt), 0, 1);
     const Ks = K * scale;
     const lam = LEG * Ks;
 
@@ -2571,7 +2574,7 @@ export function createIronMan(renderer) {
       // (its own spring): the forearm's follow-through. The off hand: a little back and out to balance
       // the shot, elbow soft, palm turned in. (Resting on one leg, the arms a little out.)
       const elbow = ez.elbow[n].to(ELBOW_REST + 1.1 * softPos(armSwing + 0.1, 0.05) + 0.25 * guard + 0.3 * fold, sdt);
-      armPose(gA, armSwing * (1 - 0.5 * guard) - 0.1 * guard, ARM_OUT + 0.04 * clamp(walk, 0, 1) + 0.2 * guard + 0.06 * softAbs(shift, 0.15), elbow, ARM_PRONATE * (1 - guard), 0.12);
+      armPose(gA, armSwing * (1 - 0.5 * guard) - 0.1 * guard, ARM_OUT + 0.04 * clamp(walk, 0, 1) + 0.2 * guard + 0.06 * softAbs(shift, 0.15) + JW.out, elbow, ARM_PRONATE * (1 - guard) * (1 - JW.out / TAKEOFF_OUT), 0.12);
       gA.sh.quaternion.copy(armQ.sh);
       gA.el.quaternion.copy(armQ.el);
       gA.wr.quaternion.copy(armQ.wr);
@@ -2715,7 +2718,7 @@ export function createIronMan(renderer) {
     fxIn.unit = U / 22.8;
     fxIn.scale = scale;
     const jets = 1 - smooth(0, 0.06, landT); // (cut as his boots meet the ground)
-    fxIn.thrust = Math.max(air, fly) * jets;
+    fxIn.thrust = Math.max(air, fly, 0.8 * smooth(0, 0.35, JW.push)) * jets; // (lit as he pushes off: they lift him)
     fxIn.fly = fly * jets;
     // Each palm fires only at the word its arm is on, and only once it is pointing there.
     for (const t of targets) if (t.side && !(tgt[t.side] === t && aimOn[t.side])) t.side = null;
