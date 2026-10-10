@@ -247,14 +247,14 @@ const LAND_G = 0.22; // the flight's pose hands over to the landing's this fast 
 const LAND_RISE = 0.9; // the rise takes this long, ending as the crawler walks on
 // The drop into the kneel takes this long (s), less the faster he comes in (s per unit/s of his drop),
 // never so short a body would brake harder than its legs can, nor so long it would go past the kneel.
-const LAND_DROP = 0.35;
-const LAND_DROP_V = 0.0014;
+const LAND_DROP = 0.45;
+const LAND_DROP_V = 0.001;
 // The landing is planned this long before touchdown (s): from then the legs reach for their places (the
 // front foot coming straight down onto its spot, the rear leg folded as it will kneel) ...
-const APPROACH_T = 0.35;
+const APPROACH_T = 0.5;
 // ... and his way in is eased to rest on the kneel point by this long after touchdown (s): carried on
 // into the kneel by his momentum, never springing back.
-const LAND_STOP = 0.32;
+const LAND_STOP = 0.42;
 const KNEEL_LEAD = 0.12; // the kneeling knee down this far ahead of its hip (the thigh near upright: a right angle at the knee)
 const KNEEL_SIT = 0.05; // the pelvis sat back this far
 const KNEEL_FRONT = 0.32; // the front ankle this far ahead of its hip (beside the kneeling knee) ...
@@ -274,6 +274,15 @@ const BLOW = 0.03; // seconds over which a blow (a blast's kick) is delivered
 const AIM_W = 13; // how quickly an arm sweeps onto a new word (rad/s, critically damped: ~0.3 s)
 const AIM_GAP = 0.8; // ... chasing a point at most this far (rad) ahead of where it points: a brisk swing, not a whip
 const AIM_UP = 0.87; // ... and never higher than this over the horizontal (rad): the trunk leans back to what is higher
+// The words a hand will shoot at (rad, from his heading): across the chest at most REACH_IN, out to its side at most
+// REACH_OUT (just past square to the shoulders: further back the arm would wrap behind him), up to REACH_UP over
+// AIM_UP and down at most REACH_DOWN. Anything else he only looks at. REACH_HOLD widens it for the word a hand is on.
+const REACH_IN = 0.35;
+const REACH_OUT = 1.6;
+const REACH_UP = 0.4;
+const REACH_DOWN = 0.8;
+const REACH_HOLD = 0.2;
+const AIM_ON = 0.25; // the arm counts as on its word within this (rad): only then does the palm fire
 // The ground estimate (see fitGround): how fast it is drawn to the stars on the ground and in the air,
 // and how fast the slope it carries him along follows theirs (rad/s).
 const GROUND_W = 2.2;
@@ -923,6 +932,8 @@ export function createIronMan(renderer) {
   }
   const soles = [new THREE.Vector3(), new THREE.Vector3()];
   const aimW = { L: 0, R: 0 };
+  const aimGoal = { L: new THREE.Vector3(0, 0, 1), R: new THREE.Vector3(0, 0, 1) }; // where each arm is heading
+  const aimOn = { L: false, R: false }; // each arm on its word (it may fire)
   const fxIn = { palms, soles, head, vel: v, aim: aimW };
   const AX = new THREE.Vector3(1, 0, 0);
   const AY = new THREE.Vector3(0, 1, 0);
@@ -1924,6 +1935,12 @@ export function createIronMan(renderer) {
       const az = Math.atan2(a3.dot(leftV), a3.dot(heading));
       t.side = az > 0 ? 'L' : 'R';
       if (Math.abs(az) < 0.4 && st.aim.L.has !== st.aim.R.has) t.side = st.aim.L.has ? 'L' : 'R';
+      // Only a word a person could shoot at: from a little across the chest to straight out to the side,
+      // not behind, not straight up or down (wider for the word a hand is already on, so it does not flicker).
+      const held = st.aim[t.side].id === t.id ? REACH_HOLD : 0;
+      const out = t.side === 'L' ? az : -az;
+      const elv = Math.atan2(t.at[1] - (st.gy + 1.4 * lam), Math.hypot(a3.x, a3.z));
+      if (out < -REACH_IN - held || out > REACH_OUT + held || elv < -REACH_DOWN - held || elv > AIM_UP + REACH_UP + held) t.side = null;
       let rec = st.seen.get(t.id);
       if (!rec) st.seen.set(t.id, (rec = { t: now, p: t.p, back: false }));
       rec.back = t.p < rec.p - 1e-4; // retracting
@@ -2512,7 +2529,7 @@ export function createIronMan(renderer) {
         const lat = a3.dot(leftV) * s;
         if (lat < -0.15) a3.addScaledVector(leftV, s * (-0.15 - lat));
         const back = a3.dot(heading);
-        if (back < -0.45) a3.addScaledVector(heading, -0.45 - back);
+        if (back < -0.05) a3.addScaledVector(heading, -0.05 - back);
         a3.normalize();
         // Not up over his head (that reads as a wave, not a shot): a high word the arm points up to AIM_UP,
         // the trunk leaning back and the palm tipping up for the rest.
@@ -2522,6 +2539,7 @@ export function createIronMan(renderer) {
           const h = Math.hypot(a3.x, a3.z) || 1e-6;
           a3.set((a3.x / h) * Math.cos(AIM_UP), Math.sin(AIM_UP), (a3.z / h) * Math.cos(AIM_UP));
         }
+        aimGoal[n].copy(a3);
         // Onto a new word the arm sweeps over as a reach does: setting off and arriving gently.
         if (A.dirS.lengthSq() < 1e-6 || a < 0.02 || jumped) {
           A.dirS.copy(a3);
@@ -2544,7 +2562,9 @@ export function createIronMan(renderer) {
           }
         }
         A.dir.copy(A.dirS).normalize();
+        aimOn[n] = a > 0.5 && A.dir.angleTo(aimGoal[n]) < AIM_ON;
       } else {
+        aimOn[n] = false;
         // Its word gone, the arm does not stop dead mid-sweep: it carries on a little and comes to rest
         // as it lowers.
         st.aimHigh[n] *= Math.exp(-6 * dt);
@@ -2606,6 +2626,8 @@ export function createIronMan(renderer) {
     const jets = 1 - smooth(0, 0.06, landT); // (cut as his boots meet the ground)
     fxIn.thrust = Math.max(air, fly) * jets;
     fxIn.fly = fly * jets;
+    // Each palm fires only at the word its arm is on, and only once it is pointing there.
+    for (const t of targets) if (t.side && !(tgt[t.side] === t && aimOn[t.side])) t.side = null;
     fxIn.targets = targets;
     const out = repulsors.update(fxIn);
     // A blast kicks that arm (fast) and pushes through the shoulder and torso (slower); the

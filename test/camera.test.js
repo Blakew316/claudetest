@@ -19,7 +19,7 @@ import { hashString } from '../src/core/rng.js';
 const HERO_H = 46; // world/ironman.js HEIGHT
 const KNEEL_H = 28; // ...kneeling in the superhero landing
 const TAN = Math.tan((50 * Math.PI) / 360); // view3d FOV
-const RUN_TO = 70; // s: the first read, two visits with their flights and landings, and the second section
+const RUN_TO = 110; // s: the first reads with their flights and landings
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 const seed = hashString(SAMPLE_PROMPT);
@@ -164,9 +164,9 @@ for (const [W, H, least] of [
       assert.ok(backLongest < 3, `from behind for ${backLongest.toFixed(1)} s at a stretch`);
     });
 
-    test('it cuts once to each landing and films the kneel from in front, low and close', () => {
-      assert.ok(landings >= 3, `${landings} landings`);
-      assert.equal(cuts, landings);
+    test('it swings round onto each landing (no cuts) and films the kneel from in front, low and close', () => {
+      assert.ok(landings >= 2, `${landings} landings`);
+      assert.equal(cuts, 0);
       const med = (k) => median(kneel.map((r) => r[k]));
       assert.ok(med(0) > 0.3 && med(0) < 0.7, `kneeling he fills ${med(0).toFixed(2)} of the view height`);
       assert.ok(med(1) < 0.7, `the lens is ${((med(1) * 180) / Math.PI).toFixed(0)} degrees off his front`);

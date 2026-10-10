@@ -6,8 +6,7 @@
  *
  * It is also the cinematographer, and Iron Man is its subject: every shot is
  * framed on him (his size on screen, where he sits in the frame, his eyes high
- * in it), and every move is spring smoothed (world/camera.js); the one cut is
- * the deliberate one into each landing:
+ * in it), and every move is spring smoothed (world/camera.js), with no cuts:
  *  - intro: a brief wide look at the first ball, pushing in onto a front
  *    three-quarter view of him;
  *  - walking, reading, firing: a full-figure two-shot (he fills about half the
@@ -25,8 +24,8 @@
  *    behind and to the side it is already on, and holds it through the crouch;
  *  - flight: a chase camera close behind him and to that side, banking a
  *    little, looking down and ahead along his path through the stars;
- *  - landing: mid-flight, a cut to a locked-off lens low and almost straight
- *    in front of where he lands; he flies down into the shot and lands in
+ *  - landing: through the second half of the flight, a swing round onto a
+ *    lens low and in front of where he lands; he flies down into the shot and lands in
  *    the superhero kneel filling half the frame; it pushes in through the
  *    hold, tilts up with him as he rises, then hands back to the two-shot;
  *  - finale: after his last landing a rising orbit of the whole nebula, then a
@@ -59,14 +58,15 @@ const SHIP_SETTLE = 22; // the finale: orbit the nebula, then drift onto the spi
 const TAIL = 1.5; // last reach + hold + retract after the final word
 const GAP = 1.04; // mean gap between reaches, in units of 1/rate (see nextGap)
 const RATE_CAP = 11; // reaches per second at most; denser sections read a phrase per reach
-const RUN_BUDGET = 300; // seconds: even a 1500-word, 12-section prompt finishes under ~5 min
-const MIN_READ = 7;
-const MAX_READ = 18;
+const RUN_BUDGET = 420; // seconds: even a 1500-word, 12-section prompt finishes under ~7 min
+const MIN_READ = 14;
+const MAX_READ = 32;
 const LOG_CAP = 40;
 // Between sections the spider also leaps through the extra (no-word) balls:
 // it lands inside, on the side facing where it came from, and crosses toward
 // the side facing where it goes next, for at most VISIT_CRAWL seconds.
 const VISIT_CRAWL = 3.5;
+const VISITS = false;
 const VISIT_EASE = 1.4; // a beat after crossing, before the next leap
 const PI = Math.PI;
 const ROAM_SPEED = 13; // world units/s it averages over a read, pauses included: a stroll, stopping often to fire
@@ -119,10 +119,11 @@ const RISE_SINK = 8.5;
 const SINK_SETTLE = 0.9;
 const LAND_HOLD = LAND_TIME - KNEEL_RISE; // s after touchdown that he holds the kneel
 const LAND_BLEND = 2.2; // once he is up, the landing shot hands back to the two-shot over this long
-// Mid-flight the camera cuts to the landing: a locked-off view, low and almost straight in front of where he
-// will land, that he flies down into; it pushes in through the kneel and tilts up with him as he rises.
-const CUT_U = 0.6; // share of the flight flown when it cuts
-const LAND_AZ = 0.38; // rad off straight in front of him
+// Through the second half of the flight the camera swings round (never a cut) onto the landing: a view low
+// and in front of where he will land, that he flies down into; it pushes in through the kneel and tilts up
+// with him as he rises.
+const SWING_U = [0.3, 0.9]; // share of the flight flown as it swings from the chase onto the landing view
+const LAND_AZ = 0.55; // rad off straight in front of him
 const LAND_EL = -0.3; // rad below his kneeling middle: near his boots, looking up
 const SIZE_KNEEL = 0.44; // the kneeling hero fills this much of the view height as he lands...
 const SIZE_KNEEL_IN = 0.5; // ...pushing in to this through the hold
@@ -183,7 +184,7 @@ const ss = (a, b, x) => smooth(clamp((x - a) / (b - a), 0, 1));
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 
 /** Planned read time for a section (s): longer sections linger, within limits. */
-const readSeconds = (count) => (count ? clamp(5.5 + 1.5 * Math.sqrt(count), MIN_READ, MAX_READ) : 2.5);
+const readSeconds = (count) => (count ? clamp(9 + 2.4 * Math.sqrt(count), MIN_READ, MAX_READ) : 2.5);
 /** Floaty, unhurried leaps; long gaps take longer and arc higher. */
 const airTime = (L) => clamp(1.7 + L / 380, 2.0, 3.6);
 
@@ -349,7 +350,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const gaps = Array.from({ length: n }, () => []);
     if (!n) return gaps;
     const d = (P, c) => Math.hypot(P.x - c.cx, P.y - c.cy, P.z - c.cz);
-    for (const c of clusters) {
+    // (He no longer leaps through the word-less balls between sections: one flight per section, so he
+    // spends his time walking and shooting. VISITS turns them back on.)
+    for (const c of VISITS ? clusters : []) {
       if (!c.extra) continue;
       let best = 0;
       let bestCost = Infinity;
@@ -1374,7 +1377,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
    * The camera through a leap, from `base` (the shot before it, by now on the
    * takeoff view, see updatePre): the takeoff, held through the crouch; the
    * chase, behind him and to the side, banking a little, as he flies; then,
-   * CUT_U of the way, a cut to the landing (see landRig), and back to the
+   * from SWING_U of the way, a swing round onto the landing (see landRig), and back to the
    * two-shot once he is up.
    */
   function leapRig(base, out) {
@@ -1391,10 +1394,10 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     compose(H, L.chase, CHASE_EL, shotDist(SIZE_CHASE), 0, -0.12, hc.chase);
     const chase = ss(0, 0.3, u);
     mixRig(out, setEase(hc.chase, 0.22, 0.45, 1), chase, out, 'chase');
-    if (!L.cut && u >= CUT_U) L.cut = hc.cutNow = true;
-    hc.rollT = L.cut ? 0 : CHASE_ROLL * L.xd * chase;
-    if (!L.cut) return out;
-    landRig(L, tr, u, ts, out);
+    const landW = L.touch >= 0 ? 1 : ss(SWING_U[0], SWING_U[1], u);
+    hc.rollT = CHASE_ROLL * L.xd * chase * (1 - landW);
+    if (landW <= 0) return out;
+    mixRig(out, landRig(L, tr, u, ts, hc.land), landW, out, 'land');
     const back = ss(LAND_TIME + 0.15, LAND_TIME + 0.15 + LAND_BLEND, ts);
     if (back >= 1) L.done = true;
     return mixRig(out, hc.two, back, out, 'back');
@@ -1420,7 +1423,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // Looking between him and where he will touch down (his middle there), and more and more at that as he
     // nears it, so it pans little: he comes down into the frame. Once down, at him (see heroPoint: he
     // drops into the kneel, holds it, rises).
-    const w = down ? 0 : lerp(LAND_LOOK, 1, ss(CUT_U, 0.9, u));
+    const w = down ? 0 : lerp(LAND_LOOK, 1, ss(SWING_U[0], 0.9, u));
     for (let i = 0; i < 3; i++) P[i] = lerp(H[i], tr.to[i], w);
     const sy = down ? lerp(SHOT_Y_KNEEL * ss(0, 0.3, ts), shotY(D), rise) : 0;
     // (Kneeling he sweeps his left arm out, to the right of the frame from in front: on a narrow screen
