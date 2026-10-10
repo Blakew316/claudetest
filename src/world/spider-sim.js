@@ -860,6 +860,9 @@ export class Spider {
     const crouch = this.midAir ? 0 : tr.crouch;
     const aim = this.midAir ? 0 : Math.min(tr.aim || 0, crouch * 0.7);
     const T = run.t - tr.t0;
+    // (For whoever is drawn on it: how long the wind-up is, and how long until the launch.)
+    this.crouchDur = crouch;
+    this.launchIn = this.launched ? -1 : crouch - T;
     let flat = [tr.to[0] - tr.from[0], 0, tr.to[2] - tr.from[2]];
     flat = Math.hypot(flat[0], flat[2]) > 4 ? norm(flat) : norm([this.hF[0], 0, this.hF[2]]);
     // It brakes out of its walk (velocity easing to rest) rather than stopping dead.
@@ -897,6 +900,8 @@ export class Spider {
       this.poseT = zeroPose();
       if (!this.crouchAnchored && !this.abseil) this.anchor(run);
       const v0 = add(scale(sub(tr.to, this.launchAt), 1 / tr.air), UP, this.abseil ? 0 : (4 * tr.apex) / tr.air);
+      // (Where the flight path heads from the launch, for whoever is drawn on it: the abseil eases off from rest.)
+      this.launchV = this.abseil ? [0, 0, 0] : add(scale(sub(tr.to, this.launchAt), 0.35 / tr.air), UP, (4 * tr.apex) / tr.air);
       const push = scale([dot(v0, this.F), dot(v0, this.U), dot(v0, this.S)], -0.12);
       for (const leg of this.legs) if (leg.mode !== 'air') this.release(leg, push);
       this.spreadLaunch();
