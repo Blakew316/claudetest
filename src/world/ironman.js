@@ -291,6 +291,17 @@ const AIM_DROP_W = 11;
 const RAISE_WR_W = [7, 14];
 const RAISE_FLEX = 0.3;
 const AIM_EXT = 0.8;
+// Secondary motion. The trunk lags the body's starts, stops and turns and follows through (an underdamped
+// spring on its acceleration: rad per g of SEC_PITCH forward-back, SEC_ROLL sideways), the head nods under
+// the body's rise and fall (SEC_NOD rad per g up or down), and leads a turn by SEC_LEAD s of its rate.
+// Nothing is ever quite still: a slow, small, irregular drift of the head and chest (LIFE rad), and the
+// aiming hand sways a little (AIM_SWAY rad).
+const SEC_PITCH = 0.5;
+const SEC_ROLL = 0.35;
+const SEC_NOD = 0.12;
+const SEC_LEAD = 0.22;
+const LIFE = 0.022;
+const AIM_SWAY = 0.012;
 const AIM_UP = 0.45; // ... and never higher than this over the horizontal (rad): higher reads as a wave; the trunk leans back and the palm tips up for the rest
 // The words a hand will shoot at (rad, from his heading): across the chest at most REACH_IN, out to its side at most
 // REACH_OUT (just past square to the shoulders: further back the arm would wrap behind him), up to REACH_UP over
@@ -606,7 +617,7 @@ export function createIronMan(renderer) {
     speed: spring(6), active: spring(6), pelvisY: spring(PELVIS_W), sway: spring(9, 0.9), land: spring(9, 0.55, LAND_BLOW),
     hips: spring(5, 0.9), twist: spring(7, 0.9), lookY: spring(8, 0.9), lookP: spring(8, 0.9),
     shift: spring(1.6, 0.9), brace: spring(4, 0.9), wide: spring(4, 0.9), lean: spring(5, 0.9),
-    arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(7, 0.75), R: spring(7, 0.75) }, aimEl: { L: spring(6, 0.85), R: spring(6, 0.85) }, aimWr: { L: spring(7, 0.9), R: spring(7, 0.9) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
+    arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(7, 0.75), R: spring(7, 0.75) }, aimEl: { L: spring(6, 0.85), R: spring(6, 0.85) }, secP: spring(6, 0.45), secR: spring(6, 0.45), nod: spring(8, 0.4), lead: spring(5, 0.8), aimWr: { L: spring(7, 0.9), R: spring(7, 0.9) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
     gx: spring(GRADE_W), gz: spring(GRADE_W), gOff: spring(GROUND_W), hV: spring(40), pushX: spring(11, 0.9), pushZ: spring(11, 0.9), apa: spring(10),
     hurry: spring(10), elev: spring(7), go: spring(14), ext: spring(6),
     // A blast's kick through the arm: back along the beam within ~50 ms, a touch past rest on the
@@ -2492,8 +2503,28 @@ export function createIronMan(renderer) {
     const counter = -1.6 * pelvisYaw * (1 - g);
     const turnUp = -(hips) + twist;
     const fold = JW.cm * (1 - JW.unfold); // (winding up: forward over his feet, up again with the drive)
+    // Secondary motion (see SEC_PITCH): off in the air and through the landing's own acting.
+    const onFeet = (1 - g) * (1 - att) * (1 - LW.on);
+    const yawNow = Math.atan2(heading.x, heading.z);
+    const yawRate = st.secYaw === undefined || jumped || dt <= 0 ? 0 : wrapA(yawNow - st.secYaw) / dt;
+    st.secYaw = yawNow;
+    const vAcc = st.secPV === undefined || jumped || dt <= 0 ? 0 : (ez.pelvisY.v - st.secPV) / dt;
+    st.secPV = ez.pelvisY.v;
+    const secP = ez.secP.to(clamp(-SEC_PITCH * (st.acc.dot(heading) / G_W), -0.1, 0.1) * onFeet, sdt);
+    const secR = ez.secR.to(clamp(SEC_ROLL * (st.acc.dot(leftV) / G_W), -0.08, 0.08) * onFeet, sdt);
+    const nod = ez.nod.to(clamp(-SEC_NOD * (vAcc / G_W), -0.1, 0.1) * onFeet, sdt);
+    const turnLead = ez.lead.to(clamp(SEC_LEAD * yawRate, -0.35, 0.35) * onFeet, sdt);
+    const tl = st.time;
+    const lifeY = LIFE * (Math.sin(0.53 * tl + 1.3) + 0.6 * Math.sin(1.27 * tl + 4.1)) * onFeet;
+    const lifeP = LIFE * (0.8 * Math.sin(0.71 * tl + 2.2) + 0.45 * Math.sin(1.9 * tl + 0.7)) * onFeet;
+    const lifeR = 0.5 * LIFE * Math.sin(0.37 * tl + 5.0) * onFeet;
     sk.spine.rotation.set(0.5 * lean + CM_PITCH[1] * fold + 0.012 * breath - 0.45 * KICK_ROCK * kickB - 0.4 * reach, 0.45 * (counter + turnUp) + kickT * 0.4, -pelvisRoll * 0.55);
     sk.chest.rotation.set(0.5 * lean + CM_PITCH[2] * fold + 0.015 * breath - 0.55 * KICK_ROCK * kickB - 0.6 * reach, 0.55 * (counter + turnUp) + kickT * 0.6, -pelvisRoll * 0.3);
+    sk.spine.rotation.x += 0.4 * secP;
+    sk.spine.rotation.z += 0.4 * secR;
+    sk.chest.rotation.x += 0.6 * secP;
+    sk.chest.rotation.y += 0.4 * lifeY + 0.25 * turnLead;
+    sk.chest.rotation.z += 0.6 * secR + lifeR;
     if (ld.on) {
       // Landing: folded over the kneel (the pelvis is already), turned and bent toward the fist,
       // breathing hard as he holds it.
@@ -2509,7 +2540,7 @@ export function createIronMan(renderer) {
     q.copy(sk.root.quaternion).multiply(sk.spine.quaternion).multiply(sk.chest.quaternion);
     // (Landing, the head goes down with the trunk and bows further, then comes up first as he rises.)
     q.slerp(q2.identity(), 0.15 + 0.6 * LW.head).invert();
-    q2.setFromEuler(euler.set(neckP - 0.2 * fold - 0.75 * att + 0.2 * LW.head, neckY * (1 - LW.head), 0, 'YXZ'));
+    q2.setFromEuler(euler.set(neckP - 0.2 * fold - 0.75 * att + 0.2 * LW.head + nod + lifeP, (neckY + turnLead + lifeY) * (1 - LW.head), 0, 'YXZ'));
     sk.neck.quaternion.copy(q).multiply(q2);
     euler.order = 'XYZ';
 
@@ -2639,7 +2670,12 @@ export function createIronMan(renderer) {
         const raise = clamp(A.dir.y * 1.5 + 0.3, 0, 1);
         gA.clav.rotation.set(0, clavY + a * (-s * (0.12 - 0.18 * kb) - clavY), clavZ + a * (s * (0.1 * raise + 0.04 * kb) - clavZ));
         gA.clav.updateMatrixWorld(true);
-        aimPose(gA, A.dir, rec, 0.5 * st.aimHigh[n], RAISE_FLEX * clamp(2 * (a - aEl), 0, 1));
+        // (Held out, the hand sways a little: slow, irregular, its own on each side.)
+        const ph = n === 'L' ? 0 : 2.1;
+        _m1.copy(A.dir).applyAxisAngle(UP, AIM_SWAY * (Math.sin(1.7 * st.time + ph) + 0.5 * Math.sin(3.1 * st.time + 2 * ph)));
+        _m2.crossVectors(_m1, UP).normalize();
+        if (_m2.lengthSq() > 0.5) _m1.applyAxisAngle(_m2, AIM_SWAY * 0.8 * Math.sin(2.3 * st.time + 1.7 * ph));
+        aimPose(gA, _m1, rec, 0.5 * st.aimHigh[n], RAISE_FLEX * clamp(2 * (a - aEl), 0, 1));
         gA.sh.quaternion.slerp(aimQ.sh, a);
         gA.el.quaternion.slerp(aimQ.el, aEl);
         gA.wr.quaternion.slerp(aimQ.wr, aWr);
