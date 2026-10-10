@@ -87,7 +87,8 @@ const SIZE_LAND = 0.47; // the landing as he touches down (crouched he is about 
 const SIZE_RISE = 0.54; // ...pushing in to this as he rises
 const SIZE_OPEN = 0.09; // the brief wide look the run opens on
 const SIZE_REST = 0.42; // the finale's last shot of him
-const CHASE_DIST = 2.6 * HERO_H; // in flight, close behind him (lying along his path he reads at about a third of the height)
+const NARROW = 0.8; // aspect (width / height) below which the shots pull back a little (see shotDist)
+const SIZE_CHASE = 0.41; // in flight, close behind him (standing size: lying along his path he reads at about a third)
 const CHASE_AZ = 0.72; // rad off straight behind him, to one side
 const CHASE_EL = 0.16; // a little above, looking down and ahead along his path
 const LAUNCH_AZ = 1.2; // rad off straight behind: a rear three-quarter view of the takeoff
@@ -120,8 +121,6 @@ const smooth = (x) => x * x * (3 - 2 * x);
 /** Smoothstep of x from a to b (either order). */
 const ss = (a, b, x) => smooth(clamp((x - a) / (b - a), 0, 1));
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
-/** Distance at which he fills `share` of the view height. */
-const shotDist = (share) => HERO_H / (share * 2 * LENS_TAN);
 
 /** Planned read time for a section (s): longer sections linger, within limits. */
 const readSeconds = (count) => (count ? clamp(5.5 + 1.5 * Math.sqrt(count), MIN_READ, MAX_READ) : 2.5);
@@ -209,6 +208,15 @@ export function createDirector(analysis, world, getStage, seed = 1) {
   function aspect() {
     const { width, height } = getStage();
     return width / Math.max(1, height);
+  }
+
+  /**
+   * Distance at which he fills `share` of the view height; on a screen
+   * narrower than NARROW (a phone held upright) a little further, so the
+   * frame keeps enough width round him to follow him as he moves.
+   */
+  function shotDist(share) {
+    return HERO_H / (share * Math.sqrt(Math.min(1, aspect() / NARROW)) * 2 * LENS_TAN);
   }
 
   /** Distance at which a ball of radius r fills the frame (f = 1). */
@@ -1046,7 +1054,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       orbitDir(az, el, dir);
       return crowding([p[0] + dir[0] * D, p[1] + dir[1] * D, p[2] + dir[2] * D], p);
     };
-    const sideCost = (sd) => look(mid, yaw + PI - sd * CHASE_AZ, CHASE_EL, CHASE_DIST) + look(G, yaw + sd * LAND_AZ, LAND_EL, shotDist(SIZE_LAND));
+    const sideCost = (sd) => look(mid, yaw + PI - sd * CHASE_AZ, CHASE_EL, shotDist(SIZE_CHASE)) + look(G, yaw + sd * LAND_AZ, LAND_EL, shotDist(SIZE_LAND));
     let side = Math.sin(run.camera.yaw - yaw) < 0 ? -1 : 1;
     if (sideCost(-side) < sideCost(side) - 0.6) side = -side;
     // The takeoff view leaves room on screen the way he will go.
@@ -1092,7 +1100,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const ts = L.touch >= 0 ? run.t - L.touch : 0;
     compose(H, L.yaw + PI - L.side * LAUNCH_AZ, 0.04, shotDist(SIZE_LAUNCH), L.sx, SHOT_Y, hc.launch);
     mixRig(base, setEase(hc.launch, 0.45, 0.6, 0.6), ss(0, Math.max(0.05, tr.crouch), T), out, 'launch');
-    compose(H, L.yaw + PI - L.side * CHASE_AZ, CHASE_EL, CHASE_DIST, 0, -0.12, hc.chase);
+    compose(H, L.yaw + PI - L.side * CHASE_AZ, CHASE_EL, shotDist(SIZE_CHASE), 0, -0.12, hc.chase);
     mixRig(out, setEase(hc.chase, 0.22, 0.45, 1), ss(0, 0.3, u), out, 'chase');
     // The landing view swings in once he is within a few shot lengths of where he lands (at
     // once, on a short hop), aimed more and more at that spot as he nears it, then onto him
@@ -1100,7 +1108,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const Dl = shotDist(SIZE_LAND);
     const mid = H[1] - run.spider.y; // his middle above the crawler point, as it is now
     const toG = Math.hypot(H[0] - tr.to[0], H[1] - tr.to[1] - mid, H[2] - tr.to[2]);
-    const g = L.touch >= 0 ? 0.65 * (1 - ss(0, 1.2, ts)) : 0.65 * ss(2.2 * Dl, 0.6 * Dl, toG);
+    // (Never so far toward the spot that he would leave the side of the frame: on a narrow screen it waits for him.)
+    const reach = (0.55 * Dl * LENS_TAN * Math.min(1, aspect())) / Math.max(1, toG);
+    const g = L.touch >= 0 ? 0.65 * (1 - ss(0, 1.2, ts)) : Math.min(reach, 0.65 * ss(2.2 * Dl, 0.6 * Dl, toG));
     A[0] = lerp(H[0], tr.to[0], g);
     A[1] = lerp(H[1], tr.to[1] + mid, g);
     A[2] = lerp(H[2], tr.to[2], g);

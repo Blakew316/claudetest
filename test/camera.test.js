@@ -52,9 +52,11 @@ function median(a) {
   return b[Math.floor(b.length / 2)];
 }
 
-for (const [W, H] of [
-  [1080, 1350],
-  [1440, 900],
+// Portrait (the default), landscape, and a phone held upright (where the shots pull back a little).
+for (const [W, H, least] of [
+  [1080, 1350, 0.4],
+  [1440, 900, 0.4],
+  [390, 844, 0.3],
 ]) {
   describe(`hero camera at ${W}x${H}`, () => {
     const d = createDirector(analysis, world, () => ({ width: W, height: H }), seed);
@@ -80,9 +82,9 @@ for (const [W, H] of [
       prev = v.eye;
     }
 
-    test('he fills about half the view height while he reads', () => {
+    test('he fills about half the view height while he reads (a little less on a phone)', () => {
       const m = median(reading);
-      assert.ok(m > 0.4 && m < 0.6, `median share ${m.toFixed(2)}`);
+      assert.ok(m > least && m < 0.6, `median share ${m.toFixed(2)}`);
     });
 
     test('he is always in frame', () => {
