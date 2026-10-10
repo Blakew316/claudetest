@@ -37,7 +37,6 @@ import { createIronMan } from './ironman.js';
 const AVATAR = 'ironman';
 
 export const FOV = 50;
-const MSAA = 4; // samples for the scene's buffers on a 1x screen (edges of the suit's plates and the stars)
 // Star sprites are sized in reference pixels: pixels of a 900px-tall frame. One
 // is uScale / REF_SCALE device pixels, so a star keeps its share of the frame
 // (and the field its density and brightness) on any window or screen.
@@ -53,6 +52,7 @@ const LR = 1.18; // leg thickness: eight sturdy legs
 const LEG_SEGS = 9; // coxa, femur (two, bowed), patella, tibia, metatarsus, tarsus, two claws
 const LIMBS = LEG_COUNT * LEG_SEGS + 1 + 4 + 6 + 6; // legs, pedicel, chelicerae (base + fang), palps, spinnerets
 const JOINTS = LEG_COUNT * 6;
+const MSAA = 4; // samples for the scene's buffers on a 1x screen (edges of the suit's plates and the stars)
 
 const add = (a, b, s = 1) => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
 const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
