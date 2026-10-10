@@ -698,6 +698,7 @@ export function createIronMan(renderer) {
     // speed and curve: as drawn it is a step late getting under way.)
     tk.vL.fromArray(spider.launchV);
     tk.aL.fromArray(spider.launchA);
+    carriedTk.set = false;
     tk.p0.fromArray(spider.p);
     tk.off.copy(group.position).addScaledVector(tk.v, dt).sub(tk.p0);
     tk.offV.copy(tk.v).sub(tk.vL);
@@ -1810,19 +1811,22 @@ export function createIronMan(renderer) {
    * kick in its speed (the crawler launching into a leap, or striking the ground) is taken over a
    * few hundredths of a second, as a body's mass takes it, rather than in one frame.
    */
-  const carried = { last: new THREE.Vector3(), v: [spring(CARRY_W), spring(CARRY_W), spring(CARRY_W)], x: [spring(CARRY_W), spring(CARRY_W), spring(CARRY_W)], set: false };
-  function carry(pos, dt, jumped) {
-    const fresh = !carried.set || jumped || dt <= 0 || dt > 0.3;
-    carried.set = true;
+  const carrier = () => ({ last: new THREE.Vector3(), v: [spring(CARRY_W), spring(CARRY_W), spring(CARRY_W)], x: [spring(CARRY_W), spring(CARRY_W), spring(CARRY_W)], set: false });
+  const carried = carrier();
+  const carriedTk = carrier(); // (the flight path as he takes off, started at the launch's speed)
+  function carry(pos, dt, jumped, cs = carried, v0 = null) {
+    const fresh = !cs.set || jumped || dt <= 0 || dt > 0.3;
+    cs.set = true;
     for (let k = 0; k < 3; k++) {
       const c = pos.getComponent(k);
-      const x = carried.x[k];
-      const w = carried.v[k];
+      const x = cs.x[k];
+      const w = cs.v[k];
       if (fresh) {
         x.x = c;
-        x.v = w.x = w.v = 0;
-      } else pos.setComponent(k, x.track(c, w.to((c - carried.last.getComponent(k)) / dt, dt), dt));
-      carried.last.setComponent(k, c);
+        x.v = w.x = v0 ? v0.getComponent(k) : 0;
+        w.v = 0;
+      } else pos.setComponent(k, x.track(c, w.to((c - cs.last.getComponent(k)) / dt, dt), dt));
+      cs.last.setComponent(k, c);
     }
     return pos;
   }
@@ -2290,6 +2294,7 @@ export function createIronMan(renderer) {
         tk.dpT = t;
       }
       c3.fromArray(spider.p).addScaledVector(tk.dp, 1 - smooth(tk.dpT, tk.dpT + 0.5, t));
+      carry(c3, sdt, jumped, carriedTk, tk.vL); // (as drawn between the crawler's steps its speed jumps a little at each: taken as a body's mass takes it)
       a3.copy(c3).addScaledVector(tk.off, 1 - smooth(0, tk.T, t)).addScaledVector(tk.offV, t * Math.exp(-TAKEOFF_W * t));
     }
     group.position.copy(a3);
