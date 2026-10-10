@@ -275,6 +275,7 @@ const FIST_DROP = 0.5; // ... and the fist's shoulder dropped and brought forwar
 const FIST_REACH = 0.97; // the fist's arm this straight (share of its reach)
 const FIST_H = 0.2; // its wrist this high over the ground the curled fingers are on (mesh units)
 const BLOW = 0.03; // seconds over which a blow (a blast's kick) is delivered
+const LAND_BLOW = 0.1; // ... and the landing's, taken by the knees over this long (in a frame it jolted his whole body)
 const AIM_W = 13; // how quickly an arm sweeps onto a new word (rad/s, critically damped: ~0.3 s)
 const AIM_GAP = 0.8; // ... chasing a point at most this far (rad) ahead of where it points: a brisk swing, not a whip
 const AIM_UP = 0.87; // ... and never higher than this over the horizontal (rad): the trunk leans back to what is higher
@@ -374,7 +375,7 @@ function springStep(s, target, w, zeta, dt) {
  * A critically damped (or lightly underdamped) spring toward a target, for every
  * eased value; after a jump in time (a seek) it lands on its target.
  */
-function spring(w = 12, zeta = 1) {
+function spring(w = 12, zeta = 1, blow = BLOW) {
   const s = { x: 0, v: 0, w, imp: 0 };
   s.to = (target, dt) => {
     if (dt > 0.3) {
@@ -386,7 +387,7 @@ function spring(w = 12, zeta = 1) {
     if (dt <= 0) return s.x;
     // A blow lands over a few milliseconds (as a real one does), not in one frame.
     if (s.imp) {
-      const k = 1 - Math.exp(-dt / BLOW);
+      const k = 1 - Math.exp(-dt / blow);
       s.v += s.imp * k;
       s.imp -= s.imp * k;
       if (Math.abs(s.imp) < 1e-6) s.imp = 0;
@@ -589,7 +590,7 @@ export function createIronMan(renderer) {
   };
   const ez = {
     walk: spring(5), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), att: spring(9), hover: spring(6),
-    speed: spring(6), active: spring(6), pelvisY: spring(PELVIS_W), sway: spring(9, 0.9), land: spring(9, 0.55),
+    speed: spring(6), active: spring(6), pelvisY: spring(PELVIS_W), sway: spring(9, 0.9), land: spring(9, 0.55, LAND_BLOW),
     hips: spring(5, 0.9), twist: spring(7, 0.9), lookY: spring(8, 0.9), lookP: spring(8, 0.9),
     shift: spring(1.6, 0.9), brace: spring(4, 0.9), wide: spring(4, 0.9), lean: spring(5, 0.9),
     arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(7, 0.75), R: spring(7, 0.75) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
