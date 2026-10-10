@@ -22,15 +22,12 @@
  */
 
 import * as THREE from 'three';
-import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
-import OBJ from '../../assets/ironman/hero_ironman01.obj';
-import TEX_BODY from '../../assets/ironman/hero_ironman01_S04.png';
-import TEX_PACK from '../../assets/ironman/hero_ironman01_S04_wp4.png';
-import { createSuit } from './suit.js';
 import { createRepulsors } from './repulsor.js';
+import { JOINT, POSE, MODEL_HEIGHT, loadModel } from './ironman-model.js';
 
 const HEIGHT = 46; // world units: he reads at the distances the camera keeps from the crawler
-const K = HEIGHT / 2.02; // world units per mesh unit (the mesh stands 2.02 tall, feet at y = 0)
+const K = HEIGHT / MODEL_HEIGHT; // world units per model unit (feet at y = 0)
+const U = HEIGHT / 2.02; // a body-proportional unit for the gait's distances (step sizes, thresholds, sway)
 const FLY_SCALE = 1.9; // drawn this much larger in flight, so a leap reads at the camera's distance
 const UP = new THREE.Vector3(0, 1, 0);
 
@@ -39,21 +36,21 @@ const UP = new THREE.Vector3(0, 1, 0);
  * the A-pose: joint centres from the mesh's own cross-sections.
  */
 const J = {
-  pelvis: [0, 0.87, 0.07],
-  spine: [0, 1.15, 0.06],
-  chest: [0, 1.4, 0.06],
-  neck: [0, 1.725, 0],
-  crown: [0, 1.985, 0.08],
-  shoulder: [0.26, 1.535, 0.02],
-  elbow: [0.413, 1.286, 0.04],
-  wrist: [0.559, 1.062, 0.1],
-  palm: [0.618, 0.979, 0.124],
-  fingers: [0.66, 0.9, 0.12],
-  hip: [0.14, 0.86, 0.06],
-  knee: [0.14, 0.46, 0.0],
-  ankle: [0.175, 0.11, 0.02],
-  toe: [0.173, 0.02, 0.22],
-  sole: [0.174, 0.013, 0.067],
+  pelvis: JOINT['DEF-spine'],
+  spine: JOINT['DEF-spine002'],
+  chest: JOINT['DEF-spine003'],
+  neck: JOINT['DEF-spine005'],
+  crown: [0, MODEL_HEIGHT, 0.1],
+  shoulder: JOINT['DEF-upper_armL'],
+  elbow: JOINT['DEF-forearmL'],
+  wrist: JOINT['DEF-handL'],
+  palm: JOINT['DEF-palm02L'].map((x, i) => (x + JOINT['DEF-f_middle01L'][i]) / 2),
+  fingers: JOINT['DEF-f_middle03L'],
+  hip: JOINT['DEF-thighL'],
+  knee: JOINT['DEF-shinL'],
+  ankle: JOINT['DEF-footL'],
+  toe: JOINT['DEF-toeL'],
+  sole: [JOINT['DEF-footL'][0], 0, 0.1],
 };
 const side = (p, s) => [p[0] * s, p[1], p[2]];
 const V = (a) => new THREE.Vector3(a[0], a[1], a[2]);
@@ -62,6 +59,8 @@ const L2 = V(J.ankle).distanceTo(V(J.knee)); // shin
 const ANKLE_H = J.ankle[1] - J.sole[1]; // ankle above the sole
 const HIP_DROP = J.pelvis[1] - J.hip[1]; // pelvis above the hip joints
 const HIP_W = J.hip[0]; // hip joint off the midline
+// The model's bind pose holds the arms out and a little down (a T-pose): how far below level.
+const ARM_DROP = Math.atan2(J.shoulder[1] - J.wrist[1], J.wrist[0] - J.shoulder[0]);
 
 const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
 const smooth = (a, b, x) => {
@@ -92,18 +91,6 @@ function spring(w = 12, zeta = 1) {
     return s.x;
   };
   return s;
-}
-
-/** Squared distance from p to segment ab. */
-function segDist2(p, a, b) {
-  const abx = b[0] - a[0];
-  const aby = b[1] - a[1];
-  const abz = b[2] - a[2];
-  const t = clamp(((p[0] - a[0]) * abx + (p[1] - a[1]) * aby + (p[2] - a[2]) * abz) / (abx * abx + aby * aby + abz * abz), 0, 1);
-  const dx = p[0] - a[0] - abx * t;
-  const dy = p[1] - a[1] - aby * t;
-  const dz = p[2] - a[2] - abz * t;
-  return dx * dx + dy * dy + dz * dz;
 }
 
 /** Bones (rest pose: no rotation, so every bone's axes are the mesh's) and their skinning segments. */
@@ -148,49 +135,6 @@ function buildSkeleton() {
 }
 
 /**
- * Skin weights: each vertex follows its nearest bones (inverse distance, the
- * three strongest), gated by anatomy so a hip never pulls the belly and an
- * arm never pulls the ribs: legs only below the waist, arms only outside the
- * torso, each limb only on its own side.
- */
-function skin(geo, segs) {
-  const pos = geo.attributes.position;
-  const n = pos.count;
-  const idx = new Uint16Array(n * 4);
-  const wts = new Float32Array(n * 4);
-  const p = [0, 0, 0];
-  const w = new Float64Array(segs.length);
-  for (let i = 0; i < n; i++) {
-    p[0] = pos.getX(i);
-    p[1] = pos.getY(i);
-    p[2] = pos.getZ(i);
-    const ax = Math.abs(p[0]);
-    const armGate = smooth(0.2, 0.27, ax);
-    const legGate = smooth(0.96, 0.8, p[1]) * smooth(0.36, 0.28, ax);
-    for (let b = 0; b < segs.length; b++) {
-      const [a, e, kind, s] = segs[b];
-      let gate = 1;
-      if (kind === 'arm') gate = (s * p[0] > 0 ? 1 : 0) * armGate;
-      else if (kind === 'leg') gate = (s * p[0] > -0.01 ? 1 : 0) * legGate;
-      else gate = 1 - 0.85 * smooth(0.27, 0.34, ax) * smooth(1.4, 1.2, p[1]); // the torso lets go of the arms below the shoulder
-      w[b] = gate / (segDist2(p, a, e) + 1e-4) ** 3;
-    }
-    for (let k = 0; k < 3; k++) {
-      let best = -1;
-      for (let b = 0; b < segs.length; b++) if (w[b] > 0 && (best < 0 || w[b] > w[best])) best = b;
-      if (best < 0) break;
-      idx[i * 4 + k] = best;
-      wts[i * 4 + k] = w[best];
-      w[best] = 0;
-    }
-    const sum = wts[i * 4] + wts[i * 4 + 1] + wts[i * 4 + 2] || 1;
-    for (let k = 0; k < 3; k++) wts[i * 4 + k] /= sum;
-  }
-  geo.setAttribute('skinIndex', new THREE.Uint16BufferAttribute(idx, 4));
-  geo.setAttribute('skinWeight', new THREE.Float32BufferAttribute(wts, 4));
-}
-
-/**
  * @param {THREE.WebGLRenderer} renderer for the suit's reflections
  * @returns {{group: THREE.Group, fx: THREE.Group, update: Function, chest: Function, up: Function}}
  */
@@ -201,47 +145,36 @@ export function createIronMan(renderer) {
   const repulsors = createRepulsors();
   const fx = repulsors.group; // world-space effects: rays, flares, sparks
 
-  const suitOf = createSuit(renderer);
-  const suit = (url, sideMode) => suitOf.material(url, sideMode);
-
-  const parts = {};
-  new OBJLoader().parse(OBJ).traverse((o) => {
-    if (o.isMesh) parts[['wp2', 'wp4', 'wp5'].find((k) => o.name.includes(k)) || 'body'] = o.geometry;
-  });
+  // The rig the animation drives (16 bones at the model's joints, rest pose unrotated), and the
+  // model's own 74 deform bones, which follow it each frame (see drive()). Both live in model space.
   const sk = buildSkeleton();
-  parts.body = suitOf.refine(parts.body);
-  skin(parts.body, sk.segs);
-  const mesh = new THREE.SkinnedMesh(parts.body, suit(TEX_BODY, THREE.FrontSide));
-  mesh.add(sk.root);
-  mesh.updateMatrixWorld(true);
-  mesh.bind(new THREE.Skeleton(sk.bones));
-  mesh.frustumCulled = false;
-  const rig = new THREE.Group(); // mesh units, pivoted at the pelvis
+  const rig = new THREE.Group(); // model units, pivoted at the pelvis
   rig.scale.setScalar(K);
   rig.position.y = -J.pelvis[1] * K;
-  rig.add(mesh);
+  const holder = new THREE.Object3D();
+  holder.add(sk.root);
+  rig.add(holder);
   body.add(rig);
-  // The nanotech back thrusters (from the game's flight effect): formed out of the suit for flight.
-  const packGeo = parts.wp4.clone();
-  packGeo.translate(-J.chest[0], -J.chest[1], -J.chest[2]);
-  const pack = new THREE.Mesh(packGeo, suit(TEX_PACK, THREE.DoubleSide));
-  pack.scale.setScalar(1e-3);
-  sk.chest.add(pack);
+  let model = null;
+  loadModel(renderer, (m) => {
+    rig.add(m.scene);
+    model = rigModel(m);
+  });
   const pelvisY0 = sk.root.position.y;
 
   // Lights for the suit: a soft sky fill, a warm key from over the camera's shoulder, a cool rim.
   const hemi = new THREE.HemisphereLight(0xc8d8ff, 0x1a1020, 1.7);
   const key = new THREE.DirectionalLight(0xfff1e0, 4.2);
   const rim = new THREE.DirectionalLight(0x7fb0ff, 3.2);
-  const repulsorLight = new THREE.PointLight(0x9fdcff, 0, 60 * K / 22, 2); // the repulsors light up his own armour
+  const repulsorLight = new THREE.PointLight(0x9fdcff, 0, 60 * U / 22, 2); // the repulsors light up his own armour
   key.target = body;
   rim.target = body;
   group.add(hemi, key, rim, repulsorLight);
 
   // State.
-  const st = { phase: 0, feet: null, lastFoot: 'R', landAt: -9, grounded: true, time: 0 };
+  const st = { phase: 0, feet: null, lastFoot: 'R', landAt: -9, grounded: true, time: 0, landedAt: -9, leapt: false };
   const ez = {
-    walk: spring(7), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), pack: spring(7, 0.6), scale: spring(6),
+    walk: spring(7), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), scale: spring(6), hover: spring(6),
     pelvisY: spring(16, 0.85), sway: spring(10), yawP: spring(12), roll: spring(12),
     twist: spring(9, 0.9), lookY: spring(10, 0.9), lookP: spring(10, 0.9),
     arm: { L: spring(9, 0.55), R: spring(9, 0.55) }, aim: { L: spring(11, 0.85), R: spring(11, 0.85) },
@@ -274,12 +207,132 @@ export function createIronMan(renderer) {
     return a.normalize();
   };
 
+  /* ---------------- the model, driven by the rig ---------------- */
+
+  const PQ = new Map(); // rig bone -> its orientation in model space (the rig's rest pose is unrotated)
+  const curl = new THREE.Quaternion();
+  const XAX = new THREE.Vector3(1, 0, 0);
+  const pelvisRest = V(J.pelvis);
+
+  /** Map the model's deform bones onto the rig's, with their rest orientations in model space. */
+  function rigModel(m) {
+    const drv = {};
+    const set = (bone, names) => names.forEach((nm) => (drv[nm] = bone));
+    set(sk.root, ['DEF-spine', 'DEF-pelvisL', 'DEF-pelvisR']);
+    set(sk.spine, ['DEF-spine001', 'DEF-spine002']);
+    set(sk.chest, ['DEF-spine003', 'DEF-spine004', 'DEF-breastL', 'DEF-breastR', 'DEF-shoulderL', 'DEF-shoulderR']);
+    set(sk.neck, ['DEF-spine005', 'DEF-spine006']);
+    for (const n of ['L', 'R']) {
+      const g = sk.limbs[n];
+      set(g.sh, [`DEF-upper_arm${n}`, `DEF-upper_arm${n}001`]);
+      set(g.el, [`DEF-forearm${n}`, `DEF-forearm${n}001`]);
+      set(g.hip, [`DEF-thigh${n}`, `DEF-thigh${n}001`]);
+      set(g.knee, [`DEF-shin${n}`, `DEF-shin${n}001`]);
+      set(g.ankle, [`DEF-foot${n}`, `DEF-toe${n}`]);
+    }
+    const root = m.bones['DEF-spine'];
+    const order = [];
+    const byBone = new Map();
+    root.traverse((b) => {
+      if (!b.isBone) return;
+      const parent = b === root ? null : byBone.get(b.parent);
+      const restQ = (parent ? parent.restQ.clone() : new THREE.Quaternion()).multiply(b.quaternion);
+      const side = b.name.endsWith('L') ? 'L' : 'R';
+      // Hands, palms and fingers follow the wrist of their side.
+      const e = { bone: b, name: b.name, parent, restQ, q: new THREE.Quaternion(), drv: drv[b.name] || sk.limbs[side].wr, side, hand: /^DEF-(hand|palm|f_|thumb)/.test(b.name) };
+      e.finger = /^DEF-(f_|thumb)/.test(b.name);
+      e.thumb = b.name.startsWith('DEF-thumb');
+      e.joint = Number((b.name.match(/(\d\d)[LR]$/) || [0, '01'])[1]);
+      byBone.set(b, e);
+      order.push(e);
+    });
+    // The right hand mirrors the left: find the reflection of local rotations that maps one onto the other at rest.
+    const flips = [[1, -1, -1], [-1, 1, 1], [-1, -1, 1], [1, 1, -1], [-1, 1, -1], [1, -1, 1]];
+    let best = null;
+    let bestErr = Infinity;
+    for (const f of flips) {
+      let err = 0;
+      for (const e of order) {
+        if (!e.hand || e.side !== 'L') continue;
+        const r = m.bones[e.name.slice(0, -1) + 'R'];
+        if (!r) continue;
+        const ql = e.bone.quaternion;
+        err += 1 - Math.abs(ql.x * f[0] * r.quaternion.x + ql.y * f[1] * r.quaternion.y + ql.z * f[2] * r.quaternion.z + ql.w * r.quaternion.w);
+      }
+      if (err < bestErr) {
+        bestErr = err;
+        best = f;
+      }
+    }
+    return { m, order, root, rootRest: root.position.clone(), flip: best };
+  }
+
+  /** The rig's orientation of each bone in model space. */
+  function rigQuats() {
+    sk.root.traverse((b) => {
+      let q4 = PQ.get(b);
+      if (!q4) PQ.set(b, (q4 = new THREE.Quaternion()));
+      if (b === sk.root) q4.copy(b.quaternion);
+      else q4.copy(PQ.get(b.parent)).multiply(b.quaternion);
+    });
+  }
+
+  /**
+   * Pose the model: each deform bone turned in model space as its rig bone has turned
+   * from rest, the pelvis carried as the rig's is; the hands relaxed (fingers softly
+   * curled) or opened palm-out to fire (the artist's repulsor hand); the artist's hover
+   * pose off the web and, for a moment on touching down, the superhero landing.
+   */
+  function drive(md, o) {
+    rigQuats();
+    for (const e of md.order) {
+      e.q.copy(PQ.get(e.drv)).multiply(e.restQ);
+      if (e.parent) e.bone.quaternion.copy(e.parent.q).invert().multiply(e.q);
+      else e.bone.quaternion.copy(e.q);
+    }
+    md.root.position.copy(md.rootRest).add(a3.copy(sk.root.position).sub(pelvisRest));
+    // Relaxed hands: fingers curled a little more at each joint, the thumb less; open in flight.
+    for (const e of md.order) {
+      if (!e.finger) continue;
+      const c = (e.thumb ? 0.12 : [0, 0.32, 0.42, 0.3][e.joint] || 0.3) * (1 - 0.6 * o.fly);
+      e.bone.quaternion.multiply(curl.setFromAxisAngle(XAX, c));
+    }
+    const blend = (pose, w, keep = null, mirror = false) => {
+      if (w <= 1e-3) return;
+      for (const e of md.order) {
+        if (keep && !keep(e)) continue;
+        const v = pose[mirror ? e.name.slice(0, -1) + 'L' : e.name];
+        if (!v) continue;
+        const f = mirror ? md.flip : [1, 1, 1];
+        q2.set(v[0] * f[0], v[1] * f[1], v[2] * f[2], v[3]);
+        e.bone.quaternion.slerp(q2, w);
+        if (e.bone === md.root) e.bone.position.lerp(a3.set(v[4], v[5], v[6]), w);
+      }
+    };
+    // Firing: the artist's repulsor hand (the left in the pose; mirrored for the right).
+    for (const n of ['L', 'R']) blend(POSE['Fire Pose'], clamp(o.aim[n].x, 0, 1), (e) => e.hand && e.side === n, n === 'R');
+    blend(POSE['Fly Pose'], 0.9 * o.hover);
+    const t = o.land;
+    blend(POSE['Landing Pose'], smooth(0, 0.12, t) * (1 - smooth(0.45, 1.1, t)));
+  }
+
+  /** Centre of a palm, just off its face (world): where the repulsor fires from. */
+  function palmOf(md, n) {
+    const b = md.m.bones;
+    const hand = b[`DEF-hand${n}`].getWorldPosition(new THREE.Vector3());
+    const mid = b[`DEF-f_middle01${n}`].getWorldPosition(new THREE.Vector3());
+    const across = b[`DEF-f_index01${n}`].getWorldPosition(new THREE.Vector3()).sub(b[`DEF-f_pinky01${n}`].getWorldPosition(new THREE.Vector3()));
+    const along = mid.clone().sub(hand);
+    const face = along.clone().cross(across).normalize().multiplyScalar(n === 'L' ? 1 : -1);
+    return b[`DEF-palm02${n}`].getWorldPosition(new THREE.Vector3()).add(mid).multiplyScalar(0.5).addScaledVector(face, 0.3 * along.length());
+  }
+
   /* ---------------- feet: planner and IK ---------------- */
 
   /** Where a foot would like to stand now (sole, world), given the body's place, heading and speed. */
   function footHome(n, out, pelvis, ground, lead) {
     const s = n === 'L' ? 1 : -1;
-    out.copy(pelvis).addScaledVector(leftV, s * (HIP_W + 0.02) * K).addScaledVector(v, lead);
+    out.copy(pelvis).addScaledVector(leftV, s * (HIP_W * K + 0.02 * U)).addScaledVector(v, lead);
     out.y = ground;
     return out;
   }
@@ -297,17 +350,17 @@ export function createIronMan(renderer) {
       for (const n of ['L', 'R']) {
         const f = feet[n];
         footHome(n, a3, pelvis, ground, lead);
-        const err = Math.hypot(f.pos.x - a3.x, f.pos.z - a3.z) + Math.abs(wrapA(f.yaw - yaw)) * 0.25 * K + Math.abs(f.pos.y - ground) * 0.5;
+        const err = Math.hypot(f.pos.x - a3.x, f.pos.z - a3.z) + Math.abs(wrapA(f.yaw - yaw)) * 0.25 * U + Math.abs(f.pos.y - ground) * 0.5;
         const bias = n === st.lastFoot ? 0.6 : 1;
         if (err * bias > worst) {
           worst = err * bias;
           pick = n;
         }
       }
-      const need = speed > 4 ? 0.16 * K : 0.07 * K;
+      const need = speed > 4 ? 0.16 * U : 0.07 * U;
       if (pick && worst > need) {
         const f = feet[pick];
-        f.swing = { u: 0, dur: speed > 4 ? stepDur : 0.34, from: f.pos.clone(), fromYaw: f.yaw, lift: (0.07 + 0.06 * Math.min(1, speed / 26)) * K, target: new THREE.Vector3() };
+        f.swing = { u: 0, dur: speed > 4 ? stepDur : 0.34, from: f.pos.clone(), fromYaw: f.yaw, lift: (0.07 + 0.06 * Math.min(1, speed / 26)) * U, target: new THREE.Vector3() };
         st.lastFoot = pick;
       }
     }
@@ -318,7 +371,7 @@ export function createIronMan(renderer) {
         // Planted: the heel peels up as the body passes well ahead of it (pushing off the toe).
         b3.copy(f.pos).sub(pelvis);
         const behind = -(b3.x * heading.x + b3.z * heading.z);
-        f.roll = 0.55 * smooth(0.12 * K, 0.38 * K, behind);
+        f.roll = 0.55 * smooth(0.12 * U, 0.38 * U, behind);
         continue;
       }
       sw.u = Math.min(1, sw.u + dt / sw.dur);
@@ -341,7 +394,7 @@ export function createIronMan(renderer) {
   /** Two-bone IK for one leg, the knee toward his front; the foot laid at its yaw and roll. */
   function solveLeg(g, f, rootQ) {
     // Ankle target: above the sole, raised further by the heel peeling up.
-    a3.copy(f.pos).addScaledVector(UP, ANKLE_H * K + Math.max(0, f.roll) * 0.16 * K);
+    a3.copy(f.pos).addScaledVector(UP, ANKLE_H * K + Math.max(0, f.roll) * 0.16 * U);
     a3.applyMatrix4(inv); // into the pelvis bone's frame (mesh units)
     const t = a3.sub(g.hip.position);
     const reach = L1 + L2;
@@ -403,13 +456,18 @@ export function createIronMan(renderer) {
     const walk = ez.walk.to((1 - g) * Math.min(1, across / 26), sdt);
 
     // Feet: (re)planted where they stand when he comes down, or on a jump in time.
-    if (!st.feet || Math.hypot(st.feet.L.pos.x - spider.p[0], st.feet.L.pos.z - spider.p[2]) > 3 * K) {
+    if (!st.feet || Math.hypot(st.feet.L.pos.x - spider.p[0], st.feet.L.pos.z - spider.p[2]) > 3 * U) {
       st.feet = {};
       for (const n of ['L', 'R']) st.feet[n] = { pos: footHome(n, new THREE.Vector3(), a3.set(spider.p[0], gy, spider.p[2]), gy, 0), yaw, roll: 0, swing: null };
     }
-    if (st.grounded && g > 0.6) st.grounded = false;
+    if (st.grounded && g > 0.6) {
+      st.grounded = false;
+      st.leapt = false;
+    }
+    if (fly > 0.5) st.leapt = true;
     if (!st.grounded && g < 0.35) {
       st.grounded = true;
+      if (st.leapt) st.landedAt = st.time;
       for (const n of ['L', 'R']) {
         sk.limbs[n].sole.getWorldPosition(b3);
         Object.assign(st.feet[n], { pos: b3.clone().setY(gy), yaw, roll: 0, swing: null });
@@ -435,10 +493,10 @@ export function createIronMan(renderer) {
       const reachY = Math.sqrt(Math.max(0, legL * legL - hx * hx - hz * hz));
       top = Math.min(top, f.pos.y - gy + ANKLE_H * K + reachY + HIP_DROP * K);
     }
-    const stand = (J.pelvis[1] - 0.035) * K;
+    const stand = J.pelvis[1] * K - 0.035 * U;
     if (ez.pelvisY.x === 0) ez.pelvisY.x = stand;
-    const pelvisH = ez.pelvisY.to(Math.min(stand, top) - 0.3 * K * clamp(crouch, 0, 1), sdt);
-    const sway = ez.sway.to(-swingSide * 0.022 * K * walk, sdt);
+    const pelvisH = ez.pelvisY.to(Math.min(stand, top) - 0.3 * U * clamp(crouch, 0, 1), sdt);
+    const sway = ez.sway.to(-swingSide * 0.022 * U * walk, sdt);
     const onGround = b3.set(spider.p[0], gy + pelvisH + Math.min(0, spider.jolt || 0) * 3, spider.p[2]).addScaledVector(leftV, sway);
     group.position.set(onGround.x + (spider.b[0] - onGround.x) * g, onGround.y + (spider.b[1] - onGround.y) * g, onGround.z + (spider.b[2] - onGround.z) * g);
 
@@ -461,7 +519,7 @@ export function createIronMan(renderer) {
 
     // Pelvis bone: twist toward the leading leg, the swing hip dropping; the chest counters.
     a3.copy(st.feet.L.pos).sub(st.feet.R.pos);
-    const lead = clamp((a3.x * heading.x + a3.z * heading.z) / (0.35 * K), -1, 1); // + when the left foot is ahead
+    const lead = clamp((a3.x * heading.x + a3.z * heading.z) / (0.35 * U), -1, 1); // + when the left foot is ahead
     const pelvisYaw = ez.yawP.to(-0.13 * lead * walk * (1 - g), sdt);
     const pelvisRoll = ez.roll.to(swingSide * 0.06 * walk * (1 - g), sdt);
     sk.root.position.y = pelvisY0;
@@ -530,7 +588,7 @@ export function createIronMan(renderer) {
       const gA = sk.limbs[n];
       const otherLead = n === 'L' ? -lead : lead; // the opposite foot leads this arm forward
       const swing = ez.arm[n].to(-0.4 * otherLead * walk, sdt);
-      const adduct = -gA.s * (0.42 * (1 - fly) + 0.6 * fly);
+      const adduct = -gA.s * ((1.41 - ARM_DROP) * (1 - fly) + (2.02 - ARM_DROP) * fly); // from the bind pose down to the sides
       gA.sh.rotation.set(swing * (1 - fly) + 0.45 * cr * (1 - fly) + 0.3 * fly, 0, adduct);
       gA.el.rotation.set(-(0.28 + 0.3 * Math.max(0, -swing)) * (1 - fly), 0, 0);
       gA.wr.rotation.set(0.9 * fly, 0, 0);
@@ -549,10 +607,9 @@ export function createIronMan(renderer) {
       }
     }
 
-    // The back thrusters form out of the suit for flight and fold away on landing.
-    const ps = clamp(ez.pack.to(fly > 0.3 ? 1 : 0, sdt), 0, 1.2) * 0.6;
-    pack.scale.setScalar(Math.max(1e-3, ps));
-    pack.visible = ps > 0.01;
+    // The model follows the rig, then the artist's poses blend in.
+    const hover = clamp(ez.hover.to(air * (1 - clamp(fly * 3, 0, 1)), sdt), 0, 1);
+    if (model) drive(model, { hover, land: st.time - st.landedAt, aim: ez.aim, fly, walk });
     group.updateMatrixWorld(true);
 
     // Key over the camera's shoulder, rim from behind him.
@@ -568,9 +625,9 @@ export function createIronMan(renderer) {
       time: spider.time,
       camera,
       halfH,
-      unit: K / 22.8,
+      unit: U / 22.8,
       scale,
-      palms: { L: L.L.palm.getWorldPosition(new THREE.Vector3()), R: L.R.palm.getWorldPosition(new THREE.Vector3()) },
+      palms: model ? { L: palmOf(model, 'L'), R: palmOf(model, 'R') } : { L: L.L.palm.getWorldPosition(new THREE.Vector3()), R: L.R.palm.getWorldPosition(new THREE.Vector3()) },
       soles: [L.L.sole.getWorldPosition(new THREE.Vector3()), L.R.sole.getWorldPosition(new THREE.Vector3())],
       head,
       vel: v,
@@ -582,7 +639,7 @@ export function createIronMan(renderer) {
     // A shot kicks that arm back; the repulsors light up his own armour.
     for (const n of ['L', 'R']) if (out.fired[n]) ez.recoil[n].v += 9 * out.fired[n];
     repulsorLight.intensity = 40 * Math.min(2, out.light);
-    repulsorLight.position.copy(head).multiplyScalar(0.2 * K);
+    repulsorLight.position.copy(head).multiplyScalar(0.2 * U);
   }
 
   return {
@@ -590,7 +647,7 @@ export function createIronMan(renderer) {
     fx,
     update,
     /** Arc reactor, world space. */
-    chest: () => sk.chest.localToWorld(new THREE.Vector3(0, 0.04, 0.19)).toArray(),
+    chest: () => sk.chest.localToWorld(new THREE.Vector3(0, 0.08, 0.3)).toArray(),
     /** Which way his head points, world space. */
     up: () => head.toArray(),
   };
