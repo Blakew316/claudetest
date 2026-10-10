@@ -93,6 +93,18 @@ const ARM_HANG = 0.6; // walking arms hang this much along the world's down rath
 const ARM_OUT = 0.14; // the arms hang this far out from the sides (rad), clear of the suit
 const ARM_PRONATE = 0.3; // ... the palms turned this far from facing the thighs toward the back (rad)
 const ELBOW_REST = 0.33; // a relaxed elbow's bend (rad)
+// Recoil. The hand's kick (spring rad/s, damping) and how far it drives the hand back along the beam
+// (share of the arm's reach), climbs the muzzle and flicks the wrist back (rad), at a kick of 1.
+const RECOIL_W = 22;
+const RECOIL_Z = 0.6;
+const RECOIL_BACK = 0.17;
+const RECOIL_CLIMB = 0.18;
+const RECOIL_FLICK = 0.3;
+// ... and the shoulder girdle and trunk giving under it (spring), the trunk turning and rocking back (rad).
+const KICK_W = 12;
+const KICK_Z = 0.7;
+const KICK_TURN = 0.09;
+const KICK_ROCK = 0.035;
 
 /*
  * The thumb. The model's rest thumb juts out of the palm, which reads as stuck on, so it is posed in the
@@ -457,8 +469,10 @@ export function createIronMan(renderer) {
     arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(9, 0.9), R: spring(9, 0.9) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
     gx: spring(GRADE_W), gz: spring(GRADE_W), gOff: spring(GROUND_W), hV: spring(40), push: spring(8, 0.9), apa: spring(10),
     hurry: spring(10),
-    recoil: { L: spring(28, 0.8), R: spring(28, 0.8) }, // a blast's kick through the arm
-    kick: { L: spring(13, 0.85), R: spring(13, 0.85) }, // ... and its push through the shoulder and torso
+    // A blast's kick through the arm: back along the beam within ~50 ms, a touch past rest on the
+    // way back, settled by ~0.25 s; and its push through the shoulder and torso, a beat later and slower.
+    recoil: { L: spring(RECOIL_W, RECOIL_Z), R: spring(RECOIL_W, RECOIL_Z) },
+    kick: { L: spring(KICK_W, KICK_Z), R: spring(KICK_W, KICK_Z) },
   };
   ez.elbow.L.x = ez.elbow.R.x = ELBOW_REST; // (relaxed from the first frame)
   ez.hurry.x = 1;
@@ -1112,10 +1126,11 @@ export function createIronMan(renderer) {
     if (upv.lengthSq() < 1e-4) upv.copy(heading);
     upv.normalize();
     // Muzzle climb: the blast throws the hand up about the arm's lateral axis.
-    const d = e3.copy(dir).applyAxisAngle(f3.crossVectors(dir, upv).normalize(), 0.2 * rec).normalize();
+    const d = e3.copy(dir).applyAxisAngle(f3.crossVectors(dir, upv).normalize(), RECOIL_CLIMB * rec).normalize();
     perp(upv, d, heading);
-    // Elbow: soft, a little more as the blast drives the hand back.
-    const ext = clamp(0.985 - 0.06 * rec, 0.8, 0.99);
+    // Elbow: soft, folding as the blast drives the hand back along the beam (out in front of him,
+    // never back into the chest).
+    const ext = clamp(0.985 - RECOIL_BACK * rec, 0.8, 0.99);
     const r = ext * (LU + LF);
     const cosA = clamp((LU * LU + r * r - LF * LF) / (2 * LU * r), -1, 1);
     const ang = Math.acos(cosA);
@@ -1135,7 +1150,7 @@ export function createIronMan(renderer) {
     basisQ(qFore, gA.restFore, gA.palmN, d2, nPre);
     aimQ.el.copy(qUpper).invert().multiply(qFore);
     // Hand: palm toward the target, tipped up a little; fingers up and back; the blast bends it back further.
-    const tip = 0.3 + 0.25 * rec;
+    const tip = 0.3 + RECOIL_FLICK * rec;
     a3.copy(d).addScaledVector(upv, tip).normalize(); // palm normal
     b3.copy(upv).addScaledVector(d, -tip).normalize(); // fingers
     basisQ(qHand, gA.palmN, gA.fingers, a3, b3);
@@ -1688,11 +1703,11 @@ export function createIronMan(renderer) {
     const accel = st.acc.dot(heading) / lam;
     const lean = ez.lean.to((0.045 * clamp(walk, 0, 1.2) + 0.35 * clamp(Math.atan(grade), -0.4, 0.6) * (grade > 0 ? 1 : 0.4) + clamp(accel * 0.06, -0.08, 0.1)) * (1 - g), sdt);
     const kickB = ez.kick.L.x + ez.kick.R.x;
-    const kickT = (ez.kick.R.x - ez.kick.L.x) * 0.05; // the firing side's shoulder driven back
+    const kickT = (ez.kick.R.x - ez.kick.L.x) * KICK_TURN; // the firing side's shoulder driven back
     const counter = -1.6 * pelvisYaw * (1 - g);
     const turnUp = -(hips) + twist;
-    sk.spine.rotation.set(0.5 * lean + 0.32 * cr + 0.012 * breath - 0.02 * kickB, 0.45 * (counter + turnUp) + kickT * 0.4, -pelvisRoll * 0.55);
-    sk.chest.rotation.set(0.5 * lean + 0.1 * cr + 0.015 * breath - 0.025 * kickB, 0.55 * (counter + turnUp) + kickT * 0.6, -pelvisRoll * 0.3);
+    sk.spine.rotation.set(0.5 * lean + 0.32 * cr + 0.012 * breath - 0.45 * KICK_ROCK * kickB, 0.45 * (counter + turnUp) + kickT * 0.4, -pelvisRoll * 0.55);
+    sk.chest.rotation.set(0.5 * lean + 0.1 * cr + 0.015 * breath - 0.55 * KICK_ROCK * kickB, 0.55 * (counter + turnUp) + kickT * 0.6, -pelvisRoll * 0.3);
     // Head: cancel what the trunk did under it, then look (85% stabilised, like a real head).
     q.copy(sk.root.quaternion).multiply(sk.spine.quaternion).multiply(sk.chest.quaternion);
     q.slerp(q2.identity(), 0.15).invert();
@@ -1822,8 +1837,10 @@ export function createIronMan(renderer) {
     for (const n of SIDES) {
       const shots = out.fired[n] || 0;
       if (!shots) continue;
-      ez.recoil[n].kick(Math.min(1.2, 0.7 * Math.sqrt(shots)));
-      ez.kick[n].kick(Math.min(1, 0.55 * Math.sqrt(shots)));
+      // (Kicks land on what is left of the last one: a burst drives the hand back a little further,
+      // not without limit.)
+      ez.recoil[n].kick(Math.max(0, Math.min(1, 0.75 * Math.sqrt(shots)) - 0.5 * Math.max(0, ez.recoil[n].x)));
+      ez.kick[n].kick(Math.max(0, Math.min(1, 0.7 * Math.sqrt(shots)) - 0.5 * Math.max(0, ez.kick[n].x)));
     }
     repulsorLight.intensity = 40 * Math.min(2, out.light);
     repulsorLight.position.copy(head).multiplyScalar(0.2 * U);
