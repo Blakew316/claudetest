@@ -47,6 +47,10 @@ const DOWNS = [
 ];
 const DODGES = ['Dodging', 'Dodging (1)'];
 const STRAFES = { L: 'Left Strafe Walking', R: 'Right Strafe Walk' };
+// A heavy blast landing plays in slow motion: time runs at as little as 1 - SLOW_BY, from SLOW[0] s before
+// it lands, back to speed by SLOW[1] s after (fight time).
+const SLOW_BY = 0.7;
+const SLOW = [0.12, 1.0];
 
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const pick = (rand, list) => list[Math.min(list.length - 1, Math.floor(rand() * list.length))];
@@ -64,7 +68,7 @@ function side() {
 
 export function createFight(seed) {
   const rand = fork(seed, 'fight');
-  const state = { on: false, hero: side(), foe: side(), bolts: [] };
+  const state = { on: false, hero: side(), foe: side(), bolts: [], heavy: [] };
   let nextId = -10;
   let nextBeat = 0;
   let lastBy = 'foe';
@@ -152,6 +156,7 @@ export function createFight(seed) {
     const firstFire = t + atk.fire[0].t;
     if (outcome === 'hit') {
       if (heavy) {
+        state.heavy.push(first);
         const [down, up] = pick(rand, DOWNS);
         B.queue = [
           { at: first - 0.02, act: { clip: down, mirror: rand() < 0.5, loop: false, kind: 'react' } },
@@ -247,6 +252,19 @@ export function createFight(seed) {
       }
       if (!winding && t >= nextBeat && !busy(H, t) && !busy(F, t) && F.cur.kind !== 'walk') beat(t, d);
       state.bolts = state.bolts.filter((b) => t < b.tHit + 1.5);
+    },
+    /** How fast time runs at t (1: normal; a heavy blast landing slows it, see SLOW). */
+    timeScale(t) {
+      let k = 0;
+      for (const h of state.heavy) {
+        const u = t - h;
+        if (u < -SLOW[0] || u > SLOW[1]) continue;
+        const rise = u < 0 ? 1 - (u / -SLOW[0]) ** 2 : 1;
+        const fall = u > 0.25 ? 1 - ((u - 0.25) / (SLOW[1] - 0.25)) ** 2 : 1;
+        k = Math.max(k, Math.max(0, rise) * Math.max(0, fall));
+      }
+      if (state.heavy.length > 8) state.heavy.splice(0, state.heavy.length - 8);
+      return 1 - SLOW_BY * k;
     },
     /** Each one's pin for his walker (null while he walks on his own). */
     pin(k) {

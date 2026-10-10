@@ -113,7 +113,7 @@ function render(dt, force = false) {
     camDrawn.cut = c.cut;
     const spider = director.spider.at(k);
     const foe = director.foe ? director.foe.at(k) : null;
-    view3d.render(run, analysis, spider, dt, { camera: camDrawn, t: tPrev + (run.t - tPrev) * k }, foe);
+    view3d.render(run, analysis, spider, dt * (run.timeScale ?? 1), { camera: camDrawn, t: tPrev + (run.t - tPrev) * k }, foe);
     const view = { width: stage.width, height: stage.height, dpr: stage.dpr, project: view3d.project, camDist: camDrawn.dist, spider: spider.p, hero: view3d.silhouette };
     octx.setTransform(1, 0, 0, 1, 0, 0);
     octx.clearRect(0, 0, overlay.width, overlay.height);
@@ -125,7 +125,8 @@ function render(dt, force = false) {
 
 /** Run the simulation on by dt seconds of play. */
 function advance(dt) {
-  acc += dt;
+  // (Slow motion round a heavy blast: the director says how fast its time should run.)
+  acc += dt * (director.run.timeScale ?? 1);
   let guard = 0;
   while (acc >= SIM_DT && guard++ < 40) {
     Object.assign(camPrev, director.run.camera);

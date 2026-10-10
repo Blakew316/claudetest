@@ -2190,6 +2190,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     if (foe) {
       fight.step(run.t, dt, wordsDone());
       run.pin = fight.pin('hero');
+      run.timeScale = fight.timeScale(run.t); // (playback slows round a heavy blast: see main.js)
     }
     spider.update(dt, run);
     if (fight && fight.state.on) fight.at('hero', run.spider.x, run.spider.z, run.spider.heading);
