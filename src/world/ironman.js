@@ -22,19 +22,23 @@
  * with a soft elbow, palm out and fingers back like a real repulsor pose,
  * the off hand held ready; standing, he steps into a braced stance. Each
  * blast drives the hand back along the beam (muzzle climb, wrist flick),
- * then the shoulder and torso give. Leaping, he slows out of his steps onto
- * both feet and winds up (hips down and back, knees and ankles loading, trunk
- * forward, arms swung back), then drives up hips, knees, heels and toes in
- * turn with the arms swinging through, the toes leaving the ground as the
- * knees lock and the jets taking him on from where he left it, timed to the
- * crawler's own launch. Flying: he lifts off upright on his
- * thrusters, pitches into head-first flight (one eased turn: no flips in a
- * dive) with his arms at his sides and his palms back, and swings upright
- * again to brake on his boots before he lands, the front foot reaching for
- * the ground. He lands the superhero way: the jets cut, he drops into a deep
- * kneel (right knee down, right fist driven into the ground, left arm swept
- * back, head bowed), holds it, and rises head first, then the chest, then the
- * legs, and walks on; every contact is placed at touchdown and held.
+ * then the shoulder and torso give. Leaping, he steps round to face his way
+ * (quick steps, pivoting on the ball of the planted foot), lowers into the
+ * last step and winds up (hips down and back no faster than a body drops on
+ * its legs, knees and ankles loading, trunk forward, arms swung back), then
+ * drives up hips, knees, heels and toes in turn with the arms swinging
+ * through, as hard as the flight climbs, the toes leaving the ground as the
+ * knees lock and the jets taking him on from where he left it, moving as he
+ * was, timed to the crawler's own launch. Flying: he lifts off upright on his
+ * thrusters, pitches into head-first flight as it gets under way (one eased
+ * turn: no flips in a dive) with his arms at his sides and his palms back,
+ * and swings upright again to brake on his boots before he lands. He lands
+ * the superhero way, planned a moment before touchdown: the front foot comes
+ * straight down onto its spot, the rear leg folded as it will kneel; the jets
+ * cut, his momentum carries him on into a deep kneel and stops there (right
+ * knee down, right fist driven into the ground, left arm swept back, head
+ * bowed); he holds it, and rises head first, then the chest, then the legs,
+ * and walks on. Every contact is met, not slid onto, and held.
  */
 
 import * as THREE from 'three';
@@ -118,7 +122,10 @@ const RECOIL_FLICK = 0.3;
 const KICK_W = 12;
 const KICK_Z = 0.7;
 const KICK_TURN = 0.09;
-const KICK_ROCK = 0.035;
+const KICK_ROCK = 0.11;
+// ... and the body pushed back along the beams through his legs (leg lengths), the knees giving a little.
+const KICK_PUSH = 0.06;
+const KICK_SINK = 0.02;
 
 /*
  * The thumb. The model's rest thumb juts out of the palm, which reads as stuck on, so it is posed in the
@@ -170,6 +177,7 @@ const HS_ROLL = -0.3; // the foot's pitch at heel strike (toes up)
 const HS_BACK = -HEEL_Z * (1 - Math.cos(HS_ROLL)) - ANKLE_H * Math.sin(HS_ROLL);
 const RISE_MAX = 1.0; // heel rise by toe off (rad)
 const TOE_MAX = 0.9; // the toes bend at most this far while the heel rises
+const ROLL_RATE = 7; // a planted foot rolls up onto its toes (or back on its heel) at most this fast to keep the leg's reach (rad/s)
 // The bind pose's shin leans back: its ankle is this far dorsiflexed (rad). In mid-swing the ankle comes to
 // about neutral (+SWING_DORSI), as the foot's turn on the shin.
 const REST_DORSI = -Math.atan2(J.ankle[2] - J.knee[2], J.knee[1] - J.ankle[1]);
@@ -230,8 +238,8 @@ const LEAVE_W = 28;
  * down upright on his boots and palms, the front (left) foot reaching for the ground; at touchdown he
  * drops into a deep kneel, right knee down, right fist driven into the ground in front of him, left arm
  * swept back and out, head bowed; holds it; then rises head first, then the chest, then the legs, and
- * walks on as the crawler does (LAND_TIME after touchdown). Every contact is placed once, at touchdown,
- * and held: nothing slides.
+ * walks on as the crawler does (LAND_TIME after touchdown). Every contact is placed once, just before
+ * touchdown, and reached for; then held: nothing slides.
  */
 const LAND_RIDE = 0.7; // the crawler lands riding this far above the surface it lands on
 const LAND_G = 0.22; // the flight's pose hands over to the landing's this fast (the jets cut at once)
@@ -264,6 +272,7 @@ const FIST_H = 0.2; // its wrist this high over the ground the curled fingers ar
 const BLOW = 0.03; // seconds over which a blow (a blast's kick) is delivered
 const AIM_W = 13; // how quickly an arm sweeps onto a new word (rad/s, critically damped: ~0.3 s)
 const AIM_GAP = 0.8; // ... chasing a point at most this far (rad) ahead of where it points: a brisk swing, not a whip
+const AIM_UP = 0.87; // ... and never higher than this over the horizontal (rad): the trunk leans back to what is higher
 // The ground estimate (see fitGround): how fast it is drawn to the stars on the ground and in the air,
 // and how fast the slope it carries him along follows theirs (rad/s).
 const GROUND_W = 2.2;
@@ -296,7 +305,7 @@ const ARRIVE = 0.35; // the swinging foot still comes forward at this share of h
 const LIFT_A = 1.1;
 const LIFT_B = 1.35;
 const LIFT_NORM = (LIFT_A / (LIFT_A + LIFT_B)) ** LIFT_A * (LIFT_B / (LIFT_A + LIFT_B)) ** LIFT_B;
-const LIFT_CARRY = 0.12; // the heel's rise at toe off carries on into the swing this far (share of the swing), dying away
+const LIFT_CARRY = 0.08; // the heel's rise at toe off carries on into the swing this far (share of the swing), dying away
 // The stance knee gives this much more as it takes the weight (rad), most at this share of the stance.
 const LOAD_FLEX = 0.24;
 const LOAD_PEAK = 0.22;
@@ -538,6 +547,7 @@ export function createIronMan(renderer) {
     offV: new THREE.Vector3(),
     leaving: false, // taking off: the toes leaving the ground
     piv: 0, // winding up: how far it has turned on its ball since the dip began (rad)
+    rhoDrawn: 0, // its roll as drawn last frame
   });
   const swingState = () => ({ u: 0, v0: 0, v1: 0, vy0: 0, m0: -1, mU: 1, tipOff: 0, a0: new THREE.Vector3(), a1: new THREE.Vector3(), yaw0: 0, rho0: 0, toe0: 0, n0: new THREE.Vector3(), tPos: new THREE.Vector3(), tNrm: new THREE.Vector3(), tYaw: 0, tRho: HS_ROLL, lift: 0, rel0: new THREE.Quaternion() });
   const st = {
@@ -559,6 +569,7 @@ export function createIronMan(renderer) {
     seen: new Map(), // word id -> {t: first seen, p: last reach}
     landDipArmed: false,
     look: { y: 0, p: 0 }, // where the head is headed for, moving at most LOOK_RATE
+    aimHigh: { L: 0, R: 0 }, // how far over AIM_UP each arm's word is (rad, by its aim's weight)
   };
   const ez = {
     walk: spring(5), fly: spring(9), air: spring(9), crouch: spring(10, 0.9), att: spring(9), hover: spring(6),
@@ -566,8 +577,8 @@ export function createIronMan(renderer) {
     hips: spring(5, 0.9), twist: spring(7, 0.9), lookY: spring(12, 0.85), lookP: spring(12, 0.85),
     shift: spring(1.6, 0.9), brace: spring(4, 0.9), wide: spring(4, 0.9), lean: spring(5, 0.9),
     arm: { L: spring(14, 0.7), R: spring(14, 0.7) }, elbow: { L: spring(10, 0.55), R: spring(10, 0.55) }, aim: { L: spring(9, 0.9), R: spring(9, 0.9) }, guard: { L: spring(6, 0.9), R: spring(6, 0.9) },
-    gx: spring(GRADE_W), gz: spring(GRADE_W), gOff: spring(GROUND_W), hV: spring(40), push: spring(8, 0.9), apa: spring(10),
-    hurry: spring(10), elev: spring(7), go: spring(14),
+    gx: spring(GRADE_W), gz: spring(GRADE_W), gOff: spring(GROUND_W), hV: spring(40), pushX: spring(11, 0.9), pushZ: spring(11, 0.9), apa: spring(10),
+    hurry: spring(10), elev: spring(7), go: spring(14), ext: spring(6),
     // A blast's kick through the arm: back along the beam within ~50 ms, a touch past rest on the
     // way back, settled by ~0.25 s; and its push through the shoulder and torso, a beat later and slower.
     recoil: { L: spring(RECOIL_W, RECOIL_Z), R: spring(RECOIL_W, RECOIL_Z) },
@@ -1241,7 +1252,9 @@ export function createIronMan(renderer) {
     const f = st.feet[n];
     const sw = st.swings[n];
     sw.u = 0;
-    sw.a0.copy(f.ankle);
+    // (From where the ankle is drawn: a leg that could not quite reach its planted foot at the last has
+    // already let its toes up.)
+    sk.limbs[n].ankle.getWorldPosition(sw.a0);
     sw.yaw0 = f.yaw;
     sw.rho0 = f.rho;
     sw.toe0 = f.toe;
@@ -1263,7 +1276,7 @@ export function createIronMan(renderer) {
     const lam = LEG * Ks;
     const step = Math.hypot(sw.tPos.x - f.pos.x, sw.tPos.z - f.pos.z) / lam;
     // Clearance: a few centimetres of toe clearance, more for a long stride or a step up.
-    sw.lift = (0.045 + 0.035 * clamp(step / 0.6, 0, 1.3)) * lam + Math.max(0, sw.tPos.y - f.pos.y) * 0.25;
+    sw.lift = (0.03 + 0.025 * clamp(step / 0.6, 0, 1.3)) * lam + Math.max(0, sw.tPos.y - f.pos.y) * 0.2;
   }
 
   function retarget(n, sw, Ks, ctx) {
@@ -1472,13 +1485,14 @@ export function createIronMan(renderer) {
     a3.applyMatrix4(inv); // into the pelvis bone's frame (mesh units)
     const t = a3.sub(g.hip.position);
     const reach = L1 + L2;
-    const soft = 0.9993 * reach;
+    const soft = 0.99 * reach; // (the knee straightens into its lock smoothly, never snapping into it)
     let d = t.length();
     if (d > soft) d = soft + (reach - soft) * (1 - Math.exp(-(d - soft) / (reach - soft)));
     d = Math.max(d, 0.3 * reach);
     const u = t.normalize();
-    // Knee pole: where the foot points (in the pelvis frame), a little outward.
-    b3.set(0, 0, 1).applyQuaternion(f.q);
+    // Knee pole: where the foot points (its heading, not its pitch: a foot up on its toes points nearly
+    // straight down, and what little is left of its way is the pelvis's tilt), a little outward.
+    b3.set(Math.sin(f.yaw), 0, Math.cos(f.yaw));
     if (f.poleW > 0) b3.lerp(f.pole, f.poleW); // (landing, the knees go where the kneel puts them, whatever the feet do)
     b3.applyQuaternion(qInv.copy(rootQ).invert());
     b3.y *= f.poleW; // (a foot's own way is level; a planned one keeps its rise)
@@ -1571,7 +1585,7 @@ export function createIronMan(renderer) {
   const qPar = new THREE.Quaternion();
   const qAim = new THREE.Quaternion();
   const qAim2 = new THREE.Quaternion();
-  function aimPose(gA, dir, rec) {
+  function aimPose(gA, dir, rec, tipUp = 0) {
     const s = gA.s;
     // Up, as the arm sees it: the world's, square to the arm.
     const upv = d3.copy(UP).addScaledVector(dir, -dir.dot(UP));
@@ -1602,7 +1616,7 @@ export function createIronMan(renderer) {
     basisQ(qFore, gA.restFore, gA.palmN, d2, nPre);
     aimQ.el.copy(qUpper).invert().multiply(qFore);
     // Hand: palm toward the target, tipped up a little; fingers up and back; the blast bends it back further.
-    const tip = 0.3 + RECOIL_FLICK * rec;
+    const tip = 0.3 + tipUp + RECOIL_FLICK * rec;
     a3.copy(d).addScaledVector(upv, tip).normalize(); // palm normal
     b3.copy(upv).addScaledVector(d, -tip).normalize(); // fingers
     basisQ(qHand, gA.palmN, gA.fingers, a3, b3);
@@ -2061,8 +2075,17 @@ export function createIronMan(renderer) {
     // Over the stance foot (leading the step a little); at rest, the weight shifts.
     const latAmp = (0.034 - 0.012 * clamp(walk, 0, 1)) * lam * active;
     const sway = ez.sway.to(latAmp * Math.sin(2 * Math.PI * (psi - 0.02)) + shift * 0.045 * lam + apa * APA_SHIFT * lam, sdt);
-    // The blasts push him back a touch: through his legs, so the body gives a beat after the arm.
-    const push = ez.push.to((ez.kick.L.x + ez.kick.R.x) * 0.012 * lam, sdt);
+    // The blasts push him back a touch, away from what he fires at: through his legs, so the body gives a
+    // beat after the arm (and the knees give with it).
+    e3.set(0, 0, 0);
+    for (const n of SIDES) {
+      const d = st.aim[n].dir;
+      const h = Math.hypot(d.x, d.z) || 1;
+      e3.x -= (ez.kick[n].x * d.x) / h;
+      e3.z -= (ez.kick[n].x * d.z) / h;
+    }
+    const pushX = ez.pushX.to(e3.x * KICK_PUSH * lam, sdt);
+    const pushZ = ez.pushZ.to(e3.z * KICK_PUSH * lam, sdt);
 
     // Orientation: upright on the ground (crouching, he folds forward); head-first in flight, pitched
     // over his own left-right axis toward where he is going (forward into level flight, on over into a
@@ -2139,14 +2162,14 @@ export function createIronMan(renderer) {
       landPath(st.time, d3);
       anc.lerp(d3, 1 - LW.rise);
     }
-    const onGround = b3.set(anc.x, st.gy + ez.pelvisY.x, anc.z).addScaledVector(leftV, sway).addScaledVector(heading, -push);
+    const onGround = b3.set(anc.x + pushX, st.gy + ez.pelvisY.x, anc.z + pushZ).addScaledVector(leftV, sway);
     // (Winding up, the hips back; driving off, forward, as far as the flight leaves forward.)
     onGround.addScaledVector(heading, (-CM_BACK * JW.cm * (1 - JW.rise) + DRIVE_FWD * JW.fwd * JW.rise) * lam);
     group.position.copy(onGround);
     group.updateMatrixWorld(true);
     // (Crouching, taking a landing, braced to fire: that much lower than the legs would hold him.)
     const lowerCM = JW.depth * lam * JW.cm * (1 - JW.rise); // (winding up: the dip, out again with the drive)
-    const lower = softPos(dip, 0.05) * 0.16 * lam + 0.015 * lam * softAbs(brace, 0.15) + 0.02 * lam * wide;
+    const lower = softPos(dip, 0.05) * 0.16 * lam + 0.015 * lam * softAbs(brace, 0.15) + 0.02 * lam * wide + KICK_SINK * lam * clamp(Math.hypot(pushX, pushZ) / (KICK_PUSH * lam), 0, 1.5);
     const blendW = (HANDOVER_IDLE + (HANDOVER - HANDOVER_IDLE) * active) * lam;
     let hCon = Infinity;
     for (const n of SIDES) {
@@ -2297,7 +2320,18 @@ export function createIronMan(renderer) {
           f.toe = f.rho > 0 ? Math.min(f.rho, TOE_MAX) : 0;
           poseStance(f, Ks);
         }
+        // A planted foot rolls no faster than a foot does (a leg a little short for a moment takes it, rather
+        // than the heel flicking up or slapping down); the heel strike's pitch is taken as it lands.
+        if (JW.heel <= 0 && dt > 0 && !jumped && st.time - f.landT > 0.5 * dt) {
+          const r = clamp(f.rho, f.rhoDrawn - ROLL_RATE * dt, f.rhoDrawn + ROLL_RATE * dt);
+          if (r !== f.rho) {
+            f.rho = r;
+            f.toe = f.rho > 0 ? Math.min(f.rho, TOE_MAX) : 0;
+            poseStance(f, Ks);
+          }
+        }
       }
+      f.rhoDrawn = f.rho;
       if (g < 0.999 && !ld.on) leaveGround(gL, f, Ks, dt);
       // (Kneeling: the rear leg comes down folded as it kneels, its knee and toes meeting the ground together as the drop ends.)
       if (ld.on && n === 'R') rearRaise(f.raise, ld.drop);
@@ -2371,12 +2405,13 @@ export function createIronMan(renderer) {
     const accel = st.acc.dot(heading) / lam;
     const lean = ez.lean.to((0.045 * clamp(walk, 0, 1.2) + 0.35 * clamp(Math.atan(grade), -0.4, 0.6) * (grade > 0 ? 1 : 0.4) + clamp(accel * 0.06, -0.08, 0.1)) * (1 - g), sdt);
     const kickB = ez.kick.L.x + ez.kick.R.x;
+    const reach = ez.ext.to(clamp(Math.max(st.aimHigh.L, st.aimHigh.R), 0, 0.5) * 0.5, sdt); // (leaning back to a high word)
     const kickT = (ez.kick.R.x - ez.kick.L.x) * KICK_TURN; // the firing side's shoulder driven back
     const counter = -1.6 * pelvisYaw * (1 - g);
     const turnUp = -(hips) + twist;
     const fold = JW.cm * (1 - JW.unfold); // (winding up: forward over his feet, up again with the drive)
-    sk.spine.rotation.set(0.5 * lean + CM_PITCH[1] * fold + 0.012 * breath - 0.45 * KICK_ROCK * kickB, 0.45 * (counter + turnUp) + kickT * 0.4, -pelvisRoll * 0.55);
-    sk.chest.rotation.set(0.5 * lean + CM_PITCH[2] * fold + 0.015 * breath - 0.55 * KICK_ROCK * kickB, 0.55 * (counter + turnUp) + kickT * 0.6, -pelvisRoll * 0.3);
+    sk.spine.rotation.set(0.5 * lean + CM_PITCH[1] * fold + 0.012 * breath - 0.45 * KICK_ROCK * kickB - 0.4 * reach, 0.45 * (counter + turnUp) + kickT * 0.4, -pelvisRoll * 0.55);
+    sk.chest.rotation.set(0.5 * lean + CM_PITCH[2] * fold + 0.015 * breath - 0.55 * KICK_ROCK * kickB - 0.6 * reach, 0.55 * (counter + turnUp) + kickT * 0.6, -pelvisRoll * 0.3);
     if (ld.on) {
       // Landing: folded over the kneel (the pelvis is already), turned and bent toward the fist,
       // breathing hard as he holds it.
@@ -2462,6 +2497,14 @@ export function createIronMan(renderer) {
         const back = a3.dot(heading);
         if (back < -0.45) a3.addScaledVector(heading, -0.45 - back);
         a3.normalize();
+        // Not up over his head (that reads as a wave, not a shot): a high word the arm points up to AIM_UP,
+        // the trunk leaning back and the palm tipping up for the rest.
+        const el = Math.asin(clamp(a3.y, -1, 1));
+        st.aimHigh[n] = Math.max(0, el - AIM_UP) * a;
+        if (el > AIM_UP) {
+          const h = Math.hypot(a3.x, a3.z) || 1e-6;
+          a3.set((a3.x / h) * Math.cos(AIM_UP), Math.sin(AIM_UP), (a3.z / h) * Math.cos(AIM_UP));
+        }
         // Onto a new word the arm sweeps over as a reach does: setting off and arriving gently.
         if (A.dirS.lengthSq() < 1e-6 || a < 0.02 || jumped) {
           A.dirS.copy(a3);
@@ -2484,13 +2527,27 @@ export function createIronMan(renderer) {
           }
         }
         A.dir.copy(A.dirS).normalize();
+      } else {
+        // Its word gone, the arm does not stop dead mid-sweep: it carries on a little and comes to rest
+        // as it lowers.
+        st.aimHigh[n] *= Math.exp(-6 * dt);
+        if (A.dirS.lengthSq() > 1e-6 && dt > 0 && !jumped) {
+          for (const k of XYZ) {
+            _sv.x = A.dirS[k];
+            _sv.v = A.dirV[k];
+            springStep(_sv, A.dirS[k] + A.dirV[k] / AIM_W, AIM_W, 1, dt);
+            A.dirS[k] = _sv.x;
+            A.dirV[k] = _sv.v;
+          }
+          A.dir.copy(A.dirS).normalize();
+        }
       }
       if (a > 1e-3) {
         // The shoulder girdle comes forward and up with the arm and is driven back by each blast.
         const raise = clamp(A.dir.y * 1.5 + 0.3, 0, 1);
         gA.clav.rotation.set(0, clavY + a * (-s * (0.12 - 0.18 * kb) - clavY), clavZ + a * (s * (0.1 * raise + 0.04 * kb) - clavZ));
         gA.clav.updateMatrixWorld(true);
-        aimPose(gA, A.dir, rec);
+        aimPose(gA, A.dir, rec, 0.5 * st.aimHigh[n]);
         gA.sh.quaternion.slerp(aimQ.sh, a);
         gA.el.quaternion.slerp(aimQ.el, a);
         gA.wr.quaternion.slerp(aimQ.wr, a);
