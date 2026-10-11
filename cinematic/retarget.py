@@ -19,6 +19,25 @@ SRC = {'hips': 'Hips', 'spine': 'Spine', 'spine1': 'Spine1', 'chest': 'Spine2', 
        'clavR': 'RightShoulder', 'armR': 'RightArm', 'foreR': 'RightForeArm', 'handR': 'RightHand',
        'thighL': 'LeftUpLeg', 'shinL': 'LeftLeg', 'footL': 'LeftFoot', 'toeL': 'LeftToeBase',
        'thighR': 'RightUpLeg', 'shinR': 'RightLeg', 'footR': 'RightFoot', 'toeR': 'RightToeBase'}
+# Unreal-style skeletons (the roll pack): pelvis, spine_01..05, upperarm_l ...
+SRC_UE = {'hips': 'pelvis', 'spine': 'spine_01', 'spine1': 'spine_03', 'chest': 'spine_05', 'neck': 'neck_01',
+          'head': 'head',
+          'clavL': 'clavicle_l', 'armL': 'upperarm_l', 'foreL': 'lowerarm_l', 'handL': 'hand_l',
+          'clavR': 'clavicle_r', 'armR': 'upperarm_r', 'foreR': 'lowerarm_r', 'handR': 'hand_r',
+          'thighL': 'thigh_l', 'shinL': 'calf_l', 'footL': 'foot_l', 'toeL': 'ball_l',
+          'thighR': 'thigh_r', 'shinR': 'calf_r', 'footR': 'foot_r', 'toeR': 'ball_r'}
+
+
+def source_names(smap):
+    """The source's bone for each logical bone, from whichever naming its skeleton uses."""
+    if SRC['hips'] in smap:
+        return {k: smap[v] for k, v in SRC.items()}
+    ue = dict(SRC_UE)
+    if ue['chest'] not in smap:  # (four-bone spines)
+        ue['spine1'], ue['chest'] = 'spine_02', 'spine_03'
+    return {k: smap[v] for k, v in ue.items()}
+
+
 # The purchased models. Iron Man (MK85, a game rig: bones are numbered, so mapped by where they sit) and Thanos
 # (an Auto-Rig Pro rig driven through its FK controls; its deform bones follow those by constraints).
 IRON = {'hips': 'bone002', 'spine': 'bone024', 'spine1': 'bone025', 'chest': 'bone027',
@@ -128,7 +147,7 @@ def retarget(src_path, tgt, tgt_names, name, scale_to=None, frames=None, step=1,
     W0, B0 = capture_default(tgt)
     src, new = import_source(src_path)
     smap = strip(src)
-    snames = {k: smap[v] for k, v in SRC.items()}
+    snames = source_names(smap)
     act = src.animation_data.action
     f0, f1 = int(act.frame_range[0]), int(act.frame_range[1])
     if frames:
