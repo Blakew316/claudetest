@@ -3,8 +3,8 @@ the chest reactor, and that break. Shapes after the Mark 50 / Mark 85 references
 and Hot Toys pieces):
 
   cannon      the long forearm cannon: stacked red armour plates, gold strips, blue rings glowing at the muzzle
-  shield      a pair of tall crescent panels on the left forearm: red rim, a field of glowing blue cells,
-              built in segments (so they break into pieces)
+  shield      the Mark 50 shield on the left forearm: tall, bowed, red with a gold centre frame and pale blue
+              glass panels, its shell in bands (so it breaks into pieces)
   blade       twin curved blades from the right forearm, their outer edges white-hot
   wings, fist the booster wings and the giant fist of the uploaded nanotech model (smoothed, in the suit's metal)
 
@@ -12,7 +12,7 @@ and Hot Toys pieces):
   form(kit, 'cannon', f0, f1)          # grows over f0..f1
   retract(kit, 'cannon', f0, f1)       # flows back in
   snap_blade(scene, kit, frame, fx)    # the blades break in a fist: the outer halves fall away spinning
-  shatter_shield(scene, kit, frame, push, fx)   # the crescents break into their segments, thrown along push
+  shatter_shield(scene, kit, frame, push, fx)   # the shield breaks into its pieces, thrown along push
 
 Every piece carries a 'nano_t' point attribute (0 where it grows from, 1 at its far end). Its materials read the
 object's own keyed properties: 'form' (shown where nano_t < form, the edge glowing), 'cut_on'/'cut_at' (a break:
@@ -110,32 +110,18 @@ def metal(name, color, rough, coat=0.0):
     return m
 
 
-def glow_cells(name):
-    """A field of small glowing blue cells with dark seams between them."""
+def glass(name):
+    """The shield's pale blue glass panels: lit from within, a little."""
     m, nt = _mat(name)
-    N, L = nt.nodes.new, nt.links.new
-    tc = N('ShaderNodeTexCoord')
-    brick = N('ShaderNodeTexBrick')
-    brick.inputs['Scale'].default_value = 26.0
-    brick.inputs['Mortar Size'].default_value = 0.035
-    brick.inputs['Color1'].default_value = (1, 1, 1, 1)
-    brick.inputs['Color2'].default_value = (0.55, 0.55, 0.55, 1)
-    brick.inputs['Mortar'].default_value = (0, 0, 0, 1)
-    L(tc.outputs['Object'], brick.inputs['Vector'])
-    emit = N('ShaderNodeEmission')
-    emit.inputs['Color'].default_value = (*BLUE, 1)
-    st = N('ShaderNodeMath')
-    st.operation = 'MULTIPLY'
-    st.inputs[1].default_value = 3.2
-    L(brick.outputs['Fac'], st.inputs[0])
-    L(st.outputs[0], emit.inputs['Strength'])
-    glass = N('ShaderNodeBsdfPrincipled')
-    glass.inputs['Base Color'].default_value = (0.02, 0.05, 0.08, 1)
-    glass.inputs['Roughness'].default_value = 0.15
-    add = N('ShaderNodeAddShader')
-    L(glass.outputs[0], add.inputs[0])
-    L(emit.outputs[0], add.inputs[1])
-    _mask(nt, add.outputs[0])
+    b = nt.nodes.new('ShaderNodeBsdfPrincipled')
+    b.inputs['Base Color'].default_value = (0.55, 0.75, 0.9, 1)
+    b.inputs['Roughness'].default_value = 0.08
+    for k in ('Emission Color', 'Emission'):
+        if k in b.inputs:
+            b.inputs[k].default_value = (0.45, 0.75, 1.0, 1)
+            break
+    b.inputs['Emission Strength'].default_value = 1.2
+    _mask(nt, b.outputs[0])
     return m
 
 
@@ -224,22 +210,46 @@ def _arc_x(y, h, sag):
     return (sag - r) + math.sqrt(max(0.0, r * r - y * y))
 
 
-def _crescent(bm, length, width, bulge, thick, segments, gap, inset=0.2, rim_mat=0, cell_mat=1):
-    """A crescent in the XY plane (tips at y = +-length/2, bulging to +x), cut into segments along y; each
-    segment a red rim with a slightly proud glowing panel set into it (both faces)."""
-    h = length / 2
-    for s in range(segments):
-        y0 = -h + length * s / segments + gap / 2
-        y1 = -h + length * (s + 1) / segments - gap / 2
-        ys = [y0 + (y1 - y0) * k / 4 for k in range(5)]
-        outer = [(_arc_x(y, h, bulge), y) for y in ys]
-        inner = [(_arc_x(y, h, bulge - width), y) for y in reversed(ys)]
-        pts = outer + inner
-        _prism(bm, pts, -thick / 2, thick / 2, rim_mat)
-        cx = sum(p[0] for p in pts) / len(pts)
-        cy = sum(p[1] for p in pts) / len(pts)
-        cell = [(cx + (x - cx) * (1 - inset), cy + (y - cy) * (1 - inset)) for x, y in pts]
-        _prism(bm, cell, -thick * 0.62, thick * 0.62, cell_mat)
+def _mk50_shield(bm, H, W, T, bulge, red=0, gold=1, glass=2, bands=4, gap=0.004):
+    """The Mark 50 nano shield, upright in XY (y up, facing +z): a rounded top, straight flanks narrowing to a
+    blunt point; a red shell in bands (so it breaks into pieces), a raised gold frame up the middle with a red
+    panel set in it, pale blue glass along the upper flanks and at the top. Bowed outward by bulge."""
+    def half_width(y):  # (of the outline, at height y; y from -H/2 to H/2)
+        t = (y + H / 2) / H  # 0 at the point, 1 at the top
+        if t > 0.86:  # the rounded top
+            u = (t - 0.86) / 0.14
+            return W / 2 * math.sqrt(max(0.0, 1 - u * u)) if u < 1 else 0.0
+        if t > 0.3:
+            return W / 2 * (0.86 + 0.14 * (t - 0.3) / 0.56)
+        return W / 2 * (0.12 + 0.74 * t / 0.3)  # (tapering to the point)
+
+    def outline(y0, y1, k=1.0, n=10):
+        ys = [y0 + (y1 - y0) * i / n for i in range(n + 1)]
+        right = [(half_width(y) * k, y) for y in ys]
+        left = [(-half_width(y) * k, y) for y in reversed(ys)]
+        return right + left
+
+    top = H / 2 - 1e-4
+    cuts = [-H / 2 + H * i / bands for i in range(bands + 1)]
+    cuts[-1] = top
+    for i in range(bands):
+        y0, y1 = cuts[i] + (gap / 2 if i else 0), cuts[i + 1] - (gap / 2 if i < bands - 1 else 0)
+        _prism(bm, outline(y0, y1), -T / 2, T / 2, red)
+    # the gold frame: an elongated hexagon up the middle, a red panel set inside it
+    hexa = lambda k: [(0.0, H * 0.40 * k), (W * 0.2 * k, H * 0.28 * k), (W * 0.2 * k, -H * 0.05 * k),
+                      (0.0, -H * 0.43 * k), (-W * 0.2 * k, -H * 0.05 * k), (-W * 0.2 * k, H * 0.28 * k)]
+    _prism(bm, hexa(1.0), T / 2, T / 2 + 0.25 * T, gold)
+    _prism(bm, hexa(0.72), T / 2 + 0.25 * T, T / 2 + 0.45 * T, red)
+    # pale blue glass: strips along the upper flanks, a window at the top
+    for side in (1, -1):
+        strip = [(side * W * 0.27, H * 0.02), (side * W * 0.40, H * 0.06), (side * W * 0.40, H * 0.30),
+                 (side * W * 0.30, H * 0.36), (side * W * 0.27, H * 0.30)]
+        _prism(bm, strip if side > 0 else list(reversed(strip)), T / 2, T / 2 + 0.2 * T, glass)
+    window = [(-W * 0.16, H * 0.41), (W * 0.16, H * 0.41), (W * 0.1, H * 0.475), (-W * 0.1, H * 0.475)]
+    _prism(bm, window, T / 2, T / 2 + 0.2 * T, glass)
+    # bowed outward across its width
+    for v in bm.verts:
+        v.co.z += bulge * (1 - min(1.0, (2 * v.co.x / W) ** 2))
 
 
 def _blade(bm, length, width, bulge, thick, body_mat=0, edge_mat=1):
@@ -400,7 +410,7 @@ def build(scene, root, arm):
     red = metal('nano_red', (0.30, 0.012, 0.016), 0.22, coat=0.6)
     gold = metal('nano_gold', (0.78, 0.53, 0.2), 0.3)
     silver = metal('nano_silver', (0.6, 0.6, 0.62), 0.25)
-    cells = glow_cells('nano_cells')
+    pale = glass('nano_glass')
     blue = glow('nano_blue', BLUE, 18.0)
     hot = glow('nano_hot', (0.75, 0.92, 1.0), 12.0)
     body = (P['chest'] + P['hips']) / 2
@@ -424,19 +434,17 @@ def build(scene, root, arm):
         _bind(o, arm, I['fore' + side])
         kit[key] = {'objs': [o], 'bone': I['fore' + side]}
 
-    # Shield: two crescents on the left forearm, standing across it, facing out from it, bulging toward the hand.
+    # Shield: the Mark 50 shield on the outside of the left forearm, its top at the fist, its point past the
+    # elbow, facing out from the arm.
     e, w, d, out_ = arm_axes('L')
     across = d.cross(out_).normalized()
-    pieces = []
-    for i, (along, size) in enumerate(((0.0, 1.0), (0.17, 1.12))):
-        L_ = 1.0 * m * size  # (tall: about his arm's length, as in the references)
-        o = _mesh_obj(scene, coll, f'nano_shield{i}',
-                      lambda bm, L_=L_: _crescent(bm, L_, 0.16 * m, 0.28 * m, 0.032 * m, 8, 0.008 * m, 0.24), (red, cells))
-        _set_t(o.data, Vector((0, 0, 0)))
-        o.matrix_world = _frame(w + d * along * m + out_ * 0.05 * m, d, across)  # (bulge toward the hand)
-        _bind(o, arm, I['foreL'])
-        pieces.append(o)
-    kit['shield'] = {'objs': pieces, 'bone': I['foreL']}
+    H, Wd = 0.9 * m, 0.38 * m
+    o = _mesh_obj(scene, coll, 'nano_shield', lambda bm: _mk50_shield(bm, H, Wd, 0.035 * m, 0.06 * m), (red, gold, pale))
+    _set_t(o.data, Vector((0, H / 2, 0)))  # (grows from the top, at the fist, outward)
+    top = w + d * 0.1 * m
+    o.matrix_world = _frame(top - d * (H / 2) + out_ * 0.075 * m, across, d)  # (x across, y up the arm, z out)
+    _bind(o, arm, I['foreL'])
+    kit['shield'] = {'objs': [o], 'bone': I['foreL']}
 
     # Blades: twin curves from the right forearm, past the fist, their edges white-hot.
     e, w, d, out_ = arm_axes('R')
@@ -685,7 +693,7 @@ def _plates(o):
 
 
 def shatter_shield(scene, kit, frame, push, fx=None):
-    """The crescents break into their segments (rim and glowing panel apart), thrown along push and spinning."""
+    """The shield breaks into its pieces (shell bands, frame, glass), thrown along push and spinning."""
     k = kit.get('shield')
     if not k:
         return
