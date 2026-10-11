@@ -2,16 +2,20 @@
 the chest reactor, and that break. Shapes after the Mark 50 / Mark 85 references (the Titan fight, the threezero
 and Hot Toys pieces):
 
-  cannon      the long forearm cannon: stacked red armour plates, gold strips, blue rings glowing at the muzzle
+  cannon      the Mark 50 forearm cannon (after the concept art): an angular sleeve of stepped plates, jaws ahead
+              of the fist with a rack of glowing coils between them, gold trim
   shield      the Mark 50 shield on the left forearm: tall, bowed, red with a gold centre frame and pale blue
               glass panels, its shell in bands (so it breaks into pieces)
-  blade       twin curved blades from the right forearm, their outer edges white-hot
-  wings, fist the booster wings and the giant fist of the uploaded nanotech model (smoothed, in the suit's metal)
+  blade       the Mark 50's straight blade from the back of the right wrist, its edge bright
+  wings       two pairs of long angular blades from the upper back, a thruster glowing at each root
+  energy      the Endgame energy shield: a tall curved sheet of see-through blue light off the left palm
+  fist        the giant fist of the uploaded nanotech model (smoothed, in the suit's metal)
 
   kit = build(scene, root, arm)        # in his imported pose, before any motion: every piece made and bound
   form(kit, 'cannon', f0, f1)          # grows over f0..f1
   retract(kit, 'cannon', f0, f1)       # flows back in
-  snap_blade(scene, kit, frame, fx)    # the blades break in a fist: the outer halves fall away spinning
+  snap_blade(scene, kit, frame, fx)    # the blade breaks in a fist: the outer half falls away spinning
+  flicker_out(kit, 'energy', f0, f1)   # an energy shield failing: flickers and is gone
   shatter_shield(scene, kit, frame, push, fx)   # the shield breaks into its pieces, thrown along push
 
 Every piece carries a 'nano_t' point attribute (0 where it grows from, 1 at its far end). Its materials read the
@@ -122,6 +126,43 @@ def glass(name):
             break
     b.inputs['Emission Strength'].default_value = 1.2
     _mask(nt, b.outputs[0])
+    return m
+
+
+def energy(name):
+    """The energy shield: see-through blue, flowing lines across it, brighter toward its edges."""
+    m, nt = _mat(name)
+    N, L = nt.nodes.new, nt.links.new
+    tc = N('ShaderNodeTexCoord')
+    wave = N('ShaderNodeTexWave')
+    wave.wave_type = 'BANDS'
+    wave.inputs['Scale'].default_value = 6.0
+    wave.inputs['Distortion'].default_value = 9.0
+    wave.inputs['Detail'].default_value = 3.0
+    L(tc.outputs['Object'], wave.inputs['Vector'])
+    lines = N('ShaderNodeMapRange')
+    lines.inputs['From Min'].default_value, lines.inputs['From Max'].default_value = 0.85, 1.0
+    L(wave.outputs['Fac'], lines.inputs['Value'])
+    lw = N('ShaderNodeLayerWeight')
+    lw.inputs['Blend'].default_value = 0.35
+    rim = N('ShaderNodeMath')
+    rim.operation = 'ADD'
+    L(lines.outputs[0], rim.inputs[0])
+    L(lw.outputs['Facing'], rim.inputs[1])
+    emit = N('ShaderNodeEmission')
+    emit.inputs['Color'].default_value = (0.25, 0.65, 1.0, 1)
+    st = N('ShaderNodeMath')
+    st.operation = 'MULTIPLY_ADD'
+    st.inputs[1].default_value = 6.0
+    st.inputs[2].default_value = 0.6
+    L(rim.outputs[0], st.inputs[0])
+    L(st.outputs[0], emit.inputs['Strength'])
+    clear = N('ShaderNodeBsdfTransparent')
+    mix = N('ShaderNodeMixShader')
+    mix.inputs['Fac'].default_value = 0.45
+    L(clear.outputs[0], mix.inputs[1])
+    L(emit.outputs[0], mix.inputs[2])
+    _mask(nt, mix.outputs[0])
     return m
 
 
@@ -252,81 +293,102 @@ def _mk50_shield(bm, H, W, T, bulge, red=0, gold=1, glass=2, bands=4, gap=0.004)
         v.co.z += bulge * (1 - min(1.0, (2 * v.co.x / W) ** 2))
 
 
-def _blade(bm, length, width, bulge, thick, body_mat=0, edge_mat=1):
-    """A curved blade along y (0 at the arm, length at the tip), bulging to +x; its outer edge a glowing strip."""
-    h = length / 2
-    n = 14
-    ys = [-h + length * k / n for k in range(n + 1)]
-    taper = lambda y: max(0.15, 1 - ((y + h) / length) ** 3)  # (narrowing to the point)
-    outer = [(_arc_x(y, h, bulge), y) for y in ys]
-    inner = [(_arc_x(y, h, bulge) - width * taper(y), y) for y in reversed(ys)]
-    _prism(bm, outer + inner, -thick / 2, thick / 2, body_mat)
-    edge_out = [(x + width * 0.12, y) for x, y in outer]
-    edge_in = [(x - width * 0.04, y) for x, y in reversed(outer)]
-    _prism(bm, edge_out + edge_in, -thick * 0.25, thick * 0.25, edge_mat)
-    bmesh.ops.translate(bm, verts=bm.verts[:], vec=(0, h, 0))  # (base at y = 0)
+def _box_profile(a, b, c):
+    """A flat octagon: half-width a, half-height b, corners chamfered by c (x across, z up)."""
+    return [(a, b - c), (a - c, b), (-(a - c), b), (-a, b - c), (-a, -(b - c)), (-(a - c), -b), (a - c, -b), (a, -(b - c))]
+
+
+def _loft(bm, sections, mat, cap_start=True, cap_end=True):
+    """Rings of the same point count at given y (each (y, [(x, z) ...])) joined into a tube."""
+    rings = [[bm.verts.new((x, y, z)) for x, z in pts] for y, pts in sections]
+    n = len(rings[0])
+    for r0, r1 in zip(rings, rings[1:]):
+        for k in range(n):
+            bm.faces.new((r0[k], r0[(k + 1) % n], r1[(k + 1) % n], r1[k])).material_index = mat
+    if cap_start:
+        bm.faces.new(list(reversed(rings[0]))).material_index = mat
+    if cap_end:
+        bm.faces.new(rings[-1]).material_index = mat
+    return rings
 
 
 def _cannon(bm, length, r, red=0, gold=1, blue=2):
-    """The forearm cannon along +y from 0 (the elbow end): octagonal, four stacked plates, a collar, gold
-    strips on its flanks and glowing rings in the muzzle."""
-    oct8 = lambda rad: [(rad * math.cos(math.pi / 8 + k * math.pi / 4), rad * math.sin(math.pi / 8 + k * math.pi / 4)) for k in range(8)]
-
-    def ring(rad, y):
-        return [bm.verts.new((x, y, z)) for x, z in oct8(rad)]
-
-    def bridge(a, b, mat):
-        for k in range(8):
-            f = bm.faces.new((a[k], a[(k + 1) % 8], b[(k + 1) % 8], b[k]))
-            f.material_index = mat
-
-    profile = []
-    plates = 4
-    for i in range(plates):  # (each plate starts narrow and ends wide: the stacked look)
-        y0, y1 = length * (0.04 + 0.19 * i), length * (0.04 + 0.19 * (i + 1))
-        r0, r1 = r * (0.9 + 0.05 * i), r * (1.02 + 0.05 * i)
-        profile.append((r0, y0, True))
-        profile.append((r1, y1 - 0.01 * length, False))
-    profile += [(r * 1.25, 0.80 * length, True), (r * 1.25, 0.9 * length, False), (r * 1.12, length, False)]
-    rings = [ring(rad, y) for rad, y, _ in profile]
-    cap = ring(r * 0.85, 0.0)
-    bridge(cap, rings[0], red)
-    for i in range(len(rings) - 1):
-        bridge(rings[i], rings[i + 1], red)
-    # muzzle: recessed, with an emitter at the back of it
-    mouth = ring(r * 0.95, length)
-    bridge(rings[-1], mouth, red)
-    back = ring(r * 0.95, 0.93 * length)
-    bridge(mouth, back, red)
-    disc_c = bm.verts.new((0, 0.93 * length, 0))
-    for k in range(8):
-        f = bm.faces.new((back[k], back[(k + 1) % 8], disc_c))
-        f.material_index = blue
-    # gold strips along both flanks
+    """The Mark 50 forearm cannon along +y from 0 (the elbow end), after the concept art: an angular sleeve of
+    stepped plates over the forearm and fist; ahead of the fist it splits into an upper and a lower jaw with a
+    rack of glowing coils between them and the emitter glowing at the back of the gap; gold trim along the top
+    and down the jaws."""
+    L = length
+    # the sleeve: stepped plates, each a little wider than the last
+    for i, (y0, y1, k0, k1) in enumerate(((0.0, 0.17, 0.82, 0.95), (0.15, 0.33, 0.92, 1.05), (0.31, 0.5, 1.02, 1.12),
+                                           (0.48, 0.62, 1.1, 1.16))):
+        _loft(bm, [(y0 * L, _box_profile(r * k0 * 1.25, r * k0 * 0.95, r * 0.3)),
+                   (y1 * L, _box_profile(r * k1 * 1.25, r * k1 * 0.95, r * 0.3))], red)
+    # the jaws: upper and lower slabs ahead of the fist, tapering, a gap between them
     for side in (1, -1):
-        for i in range(plates):
-            y0, y1 = length * (0.08 + 0.19 * i), length * (0.17 + 0.19 * i)
-            rr = r * (1.05 + 0.05 * i)
-            pts = [(side * rr, y0), (side * (rr + 0.08 * r), y0 + 0.01 * length), (side * (rr + 0.08 * r), y1), (side * rr, y1)]
-            vs = [bm.verts.new((x, y, z)) for x, y in pts for z in (-0.18 * r, 0.18 * r)]
-            for f in (bm.faces.new((vs[0], vs[2], vs[4], vs[6])), bm.faces.new((vs[1], vs[7], vs[5], vs[3])),
-                      bm.faces.new((vs[0], vs[1], vs[3], vs[2])), bm.faces.new((vs[4], vs[5], vs[7], vs[6])),
-                      bm.faces.new((vs[2], vs[3], vs[5], vs[4])), bm.faces.new((vs[6], vs[7], vs[1], vs[0]))):
-                f.material_index = gold
-    # glowing rings in the muzzle
-    for y, rr in ((0.965 * length, r * 1.0), (0.99 * length, r * 1.08)):
-        res = bmesh.ops.create_circle(bm, cap_ends=False, segments=24, radius=rr)
-        ring_v = res['verts']
-        bmesh.ops.rotate(bm, verts=ring_v, cent=(0, 0, 0), matrix=Matrix.Rotation(math.pi / 2, 3, 'X'))
-        bmesh.ops.translate(bm, verts=ring_v, vec=(0, y, 0))
-        ext = bmesh.ops.extrude_edge_only(bm, edges=list({e for v in ring_v for e in v.link_edges}))
-        nv = [v for v in ext['geom'] if isinstance(v, bmesh.types.BMVert)]
-        for v in nv:
-            d = Vector((v.co.x, 0, v.co.z)).normalized()
-            v.co += d * (-0.07 * r)
-        for f in ext['geom']:
-            if isinstance(f, bmesh.types.BMFace):
-                f.material_index = blue
+        z0, z1 = side * r * 0.32, side * r * 1.05
+        lo_, hi_ = min(z0, z1), max(z0, z1)
+        def slab(y, w, zl, zh):
+            return [(w, zl), (w * 0.8, zh), (-w * 0.8, zh), (-w, zl)] if side > 0 else [(w * 0.8, zl), (w, zh), (-w, zh), (-w * 0.8, zl)]
+        _loft(bm, [(0.6 * L, slab(0, r * 1.38, lo_, hi_)), (0.86 * L, slab(0, r * 1.25, lo_ + (0.08 * r if side < 0 else 0), hi_ - (0.08 * r if side > 0 else 0))),
+                   (1.0 * L, slab(0, r * 1.0, lo_ + (0.25 * r if side < 0 else 0), hi_ - (0.25 * r if side > 0 else 0)))], red)
+        # gold trim down each jaw's flanks
+        for sx in (1, -1):
+            x = sx * r * 1.33
+            zc = side * r * 0.68
+            _loft(bm, [(0.62 * L, [(x, zc - 0.06 * r), (x + sx * 0.05 * r, zc - 0.06 * r), (x + sx * 0.05 * r, zc + 0.06 * r), (x, zc + 0.06 * r)]),
+                       (0.95 * L, [(x * 0.8, zc - 0.06 * r), (x * 0.8 + sx * 0.05 * r, zc - 0.06 * r), (x * 0.8 + sx * 0.05 * r, zc + 0.06 * r), (x * 0.8, zc + 0.06 * r)])], gold)
+    # the rack of coils in the gap, glowing
+    for i in range(8):
+        y = (0.64 + 0.03 * i) * L
+        _loft(bm, [(y, _box_profile(r * 1.15, r * 0.3, r * 0.08)), (y + 0.012 * L, _box_profile(r * 1.15, r * 0.3, r * 0.08))], blue)
+    # the emitter at the back of the gap
+    _loft(bm, [(0.6 * L, _box_profile(r * 0.9, r * 0.3, r * 0.1)), (0.605 * L, _box_profile(r * 0.9, r * 0.3, r * 0.1))], blue)
+    # gold trim along the top of the sleeve
+    for sx in (1, -1):
+        x = sx * r * 0.45
+        _loft(bm, [(0.05 * L, [(x - 0.05 * r, r * 0.86), (x + 0.05 * r, r * 0.86), (x + 0.05 * r, r * 0.95), (x - 0.05 * r, r * 0.95)]),
+                   (0.6 * L, [(x - 0.05 * r, r * 1.12), (x + 0.05 * r, r * 1.12), (x + 0.05 * r, r * 1.21), (x - 0.05 * r, r * 1.21)])], gold)
+
+
+def _straight_blade(bm, length, width, thick, body=0, edge=1):
+    """The Mark 50 nano blade along +y from 0: a long straight flat blade with an angled point, a darker spine
+    and a bright edge."""
+    L, w, t = length, width, thick
+    out = [(w / 2, 0), (w / 2, 0.86 * L), (-w / 2 * 0.2, L), (-w / 2, 0.93 * L), (-w / 2, 0)]
+    _prism(bm, [(x, y) for x, y in out], -t / 2, t / 2, body)
+    edge_pts = [(w / 2, 0.05 * L), (w / 2 + 0.12 * w, 0.06 * L), (w / 2 + 0.12 * w, 0.86 * L), (-w / 2 * 0.2 + 0.1 * w, L * 1.01),
+                (-w / 2 * 0.2, L), (w / 2, 0.86 * L)]
+    _prism(bm, edge_pts, -t * 0.2, t * 0.2, edge)
+    _prism(bm, [(-w * 0.12, 0.02 * L), (w * 0.05, 0.02 * L), (w * 0.05, 0.84 * L), (-w * 0.12, 0.84 * L)], t / 2, t * 0.65, body)
+
+
+def _wing(bm, length, root_w, tip_w, thick, red=0, gold=1, blue=2):
+    """A Mark 50 wing along +y from 0 (its root): a long angular plank narrowing to a cut tip, a raised inner
+    panel, a gold line down its leading edge, a small thruster glowing at the root."""
+    L = length
+    out = [(root_w / 2, 0), (tip_w / 2, 0.92 * L), (-tip_w / 2, L), (-root_w / 2, 0.08 * L), (-root_w / 2, 0)]
+    _prism(bm, out, -thick / 2, thick / 2, red)
+    inner = [(root_w * 0.3, 0.12 * L), (tip_w * 0.3, 0.85 * L), (-tip_w * 0.2, 0.88 * L), (-root_w * 0.3, 0.16 * L)]
+    _prism(bm, inner, thick / 2, thick * 0.8, red)
+    line = [(root_w / 2, 0.04 * L), (root_w / 2 + 0.05 * root_w, 0.04 * L), (tip_w / 2 + 0.05 * root_w, 0.92 * L), (tip_w / 2, 0.92 * L)]
+    _prism(bm, line, -thick * 0.55, thick * 0.55, gold)
+    _loft(bm, [(-0.04 * L, _box_profile(root_w * 0.3, thick * 1.4, thick * 0.4)), (0.02 * L, _box_profile(root_w * 0.36, thick * 1.6, thick * 0.4))], blue)
+
+
+def _energy_panel(bm, height, width, bulge, rows=24, cols=16):
+    """The Endgame energy shield: a tall curved sheet (y up, bowed toward +z), as a fine grid."""
+    vs = []
+    for i in range(rows + 1):
+        y = -height / 2 + height * i / rows
+        row = []
+        for j in range(cols + 1):
+            x = -width / 2 + width * j / cols
+            z = bulge * (1 - (2 * x / width) ** 2) * (1 - 0.35 * (2 * y / height) ** 2)
+            row.append(bm.verts.new((x, y, z)))
+        vs.append(row)
+    for i in range(rows):
+        for j in range(cols):
+            bm.faces.new((vs[i][j], vs[i][j + 1], vs[i + 1][j + 1], vs[i + 1][j]))
 
 
 def _mesh_obj(scene, coll, name, build_fn, mats):
@@ -351,7 +413,7 @@ def _frame(origin, x, y):
 
 
 def _mobile_parts():
-    """The uploaded nanotech model's weapon meshes (wings, giant arms), in its own space."""
+    """The uploaded nanotech model's giant arms, in its own space."""
     z = None
     for root in paths.roots():
         for d, _, fs in os.walk(root):
@@ -367,9 +429,7 @@ def _mobile_parts():
     new = [o for o in bpy.data.objects if o not in before]
     parts = {}
     for o in new:
-        if o.name.startswith('hero_ironman01_S04_wp4'):
-            parts['wings'] = o
-        elif o.name.startswith('hero_ironman01_S04_wp5'):
+        if o.name.startswith('hero_ironman01_S04_wp5'):
             parts['giant'] = o
         else:
             bpy.data.objects.remove(o, do_unlink=True)
@@ -412,7 +472,7 @@ def build(scene, root, arm):
     silver = metal('nano_silver', (0.6, 0.6, 0.62), 0.25)
     pale = glass('nano_glass')
     blue = glow('nano_blue', BLUE, 18.0)
-    hot = glow('nano_hot', (0.75, 0.92, 1.0), 12.0)
+    hot = glow('nano_hot', (0.85, 0.9, 0.95), 4.0)
     body = (P['chest'] + P['hips']) / 2
     kit = {}
 
@@ -446,19 +506,41 @@ def build(scene, root, arm):
     _bind(o, arm, I['foreL'])
     kit['shield'] = {'objs': [o], 'bone': I['foreL']}
 
-    # Blades: twin curves from the right forearm, past the fist, their edges white-hot.
+    # Blade: the Mark 50's straight blade from the back of the right wrist, past the fist.
     e, w, d, out_ = arm_axes('R')
+    o = _mesh_obj(scene, coll, 'nano_blade', lambda bm: _straight_blade(bm, 0.8 * m, 0.075 * m, 0.016 * m), (red, hot))
+    _set_t(o.data, Vector((0, 0, 0)), Vector((0, 1, 0)))
+    o.matrix_world = _frame(w - d * 0.06 * m + out_ * 0.05 * m, out_.cross(d), d)  # (flat across the arm)
+    _bind(o, arm, I['foreR'])
+    kit['blade'] = {'objs': [o], 'bone': I['foreR']}
+
+    # Wings: two pairs of long angular blades from the upper back, the upper pair raised, the lower flatter.
+    up = Vector((0, 0, 1))
+    right = (P['armR'] - P['armL']).normalized()
+    fwd = up.cross(right).normalized()
+    back = P['chest'] - fwd * 0.12 * m + up * 0.06 * m
+    wings = []
+    for side in (1, -1):
+        for j, (ang, length, rw) in enumerate(((42, 0.95, 0.15), (12, 0.75, 0.13))):
+            a_ = math.radians(ang)
+            dir_ = (right * side * math.cos(a_) + up * math.sin(a_) - fwd * 0.45).normalized()
+            across_ = fwd.cross(dir_).normalized()
+            o = _mesh_obj(scene, coll, f'nano_wing{"R" if side > 0 else "L"}{j}',
+                          lambda bm, length=length, rw=rw: _wing(bm, length * m, rw * m, 0.05 * m, 0.03 * m), (red, gold, blue))
+            _set_t(o.data, Vector((0, 0, 0)), Vector((0, 1, 0)))
+            o.matrix_world = _frame(back + right * side * 0.07 * m + up * (0.05 - 0.09 * j) * m, across_, dir_)
+            _bind(o, arm, I['chest'])
+            wings.append(o)
+    kit['wings'] = {'objs': wings, 'bone': I['chest']}
+
+    # Energy shield (the Endgame one): projected from the left palm, a tall curved sheet facing out from it.
+    e, w, d, out_ = arm_axes('L')
     across = d.cross(out_).normalized()
-    blades = []
-    for i, off in enumerate((-0.022, 0.022)):
-        o = _mesh_obj(scene, coll, f'nano_blade{i}',
-                      lambda bm: _blade(bm, 0.72 * m, 0.045 * m, 0.09 * m, 0.012 * m), (silver, hot))
-        _set_t(o.data, Vector((0, 0, 0)), Vector((0, 1, 0)))
-        base = e + (w - e) * 0.45 + out_ * 0.045 * m + across * off * m
-        o.matrix_world = _frame(base, out_, d)  # (along the arm, curving outward)
-        _bind(o, arm, I['foreR'])
-        blades.append(o)
-    kit['blade'] = {'objs': blades, 'bone': I['foreR']}
+    o = _mesh_obj(scene, coll, 'nano_energy', lambda bm: _energy_panel(bm, 1.25 * m, 0.95 * m, 0.16 * m), (energy('nano_energy'),))
+    _set_t(o.data, Vector((0, 0, 0)))
+    o.matrix_world = _frame(w + d * 0.12 * m + out_ * 0.18 * m, across, d)  # (centred off the hand, facing out)
+    _bind(o, arm, I['handL'])
+    kit['energy'] = {'objs': [o], 'bone': I['foreL']}
 
     # The uploaded model's wings and giant fist, brought from its space into his.
     try:
@@ -467,7 +549,7 @@ def build(scene, root, arm):
         print('(nanotech model not found:', e_, ')')
         parts = {}
     to_him = root.matrix_world @ Matrix.Scale((scale / root.matrix_world.to_scale().x) / (0.85 * MOBILE_H), 4)
-    for key, bone_key, side_neg, name in (('giant', 'foreR', True, 'fist'), ('wings', 'chest', None, 'wings')):
+    for key, bone_key, side_neg, name in (('giant', 'foreR', True, 'fist'),):
         o = parts.get(key)
         if o is None:
             continue
@@ -478,7 +560,7 @@ def build(scene, root, arm):
         anchor = P[bone_key]
         a_local = o.matrix_world.inverted() @ anchor
         near = min((v.co for v in o.data.vertices), key=lambda c: (c - a_local).length)
-        k_ = {'giant': 0.42, 'wings': 0.5}[key]
+        k_ = {'giant': 0.42}[key]
         pw = o.matrix_world @ near
         o.matrix_world = Matrix.Translation(pw) @ Matrix.Scale(k_, 4) @ Matrix.Translation(-pw) @ o.matrix_world
         mod = o.modifiers.new('smooth', 'SUBSURF')
@@ -591,6 +673,20 @@ def retract(kit, name, f0, f1):
         return
     for o in k['objs']:
         _key(o, 'form', f0, 1.0)
+        _key(o, 'form', f1, 0.0)
+    _vis(k['objs'], f1 + 1, False)
+
+
+def flicker_out(kit, name, f0, f1):
+    """A shield failing under a blow: its light stutters over f0..f1 and is gone."""
+    k = kit.get(name)
+    if not k:
+        return
+    rng = random.Random(f0)
+    for o in k['objs']:
+        _key(o, 'form', f0, 1.0)
+        for f in range(f0 + 1, f1):
+            _key(o, 'form', f, rng.choice((0.25, 0.9, 0.5, 1.0, 0.1)))
         _key(o, 'form', f1, 0.0)
     _vis(k['objs'], f1 + 1, False)
 

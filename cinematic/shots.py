@@ -440,9 +440,9 @@ def nanotech(sc, nano, kit, fx, iron, th, bone_at, when):
     go(nano.retract, kit, 'wings', 388, 396)
     go(nano.form, kit, 'fist', 356, 371)
     go(nano.retract, kit, 'fist', when['smash'] + 12, when['smash'] + 22)
-    go(nano.form, kit, 'shield', 451, 457)
-    push = bone_at(iron, I['chest'], 464) - bone_at(th, T['handL'], 464)
-    go(nano.shatter_shield, sc, kit, 464, push, fx)
+    # The Stone's blast: the energy shield (the Endgame one) thrown up off his palm takes it and fails.
+    go(nano.form, kit, 'energy', 451, 456)
+    go(nano.flicker_out, kit, 'energy', 464, 471)
     go(nano.form, kit, 'cannon', 514, 528)
     go(nano.form, kit, 'cannon_l', 518, 532, stream=False)
 
