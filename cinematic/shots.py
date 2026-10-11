@@ -64,6 +64,7 @@ def build(preview=True):
     im_hit = clip(iron, rt.IRON, T05 + '05_01_004_Hit_punch_R_03.fbx', 'IM_hit', (15, 120))
     im_down = clip(iron, rt.IRON, MIX + 'Knocked Down.fbx', 'IM_down')
     im_up = clip(iron, rt.IRON, MIX + 'Getting Up.fbx', 'IM_up')
+    im_up_quick = clip(iron, rt.IRON, MIX + 'Getting Up.fbx', 'IM_up_quick', (20, 81))  # (from partway up)
     im_hover = clip(iron, rt.IRON, MIX + 'Floating.fbx', 'IM_hover', rate=1.0, rm=False)
     im_fall = clip(iron, rt.IRON, MIX + 'Falling Idle.fbx', 'IM_fall', rm=False)
 
@@ -82,8 +83,9 @@ def build(preview=True):
     A.place(iron, im_guard, 92, blend_in=8, track='im_guard', repeat=3)
     A.place(iron, im_hit, 232, blend_in=2, track='im_hit')
     A.place(iron, im_down, 262, blend_in=4, track='im_down')
-    A.place(iron, im_up, 296, blend_in=6, track='im_up')
-    A.place(iron, im_hover, 330, blend_in=8, track='im_hover', repeat=2)
+    # (Cut to the get-up on the shot change: the cut hides the switch from the knockdown's own travel.)
+    A.place(iron, im_up_quick, 301, track='im_up')
+    A.place(iron, im_hover, 336, blend_in=10, track='im_hover', repeat=2)
     A.place(iron, im_fall, 478, blend_in=3, track='im_fall', repeat=2)
     A.place(iron, im_up, 506, blend_in=4, track='im_up2')
     A.place(iron, im_guard, 566, blend_in=8, track='im_guard2')
@@ -111,11 +113,23 @@ def build(preview=True):
     K(ir, 48, fly_to, IM_YAW + math.atan2(d.y, d.x), 'CONSTANT')
     K(ir, 49, IM0, IM_YAW, 'CONSTANT')
     K(ir, 262, IM0, IM_YAW, 'CONSTANT')  # (knocked down: the clip carries him back)
-    K(ir, 326, IM0 + Vector((-2.4, 0, 0)), IM_YAW, 'BEZIER')
-    K(ir, 344, IM0 + Vector((-2.4, 0, 4.6)), IM_YAW, 'BEZIER')
-    K(ir, 476, IM0 + Vector((-2.4, 0, 4.8)), IM_YAW, 'LINEAR')
-    K(ir, 505, IM0 + Vector((-4.6, 0, 0)), IM_YAW + 2.4, 'CONSTANT')  # blasted down, spinning
-    K(ir, 506, IM0 + Vector((-4.6, 0, 0)), IM_YAW, 'CONSTANT')
+    # Where the knockdown left him: the get-up starts there (his hips matched across the cut, on the ground).
+    def hips(f):
+        sc.frame_set(f)
+        return (iron.matrix_world @ iron.pose.bones['DEF-spine'].head).copy()
+    K(ir, 301, IM0, IM_YAW, 'CONSTANT')
+    d = hips(300) - hips(301)
+    d.z = 0
+    UP = IM0 + d
+    K(ir, 301, UP, IM_YAW, 'CONSTANT')
+    K(ir, 336, UP, IM_YAW, 'BEZIER')
+    K(ir, 352, UP + Vector((0, 0, 4.6)), IM_YAW, 'BEZIER')
+    K(ir, 476, UP + Vector((0, 0, 4.8)), IM_YAW, 'LINEAR')
+    FALL = UP + Vector((-2.4, 0, 0))  # where the Power Stone blast puts him down
+    K(ir, 505, FALL, IM_YAW + 2.4, 'CONSTANT')  # blasted down, spinning
+    K(ir, 506, FALL, IM_YAW, 'CONSTANT')
+    DOWN = hips(282)
+    DOWN.z = 0
 
     # ---------- aimed arms ----------
     th_chest = lambda f: th.matrix_world @ th.pose.bones['Chest_M_013'].head + Vector((0, 0, 0.2))
@@ -228,7 +242,7 @@ def build(preview=True):
     # ---------- effects ----------
     if fx:
         try:
-            fx_moments(sc, fx, iron, th, im_chest, th_chest, gaunt)
+            fx_moments(sc, fx, iron, th, im_chest, th_chest, gaunt, DOWN, FALL)
         except Exception as e:  # (the effects kit is still being built: keep the animatic going)
             import traceback
             traceback.print_exc()
@@ -238,7 +252,7 @@ def build(preview=True):
     return sc, (ir, iron), (tr, th)
 
 
-def fx_moments(sc, fx, iron, th, im_chest, th_chest, gaunt):
+def fx_moments(sc, fx, iron, th, im_chest, th_chest, gaunt, DOWN, FALL):
     """Where the effects go (see fx.py)."""
     land = Vector((-3.0, 0, 0))
     fx.thrusters(sc, iron, ['DEF-footL', 'DEF-footR', 'DEF-handL', 'DEF-handR'], 1, 56, [(1, 1.0), (48, 1.2), (54, 0.0)])
@@ -249,7 +263,7 @@ def fx_moments(sc, fx, iron, th, im_chest, th_chest, gaunt):
     for i, (h, f) in enumerate((('DEF-handL', 148), ('DEF-handR', 154), ('DEF-handL', 168), ('DEF-handR', 176), ('DEF-handL', 198), ('DEF-handR', 207), ('DEF-handL', 216))):
         fx.repulsor_shot(sc, iron, h, gaunt(f), f, f + 4, 0.8)
     fx.impact(sc, Vector((-1.9, 0, 3.2)), 246, 0.6)
-    fx.dust_burst(sc, Vector((-5.0, 0, 0)), 280, 1.4)
+    fx.dust_burst(sc, DOWN, 280, 1.4)
     fx.thrusters(sc, iron, ['DEF-footL', 'DEF-footR', 'DEF-handL', 'DEF-handR'], 322, 478, [(322, 0.0), (330, 1.3), (342, 1.0), (470, 0.9), (478, 0.0)])
     fx.repulsor_charge(sc, iron, 'DEF-handL', 346, 360)
     fx.repulsor_shot(sc, iron, 'DEF-handL', th_chest(362), 360, 366, 2.0)
@@ -257,8 +271,8 @@ def fx_moments(sc, fx, iron, th, im_chest, th_chest, gaunt):
     fx.ground_crack(sc, Vector((-0.2, 0, 0)), 390, 1.4)
     fx.power_stone(sc, th, 'Wrist_L_083', 421, 486)
     fx.stone_blast(sc, th, 'Wrist_L_083', im_chest(478), 472, 478)
-    fx.dust_burst(sc, Vector((-7.6, 0, 0)), 505, 2.2)
-    fx.ground_crack(sc, Vector((-7.6, 0, 0)), 505, 1.2)
+    fx.dust_burst(sc, FALL, 505, 2.2)
+    fx.ground_crack(sc, FALL, 505, 1.2)
 
 
 if __name__ == '__main__':

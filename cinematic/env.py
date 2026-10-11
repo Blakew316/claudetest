@@ -272,7 +272,7 @@ def rock_material(name='Arena_Rock', tint=(1.0, 1.0, 1.0), dust=1.0, scale=1.0):
     bump = _n(N, 'ShaderNodeBump', (850, -300), Strength=0.55, Distance=0.035)
     L.new(h2, bump.inputs['Height'])
     L.new(bump.outputs['Normal'], b.inputs['Normal'])
-    b.inputs['Specular IOR Level'].default_value = 0.22
+    b.inputs['Specular IOR Level'].default_value = 0.09
     return m
 
 
@@ -408,6 +408,7 @@ def slab_mesh(scene, seed=7, voxel=0.075):
                       bottom_cuts=2, yaw=yaw)
     # The keel: deeper wedges under the middle (the rock is 2-4+ units thick).
     _convex_chunk(bm, Vector((0.6, -0.3, 0)), (4.6, 3.0), -1.5, -4.4, rng, n_side=9, tilt=(0.6, 1.2), bottom_cuts=3, yaw=0.3)
+    _convex_chunk(bm, Vector((1.4, 0.4, 0)), (2.4, 1.7), -3.0, -5.6, rng, n_side=8, tilt=(0.8, 1.6), bottom_cuts=2, yaw=0.9)
     _convex_chunk(bm, Vector((-3.6, 1.0, 0)), (2.6, 2.0), -1.6, -3.7, rng, n_side=8, tilt=(0.5, 1.1), bottom_cuts=2, yaw=-0.5)
     me = bpy.data.meshes.new('Arena_Slab')
     bm.to_mesh(me)
@@ -866,7 +867,7 @@ def _sun(scene, col, name, d, strength, color, angle_deg):
     return o
 
 
-def arena_lights(scene, key_azimuth=KEY_AZ, key_elevation=KEY_EL, key_strength=9.0, rim_strength=5.0,
+def arena_lights(scene, key_azimuth=KEY_AZ, key_elevation=KEY_EL, key_strength=9.0, rim_strength=4.0,
                  fill_strength=0.45, haze=0.0):
     """Light the arena: a hard warm KEY (a Sun, ~0.5 deg: crisp shadows) from the nearby star, a cool
     blue-violet RIM from the nebula side behind, a dim soft cool FILL from the front. haze > 0 adds a thin
