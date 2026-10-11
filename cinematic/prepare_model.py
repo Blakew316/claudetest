@@ -54,6 +54,33 @@ def side(name):
     return '?'
 
 
+def relink(path):
+    """Point textures whose files are missing at a file of the same name found under the model's folder or
+    ~/Downloads (the zip's texture folder often ends up somewhere other than beside the .blend)."""
+    roots = {os.path.dirname(path), os.path.expanduser('~/Downloads')}
+    by_name, by_stem = {}, {}
+    for root in roots:
+        for d, _, fs in os.walk(root):
+            for f in fs:
+                by_name.setdefault(f.lower(), os.path.join(d, f))
+                by_stem.setdefault(os.path.splitext(f)[0].lower(), os.path.join(d, f))
+    found, missing = [], []
+    for im in bpy.data.images:
+        if im.type != 'IMAGE' or im.packed_file or not im.filepath:
+            continue
+        if os.path.exists(bpy.path.abspath(im.filepath)):
+            continue
+        base = os.path.basename(bpy.path.abspath(im.filepath).replace('\\', '/'))
+        hit = by_name.get(base.lower()) or by_stem.get(os.path.splitext(base)[0].lower())
+        if hit:
+            im.filepath = hit
+            im.reload()
+            found.append(base)
+        else:
+            missing.append(base)
+    return found, missing
+
+
 def mb(n):
     return f'{n / 1e6:.1f} MB'
 
@@ -180,7 +207,13 @@ def proxy(name):
             shrink_images(side_px, tmp)
             if os.path.exists(out):
                 os.remove(out)
-            bpy.ops.wm.save_as_mainfile(filepath=out, compress=True, copy=True)
+            bpy.data.use_autopack = False
+            try:
+                bpy.ops.wm.save_as_mainfile(filepath=out, compress=True, copy=True)
+            except RuntimeError as e:
+                print('save warning:', e)
+                if not os.path.exists(out):
+                    raise
             size = os.path.getsize(out)
             print(f'proxy at {side_px}px textures: {mb(size)}')
             if size <= LIMIT_MB * 1e6:
@@ -196,12 +229,16 @@ def main():
     path, name = args()
     os.makedirs(OUT, exist_ok=True)
     load(path)
+    found, missing = relink(path)
     text = report(path, name)
+    text += f'\n\nTextures relinked: {len(found)}; still missing: {len(missing)}' + (' - ' + ', '.join(missing[:50]) if missing else '')
+    rp = os.path.join(OUT, f'{name}_report.txt')
+    with open(rp, 'w') as f:
+        f.write(text)
     out, px, size = proxy(name)
-    text += f'\n\nProxy: {os.path.basename(out)} {mb(size)} (textures {px}px)'
+    text += f'\nProxy: {os.path.basename(out)} {mb(size)} (textures {px}px)'
     if size > LIMIT_MB * 1e6:
         text += ' - STILL OVER THE UPLOAD LIMIT: the meshes themselves are large; tell Claude.'
-    rp = os.path.join(OUT, f'{name}_report.txt')
     with open(rp, 'w') as f:
         f.write(text)
     print(f'\nDone. Upload these two files to Claude:\n  {rp}\n  {out}')
