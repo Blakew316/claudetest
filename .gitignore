@@ -3,3 +3,4 @@ shots/
 .DS_Store
 .anchor/
 dist/
+__pycache__/

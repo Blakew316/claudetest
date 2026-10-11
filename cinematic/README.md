@@ -22,12 +22,8 @@ A 25-second, 15-shot fight on a floating rock in the stardust, built entirely by
   `assets/thanos/thanos.glb` (the app's copies are meshopt-compressed, which Blender cannot read).
 
 ## Not in the repository
-The motion-capture clips (your Mixamo downloads and the purchased/free packs) are not committed: their licences
-do not allow redistributing the raw files. The scripts expect them in a scratch folder (the `SP` paths at the
-top of `shots.py`, to be pointed at a local folder when this moves to a Mac):
-- Mixamo: Flying, Floating, Falling Idle, Hard Landing, Knocked Down, Getting Up, Hook Punch, Standing Idle,
-  Walking, Punching.
-- "Combat Essentials – Fight Mocap Pack" and "Fight Animation Mocap Pack (10 Animations)" (the 05_xx clips).
+The motion-capture clips (your Mixamo downloads and the purchased/free packs) and the purchased models are not
+committed: their licences do not allow redistributing them. `paths.py` finds them by file name (see above).
 
 ## Status
 Shot layout, retargeting and arm aiming work; arena, effects, materials and the film look are being built;
