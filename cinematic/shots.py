@@ -378,18 +378,13 @@ def build(preview=True):
     track(iron, 'chest', 301, 330, sph(-95, 8, 8.0), 30, 's14_boost', handheld=0.015)
     # 15 From below as he climbs and turns.
     track(iron, 'chest', 331, 354, Vector((2.5, -3.5, -4.0)), 24, 's15_climb', handheld=0.015)
-    # 16 The dive, toward the camera.
-    p_ = at(iron, 'chest', 372)
-    shot(355, 's16_dive', p_ + Vector((1.8, -1.2, -0.5)), at(iron, 'chest', 360), 26, moves=[
-        (355, p_ + Vector((1.8, -1.2, -0.5)), at(iron, 'chest', 355)), (378, p_ + Vector((2.6, -2.0, -0.4)), at(iron, 'chest', 378))],
-        handheld=0.02)
+    # 16 The dive: riding just ahead of and below him, looking back up at him.
+    track(iron, 'chest', 355, 378, Vector((3.0, -2.2, -1.2)), 26, 's16_dive', handheld=0.02, step=3)
     # 17 Low and tight: the hammer comes down on him.
     t_ = at(th, 'chest', when['smash'])
     shot(379, 's17_smash', t_ + sph(-80, -6, 5.5), t_ + Vector((0, 0, 0.6)), 24, handheld=0.03)
-    # 18 Close on the gauntlet: the Power Stone flares.
-    g = at(th, 'handL', 435)
-    shot(411, 's18_stone', g + sph(230, 6, 4.6), g + Vector((0, 0, 0.1)), 55, 4.0, moves=[
-        (411, g + sph(230, 6, 5.2), g), (450, g + sph(230, 6, 4.2), g)])
+    # 18 Close on the gauntlet: the Power Stone flares (following the hand, so it stays sharp).
+    track(th, 'handL', 411, 450, sph(230, 6, 4.6), 50, 's18_stone', handheld=0.008, step=4)
     # 19 Wide: the blast, the shield breaking, thrown across the rock.
     m_ = (at(th, 'chest', 466) + at(iron, 'chest', 470)) / 2
     shot(451, 's19_stoneblast', m_ + sph(-95, 7, 13.0), m_, 28, handheld=0.02)
