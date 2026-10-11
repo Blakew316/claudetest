@@ -593,9 +593,9 @@ def shatter_shield(scene, kit, frame, push, fx=None):
         return
     o = k['objs'][0]
     whole = _free_copy(scene, o, frame, 'nano_shield_broken')
+    center = whole.matrix_world.translation.copy()  # (before the split: it removes the whole)
     plates = _plates(whole)
     rng = random.Random(frame)
-    center = whole.matrix_world.translation.copy()
     for p in plates:
         out_ = (p.matrix_world.translation - center)
         v = push.normalized() * rng.uniform(0.1, 0.22) + out_.normalized() * rng.uniform(0.04, 0.1)
