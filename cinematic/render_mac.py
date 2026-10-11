@@ -138,14 +138,23 @@ def preview(sc, eevee=True):
         engine = 'CYCLES'
     sc.frame_start, sc.frame_end = 1, 600
     mp4(sc, os.path.join(OUT, 'preview.mp4'), 'LOW')
-    print('preview with', engine)
+    print('preview with', engine, '- rendering 600 frames', flush=True)
+    progress(600)
     t = time.time()
     bpy.ops.render.render(animation=True)
     print(f'preview done in {(time.time() - t) / 60:.0f} min:', os.path.join(OUT, 'preview.mp4'))
 
 
+def progress(total):
+    """A line after every finished frame: 'frame 12 of 600 done'."""
+    def post(scene, *_):
+        print(f'frame {scene.frame_current - scene.frame_start + 1} of {total} done', flush=True)
+    bpy.app.handlers.render_post.append(post)
+
+
 def build():
     import shots
+    print('Building the fight: loading the models and the motion clips (a few minutes)...', flush=True)
     t = time.time()
     sc, _, _ = shots.build(preview=False)
     print(f'built in {time.time() - t:.0f} s; rendering on', gpu(sc))
@@ -202,6 +211,7 @@ def main():
         sc.render.filepath = os.path.join(OUT, 'frames', 'f')
         sc.render.use_overwrite = False  # (a re-run skips frames already rendered)
         sc.render.use_placeholder = True
+        progress(600)
         bpy.ops.render.render(animation=True)
         print('frames in', os.path.join(OUT, 'frames'), '- now run with "movie"')
     else:

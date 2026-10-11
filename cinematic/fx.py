@@ -1545,8 +1545,11 @@ def _dust_mat():
     inner = _math(nt, 'MULTIPLY', _math(nt, 'LESS_THAN', rr, _attr(nt, 'fx_r')), 0.25)
     prof = _math(nt, 'MULTIPLY', _math(nt, 'ADD', ring, inner), hz)
     detail = _math(nt, 'MULTIPLY', _math(nt, 'SUBTRACT', noise.outputs['Fac'], 0.32), 3.0, clamp=True)
-    edge = _math(nt, 'MULTIPLY', _math(nt, 'SUBTRACT', 1.0, r), 6.0, clamp=True)     # fade at the domain's walls
-    top = _math(nt, 'MULTIPLY', _math(nt, 'SUBTRACT', 1.0, z), 6.0, clamp=True)
+    # fade well inside the domain's walls and top (squared: dense dust otherwise shows the domain's box edges)
+    edge = _math(nt, 'MULTIPLY', _math(nt, 'SUBTRACT', 1.0, r), 2.5, clamp=True)
+    edge = _math(nt, 'MULTIPLY', edge, edge)
+    top = _math(nt, 'MULTIPLY', _math(nt, 'SUBTRACT', 1.0, z), 2.5, clamp=True)
+    top = _math(nt, 'MULTIPLY', top, top)
     dens = _math(nt, 'MULTIPLY', _math(nt, 'MULTIPLY', prof, detail), _math(nt, 'MULTIPLY', edge, top))
     dens = _math(nt, 'MULTIPLY', dens, _attr(nt, 'fx_d'))
     nt.links.new(dens, vol.inputs['Density'])
@@ -1561,8 +1564,8 @@ def dust_burst(scene, location, frame, radius=2.0, density=1.0, pebbles=True, co
     coll = _coll(scene, 'dust_%d' % frame)
     rng = _rng(frame, location, radius, 61)
     p = Vector((location[0], location[1], GROUND_Z))
-    Rd = radius * 1.6
-    Hd = radius * 0.9
+    Rd = radius * 2.2  # (room around the ring and above it for the fade at the domain's edges)
+    Hd = radius * 1.2
     vs, fs, _ = _lathe([(0.0, 0.001, 0), (0.0, 1.0, 0), (1.0, 1.0, 0), (1.0, 0.001, 0)], 32)
     o = _obj(coll, 'dust', _mesh('dust', vs, fs, smooth=False))
     mat = _dust_mat()
@@ -1578,7 +1581,7 @@ def dust_burst(scene, location, frame, radius=2.0, density=1.0, pebbles=True, co
         t = max(0.0, k) / FPS
         R = (radius / Rd) * (1 - math.exp(-t / 0.22)) * (1 + 0.12 * t)
         W = (0.07 + 0.22 * (1 - math.exp(-t / 0.6))) * (radius / Rd) * 1.6
-        H = 0.08 + 0.32 * (1 - math.exp(-t / 0.7))
+        H = (0.08 + 0.32 * (1 - math.exp(-t / 0.7))) * 0.75  # (in domain heights: 0.9 radius of old)
         D = (0 if k < 0 else 1.0) * density * 14.0 * math.exp(-t / 1.0) * _smooth(t * FPS / 2.0 + 0.3)
         f = frame + k
         _kp(o, 'fx_r', f, max(0.02, R))

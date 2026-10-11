@@ -1,5 +1,8 @@
 """Retarget humanoid FBX motion (Mixamo / mocap packs) onto the Iron Man and Thanos rigs, baked as actions."""
 import bpy
+import contextlib
+import io
+import os
 from mathutils import Matrix, Quaternion, Vector
 
 LOGICAL = ['hips', 'spine', 'spine1', 'chest', 'neck', 'head',
@@ -132,9 +135,16 @@ def strip(arm):
     return {b.name.split(':')[-1]: b.name for b in arm.data.bones}
 
 
+_loaded = 0
+
+
 def import_source(path):
+    global _loaded
     before = set(bpy.data.objects)
-    bpy.ops.import_scene.fbx(filepath=path, automatic_bone_orientation=False)
+    with contextlib.redirect_stdout(io.StringIO()):  # (the FBX importer prints a warning per custom property)
+        bpy.ops.import_scene.fbx(filepath=path, automatic_bone_orientation=False)
+    _loaded += 1
+    print(f'loading motion {_loaded}: {os.path.basename(path)}', flush=True)
     new = [o for o in bpy.data.objects if o not in before]
     arm = [o for o in new if o.type == 'ARMATURE'][0]
     return arm, new
