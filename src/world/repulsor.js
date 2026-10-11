@@ -1138,8 +1138,8 @@ export function createRepulsors(palette = {}) {
     const vs = 0.55 + 0.45 * (SI / DUEL_IMPACT);
     const rs = Math.sqrt(SI / DUEL_IMPACT);
     const ground = s.ground;
-    const nMetal = stone ? (heavy ? 24 : 16) : heavy ? 110 : 64;
-    const nCrackle = stone ? (heavy ? 70 : 44) : 0;
+    const nMetal = stone ? (heavy ? 45 : 30) : heavy ? 110 : 64;
+    const nCrackle = stone ? (heavy ? 90 : 60) : 0;
     const nEmber = heavy ? 22 : 12;
     // Metal: torn off hot and thrown out (mostly back off the armour and up), then drag and gravity. Most
     // are small and slow and cool fast to orange; a few are fast and white-hot and fly far.
@@ -1163,8 +1163,9 @@ export function createRepulsors(palette = {}) {
       born.push(emit(EMBER, P, c3, (25 + 100 * h(3)) * vs, 0.9 + 1.1 * h(4), (0.28 + 0.25 * h(5)) * rs, 0.8 + 0.2 * h(6), 0.45 + 0.4 * h(7), 1.1, 150, ground, sd + i * 2.9));
     }
     for (const i of born) presim(i, ai);
-    // Smoke: a few puffs blown back off the armour, lit by the flash as they form.
-    const nSmoke = heavy ? 12 : 7;
+    // Smoke: a thin wisp or two blown back off the armour, lit by the flash as they form (the Stone's
+    // energy leaves none). Film blasts leave next to no smoke: no clouds.
+    const nSmoke = stone ? 0 : heavy ? 3 : 2;
     for (let i = 0; i < nSmoke; i++) {
       const h = (k) => hash(sd + i * 3.77 + k * 4.219);
       const j = sm.next;
@@ -1176,13 +1177,13 @@ export function createRepulsors(palette = {}) {
       c3.multiplyScalar(6 + 6 * h(4)).addScaledVector(n3, 9 + 16 * h(5)).addScaledVector(UPV, 2 + 4 * h(6)).multiplyScalar(SI / DUEL_IMPACT);
       sm.v.set([c3.x, c3.y, c3.z], j * 3);
       sm.age[j] = 0;
-      sm.life[j] = (1.5 + 0.7 * h(7)) * (heavy ? 1.25 : 1);
-      sm.s0[j] = (2.0 + 1.0 * h(8)) * SI;
-      sm.s1[j] = (6.5 + 4.0 * h(9)) * SI * (heavy ? 1.2 : 1);
+      sm.life[j] = (0.8 + 0.4 * h(7)) * (heavy ? 1.2 : 1);
+      sm.s0[j] = (1.0 + 0.6 * h(8)) * SI;
+      sm.s1[j] = (2.6 + 1.6 * h(9)) * SI * (heavy ? 1.2 : 1);
       sm.ang[j] = 6.283 * h(10);
       sm.spin[j] = (h(11) - 0.5) * 0.9;
       sm.cell[j] = Math.floor(h(12) * 4);
-      sm.a0[j] = Math.min(0.95, (0.62 + 0.25 * h(13)) * (heavy ? 1.15 : 1));
+      sm.a0[j] = Math.min(0.5, (0.22 + 0.1 * h(13)) * (heavy ? 1.15 : 1));
       sm.rise[j] = (2.5 + 2.5 * h(14)) * (SI / DUEL_IMPACT);
       sm.grey[j] = 0.014 + 0.016 * h(15);
       if (stone) sm.hot.set([BLUE[0] * 0.9, BLUE[1] * 0.9, BLUE[2] * 0.9], j * 3);
@@ -1650,19 +1651,23 @@ export function createRepulsors(palette = {}) {
         const pf = Math.exp(-ai / 0.022); // the flash: a frame or two
         const rise = 1 - Math.exp(-ai / 0.012);
         // A blinding white point and the glare round it.
-        glow(P, (3.2 + 2.2 * rise) * SI, CYAN[0] * 1.4 * pf, CYAN[1] * 1.4 * pf, CYAN[2] * 1.4 * pf, 9 * pf * hk, pull);
-        if (duel) glare(P, 16 * SI * hk, (CYAN[0] * 0.5 + 0.5) * 0.7 * pf, (CYAN[1] * 0.5 + 0.5) * 0.7 * pf, (CYAN[2] * 0.5 + 0.5) * 0.7 * pf, pull + 4);
-        // The fireball: the bolt's energy dumped into a ball of plasma, swelling and going out.
-        const fb = Math.exp(-ai / (duel ? 0.08 : 0.05)) * (1 - Math.exp(-ai / 0.008));
-        glow(P, (2.5 + 3.5 * (1 - Math.exp(-ai / 0.05))) * SI, CYAN[0] * 0.55 * fb, CYAN[1] * 0.55 * fb, CYAN[2] * 0.55 * fb, 1.6 * fb, pull);
+        // (White-hot: the palette only tints its edge. Tight, so it reads as a hard pop, not a soft ball.)
+        const wr = CYAN[0] * 0.35 + 0.65;
+        const wg = CYAN[1] * 0.35 + 0.65;
+        const wb = CYAN[2] * 0.35 + 0.65;
+        glow(P, (2.4 + 1.6 * rise) * SI, wr * 1.6 * pf, wg * 1.6 * pf, wb * 1.6 * pf, 9 * pf * hk, pull);
+        if (duel) glare(P, 7 * SI * hk, wr * 0.55 * pf, wg * 0.55 * pf, wb * 0.55 * pf, pull + 4);
+        // The fireball: the bolt's energy dumped into a small ball of plasma, gone in a few frames.
+        const fb = Math.exp(-ai / (duel ? 0.045 : 0.035)) * (1 - Math.exp(-ai / 0.006));
+        glow(P, (1.4 + 1.8 * (1 - Math.exp(-ai / 0.04))) * SI, CYAN[0] * 0.4 * fb, CYAN[1] * 0.4 * fb, CYAN[2] * 0.4 * fb, 1.4 * fb, pull);
         // Plasma lobes thrown off it, back toward the shooter and out, dissipating.
         n3.copy(dir).multiplyScalar(-1);
         const lobes = duel ? 6 : 3;
         for (let i = 0; i < lobes && ai < 0.25; i++) {
           sphereDir(hash(seed + i * 7.07), hash(seed + i * 2.22), c3).addScaledVector(n3, 0.6).normalize();
           a3.copy(P).addScaledVector(c3, (0.6 + 4.5 * (1 - Math.exp(-ai / 0.05))) * SI);
-          const k = 0.2 * Math.exp(-ai / 0.045) * (1 - Math.exp(-ai / 0.008)) * hk;
-          wisp(a3, (2 + 7 * ai) * SI, CYAN[0] * k, CYAN[1] * k, CYAN[2] * k, pull);
+          const k = 0.07 * Math.exp(-ai / 0.035) * (1 - Math.exp(-ai / 0.008)) * hk;
+          wisp(a3, (1.2 + 4 * ai) * SI, CYAN[0] * k, CYAN[1] * k, CYAN[2] * k, pull);
         }
         // A thin shell of plasma racing out, gone in a few frames: on a fighter the barest flicker of it at
         // the front of the shock (which shows as the view bending behind it), on a word a faint bubble.
@@ -1683,7 +1688,7 @@ export function createRepulsors(palette = {}) {
           const fade2 = (1 - ai / 0.5) ** 1.5;
           basis(n3, u3, v3);
           const sl = Math.floor(time * 30);
-          const na = heavy ? 7 : 5;
+          const na = heavy ? 11 : 8;
           for (let j = 0; j < na; j++) {
             const hs = seed + sl * 2.371 + j * 11.3;
             if (hash(hs) < 0.3) continue;
