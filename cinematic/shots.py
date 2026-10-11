@@ -235,13 +235,15 @@ def build(preview=True):
     # 19: the Stone's blast throws Iron Man back across the rock; up again on the cut.
     carry(ir, iron, 463, IM_YAW)
     carry(ir, iron, 487, IM_YAW)
+    carry(ir, iron, 536, IM_YAW)  # (where getting up left him)
     # 20: Thanos walks in at his stride's own speed (3.8 per 31 frames of the clip at 0.8).
     v = 3.8 / (31 / 0.8)
     t0 = tr.location.copy()
+    stop_x = hips(iron, 540).x + 3.2  # (he stops at striking distance)
+    n = max(8, min(56, int((t0.x - stop_x) / v)))
     K(tr, 492, t0, TH_YAW, 'LINEAR')
-    K(tr, 548, t0 + Vector((-v * 56, 0, 0)), TH_YAW, 'CONSTANT')
+    K(tr, 492 + n, t0 + Vector((-v * n, 0, 0)), TH_YAW, 'CONSTANT')
     # 23: both charge; the blows meet between them.
-    carry(ir, iron, 536, IM_YAW)  # (where getting up left him)
     t1, i1 = tr.location.copy(), ir.location.copy()
     K(tr, 574, t1, TH_YAW, 'BEZIER')
     K(ir, 574, i1, IM_YAW, 'BEZIER')
@@ -280,15 +282,16 @@ def build(preview=True):
         az, el = math.radians(az), math.radians(el)
         return Vector((math.cos(az) * math.cos(el), math.sin(az) * math.cos(el), math.sin(el))) * dist
 
-    def shake(cam, f0, f1, amount):
-        """Handheld: noise on the camera's turn (radians) for the length of the shot."""
+    def shake(obj, f0, f1, amount, paths_=('rotation_euler',)):
+        """Handheld: noise on what aims the camera, for the length of the shot."""
         if amount <= 0:
             return
-        for f in (f0, f1):
-            cam.keyframe_insert('rotation_euler', frame=f)
-        rnd = random.Random(cam.name)
-        for fc in A.fcurves_of(cam.animation_data.action):
-            if fc.data_path == 'rotation_euler':
+        for path in paths_:
+            for f in (f0, f1):
+                obj.keyframe_insert(path, frame=f)
+        rnd = random.Random(obj.name)
+        for fc in A.fcurves_of(obj.animation_data.action):
+            if fc.data_path in paths_:
                 m = fc.modifiers.new('NOISE')
                 m.strength = amount
                 m.scale = 5.0
@@ -297,11 +300,22 @@ def build(preview=True):
     def shot(f0, name, loc, target, lens, fstop=2.8, moves=None, handheld=0.012):
         f1 = next((c for c in CUTS if c > f0), 601) - 1
         loc = Vector((loc.x, loc.y, max(loc.z, 0.35)))  # (never below the rock's surface)
-        cam = film.shot_camera(sc, name, loc, target, lens, fstop, None) if film else S.camera(sc, name, loc, target, lens)
-        if moves:
+        moves = [(f, Vector((l.x, l.y, max(l.z, 0.35))), t) for f, l, t in (moves or [])]
+        if film:
+            # (film's cameras turn to an aim point, which also holds the focus: the aim point moves with the
+            # action, and the handheld shake goes on it, sized to the distance so it turns the camera ~handheld.)
+            cam = film.shot_camera(sc, name, loc, target, lens, fstop, None)
+            aim = bpy.data.objects[name + '_aim']
+            for f, l, t in moves:
+                cam.location, aim.location = l, t
+                cam.keyframe_insert('location', frame=f)
+                aim.keyframe_insert('location', frame=f)
+            shake(aim, f0, f1, handheld * (loc - target).length, ('location',))
+        else:
+            cam = S.camera(sc, name, loc, target, lens)
             prev = None
             for f, l, t in moves:
-                cam.location = Vector((l.x, l.y, max(l.z, 0.35)))
+                cam.location = l
                 S.look_at(cam, t)
                 if prev is not None:
                     e = cam.rotation_euler.copy()
@@ -310,7 +324,7 @@ def build(preview=True):
                 prev = cam.rotation_euler.copy()
                 cam.keyframe_insert('location', frame=f)
                 cam.keyframe_insert('rotation_euler', frame=f)
-        shake(cam, f0, f1, handheld)
+            shake(cam, f0, f1, handheld)
         m = sc.timeline_markers.new(name, frame=f0)
         m.camera = cam
         cams.append((f0, cam))
