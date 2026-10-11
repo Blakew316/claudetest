@@ -6,12 +6,10 @@ from mathutils import Vector, Euler
 import scene as S
 import retarget as rt
 import anim as A
+import paths
 
-SP = '/tmp/claude-0/-home-user-claudetest/1ca86f98-efae-51e1-a103-bd6371f97c5d/scratchpad/'
-MIX = SP + 'mocap_zip/'
-P05 = SP + 'packs/combat/Combat Essentials #U2013 Fight Mocap Pack/'
-T05 = SP + 'packs/fight10/Fight Animation Mocap Pack (10 Animations) thumb/'
-NEW = SP + 'mixamo_new/'  # the upright Thanos clips (Standing Idle, Walking, Punching) once they arrive
+SP = paths.CLOUD  # (cloud workspace: where previews are written)
+MIX = P05 = T05 = NEW = ''  # (clips are found by file name: paths.clip)
 
 
 def have(mod):
@@ -22,11 +20,11 @@ def have(mod):
         return None
 
 
-def first(*paths):
-    for p in paths:
-        if os.path.exists(p):
-            return p
-    raise FileNotFoundError(paths)
+def first(*names):
+    for n in names:
+        if paths.have_clip(n):
+            return n
+    raise FileNotFoundError(names)
 
 
 def build(preview=True):
@@ -50,7 +48,7 @@ def build(preview=True):
         S.light(sc, 'rim', 'AREA', 1500, (6, 6, 5), (-0.9, 0, 2.4), (0.6, 0.6, 1.0), 4)
 
     # ---------- motion ----------
-    clip = lambda arm, names, path, name, rng=None, rate=1.25, rm=True: A.clip(arm, names, path, name, rng, rate, rm)[0]
+    clip = lambda arm, names, path, name, rng=None, rate=1.25, rm=True: A.clip(arm, names, paths.clip(path), name, rng, rate, rm)[0]
     # Thanos.
     th_idle = clip(th, rt.THANOS, first(NEW + 'Standing Idle.fbx', P05 + '05_04_009_single hand idle.fbx'), 'TH_idle', rm=False)
     th_think = clip(th, rt.THANOS, T05 + '05_02_015_Fight taunt think.fbx', 'TH_think', rm=False)
@@ -249,6 +247,7 @@ def build(preview=True):
     if film:
         film.grade(sc)
     S.render_settings(sc, 960, 540, 16) if preview else None
+    S.live(iobjs + tobjs, True)  # (back in the viewport: the saved scene shows them in Blender)
     return sc, (ir, iron), (tr, th)
 
 

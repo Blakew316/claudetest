@@ -2,6 +2,7 @@
 import bpy, math, os
 from mathutils import Vector, Euler
 import retarget as rt
+import paths
 
 ASSETS = '/home/user/claudetest/assets/ironman-mk/'
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -107,10 +108,7 @@ def height_of(objs):
     return min(zs), max(zs)
 
 
-# The purchased models: the full-detail files on the Mac, light proxies here (see prepare_model.py).
-MODELS = os.environ.get('CINE_MODELS', '/tmp/claude-0/-home-user-claudetest/1ca86f98-efae-51e1-a103-bd6371f97c5d/scratchpad/models/')
-IRON_FILE = os.environ.get('CINE_IRONMAN', os.path.join(MODELS, 'ironman_proxy.blend'))
-THANOS_FILE = os.environ.get('CINE_THANOS', os.path.join(MODELS, 'thanos_proxy.blend'))
+# The purchased models: the full-detail files on the Mac, light proxies in the cloud (see paths.py, prepare_model.py).
 
 
 def rooted(scene, name, objs):
@@ -132,7 +130,7 @@ def visible_meshes(objs):
 def fighters():
     """Iron Man and Thanos (Thanos his size times 1.12), each under a root empty: Iron Man faces +x, Thanos -x.
     Opens Thanos's file as the scene (his rig, face rig and armour come as they are) and appends Iron Man."""
-    bpy.ops.wm.open_mainfile(filepath=THANOS_FILE, load_ui=False)
+    bpy.ops.wm.open_mainfile(filepath=paths.model('thanos'), load_ui=False)
     sc = bpy.context.scene
     for o in [o for o in bpy.data.objects if o.type in ('CAMERA', 'LIGHT')]:
         bpy.data.objects.remove(o, do_unlink=True)
@@ -154,7 +152,7 @@ def fighters():
             pb = th_arm.pose.bones.get(c + s_)
             if pb is not None and 'ik_fk_switch' in pb:
                 pb['ik_fk_switch'] = 1.0
-    with bpy.data.libraries.load(IRON_FILE, link=False) as (src, dst):
+    with bpy.data.libraries.load(paths.model('ironman'), link=False) as (src, dst):
         dst.objects = [n for n in src.objects if n not in ('Camera', 'Light')]
     coll = bpy.data.collections.new('IronMan')
     sc.collection.children.link(coll)
