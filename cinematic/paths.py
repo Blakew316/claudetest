@@ -16,7 +16,7 @@ def roots():
     if os.environ.get('CINE_CLIPS'):
         return os.environ['CINE_CLIPS'].split(':')
     if IN_CLOUD:
-        return [CLOUD + d for d in ('mixamo_new', 'mocap_zip', 'packs', 'archive4')]
+        return [CLOUD + d for d in ('mixamo_new', 'mocap_zip', 'packs', 'archive4', 'nanozip')]
     return [os.path.expanduser('~/Downloads'), os.path.expanduser('~/Desktop')]
 
 

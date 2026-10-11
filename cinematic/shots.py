@@ -51,7 +51,8 @@ def build(preview=True):
     sc = bpy.context.scene
     sc.render.fps = 24
     sc.frame_start, sc.frame_end = 1, 600
-    env, film, fx = have('env'), have('film'), have('fx')
+    env, film, fx, nano = have('env'), have('film'), have('fx'), have('nano')
+    kit = nano.build(sc, ir, iron) if nano else None  # (in his imported pose, before any motion)
     S.live(iobjs + tobjs, False)  # (motion first: only the armatures are evaluated)
     IM_YAW, TH_YAW = ir.rotation_euler.z, tr.rotation_euler.z
     IZ, TZ = ir.location.z, tr.location.z  # (root heights that put their feet on the ground)
@@ -404,11 +405,46 @@ def build(preview=True):
     # ---------- effects ----------
     if fx:
         moments(sc, fx, iron, th, bone_at, when)
+    if kit:
+        nanotech(sc, nano, kit, fx, iron, th, bone_at, when)
     if film:
         film.grade(sc)
     S.render_settings(sc, 960, 540, 16) if preview else None
     S.live(iobjs + tobjs, True)  # (back in the viewport: the saved scene shows them in Blender)
     return sc, (ir, iron), (tr, th)
+
+
+def nanotech(sc, nano, kit, fx, iron, th, bone_at, when):
+    """The weapons: the cannon, the shield, the blade (snapped), the boosters, the giant fist, the shield again
+    (shattered by the Stone), and cannons on both arms for the end."""
+    I, T = rt.IRON, rt.THANOS
+
+    def go(fn, *a, **k):
+        try:
+            fn(*a, **k)
+        except Exception as e:
+            import traceback
+            print('(nanotech skipped:', fn.__name__, e, ')')
+            traceback.print_exc()
+
+    c = when['cannon']
+    go(nano.form, kit, 'cannon', 114, 126)
+    go(nano.retract, kit, 'cannon', c + 8, c + 14)
+    go(nano.form, kit, 'shield', 201, 211)
+    go(nano.retract, kit, 'shield', 236, 242)
+    go(nano.form, kit, 'blade', 237, 249)
+    snap = when['slash'] + 4
+    go(nano.snap_blade, sc, kit, snap, fx)
+    go(nano.retract, kit, 'blade', snap + 12, snap + 18)
+    go(nano.form, kit, 'wings', 303, 313)
+    go(nano.retract, kit, 'wings', 388, 396)
+    go(nano.form, kit, 'fist', 356, 371)
+    go(nano.retract, kit, 'fist', when['smash'] + 12, when['smash'] + 22)
+    go(nano.form, kit, 'shield', 451, 457)
+    push = bone_at(iron, I['chest'], 464) - bone_at(th, T['handL'], 464)
+    go(nano.shatter_shield, sc, kit, 464, push, fx)
+    go(nano.form, kit, 'cannon', 514, 528)
+    go(nano.form, kit, 'cannon_l', 518, 532, stream=False)
 
 
 def moments(sc, fx, iron, th, bone_at, when):
