@@ -299,9 +299,15 @@ def build(preview=True):
         loc = Vector((loc.x, loc.y, max(loc.z, 0.35)))  # (never below the rock's surface)
         cam = film.shot_camera(sc, name, loc, target, lens, fstop, None) if film else S.camera(sc, name, loc, target, lens)
         if moves:
+            prev = None
             for f, l, t in moves:
                 cam.location = Vector((l.x, l.y, max(l.z, 0.35)))
                 S.look_at(cam, t)
+                if prev is not None:
+                    e = cam.rotation_euler.copy()
+                    e.make_compatible(prev)  # (no spins through a full turn between keys)
+                    cam.rotation_euler = e
+                prev = cam.rotation_euler.copy()
                 cam.keyframe_insert('location', frame=f)
                 cam.keyframe_insert('rotation_euler', frame=f)
         shake(cam, f0, f1, handheld)
@@ -327,21 +333,18 @@ def build(preview=True):
     a_ = at(iron, 'hips', when['im_land'])
     shot(49, 's03_land', a_ + sph(-70, 4, 9.0), a_ + Vector((0, 0, 0.6)), 24)
     # 4 Low angle, looking up: Thanos leaps.
-    t_ = at(th, 'chest', 80)
-    shot(67, 's04_leap', at(th, 'hips', 67) + sph(-120, -2, 6.5), t_, 20, moves=[
-        (67, at(th, 'hips', 67) + sph(-120, -2, 6.5), at(th, 'chest', 67)),
-        (90, at(th, 'hips', 67) + sph(-120, -2, 6.5), at(th, 'chest', 88))], handheld=0.018)
+    track(th, 'chest', 67, 90, sph(-115, -12, 7.5), 22, 's04_leap', handheld=0.018)
     # 5 Wide: the crash down, Iron Man rolling clear.
     m_ = (at(th, 'hips', when['th_land']) + at(iron, 'hips', 100)) / 2
-    shot(91, 's05_crash', m_ + sph(-95, 8, 12.0), m_ + Vector((0, 0, 0.8)), 26, handheld=0.02)
+    shot(91, 's05_crash', m_ + sph(-95, 8, 9.5), m_ + Vector((0, 0, 0.8)), 26, handheld=0.02)
     # 6 Close: up on one knee, the cannon forming on his right arm.
-    c_ = at(iron, 'foreR', 124)
-    shot(113, 's06_cannon', c_ + sph(-40, 10, 2.6), c_, 55, 2.0)
+    c_ = at(iron, 'chest', 124)
+    shot(113, 's06_cannon', c_ + sph(-50, 8, 4.4), c_, 40, 4.0)
     # 7 Over his shoulder: the cannon blast into Thanos.
     s_ = at(iron, 'clavR', when['cannon'])
     shot(132, 's07_blast', s_ + Vector((-1.6, -1.1, 0.5)), at(th, 'chest', when['cannon']), 32, handheld=0.015)
     # 8 Two-shot, handheld: the hook, slipped.
-    track(iron, 'chest', 151, 176, Vector((1.3, -5.2, 0.4)), 30, 's08_hook', look_off=Vector((1.3, 0, 0.1)), handheld=0.02)
+    track(iron, 'chest', 151, 176, Vector((1.3, -7.8, 0.6)), 32, 's08_hook', look_off=Vector((1.3, 0, 0.1)), handheld=0.02)
     # 9 Close: the punch lands on his head.
     h_ = at(iron, 'head', when['jab'])
     shot(177, 's09_headhit', h_ + sph(-60, 2, 2.4), h_, 50, 2.0, handheld=0.03)
@@ -349,8 +352,8 @@ def build(preview=True):
     b_ = at(iron, 'hips', when['swing'])
     shot(199, 's10_shield', b_ + Vector((-2.2, -1.4, -0.2)), at(th, 'head', when['swing']), 22, handheld=0.02)
     # 11 Close: the blade forming on his right arm.
-    r_ = at(iron, 'handR', 245)
-    shot(235, 's11_blade', r_ + sph(-30, 15, 2.2), r_, 60, 2.0)
+    r_ = at(iron, 'chest', 245)
+    shot(235, 's11_blade', r_ + sph(-60, 10, 4.2), r_, 40, 4.0)
     # 12 Tight two-shot: the slash, caught, snapped.
     c_ = at(th, 'handL', when['slash'])
     shot(253, 's12_catch', c_ + sph(-100, 10, 4.2), c_, 40, 2.2, handheld=0.015)
@@ -358,9 +361,7 @@ def build(preview=True):
     c_ = at(iron, 'chest', when['cross'])
     shot(283, 's13_punch', c_ + sph(-120, 0, 3.4), c_, 45, handheld=0.03)
     # 14 Wide: blown back spinning; the boosters catch him.
-    m_ = at(iron, 'hips', 315)
-    shot(301, 's14_boost', m_ + sph(-90, 6, 14.0), m_ + Vector((0, 0, 1.0)), 30, moves=[
-        (301, m_ + sph(-90, 6, 14.0), at(iron, 'hips', 301)), (330, m_ + sph(-90, 12, 13.0), at(iron, 'hips', 330))])
+    track(iron, 'chest', 301, 330, sph(-95, 8, 8.0), 30, 's14_boost', handheld=0.015)
     # 15 From below as he climbs and turns.
     track(iron, 'chest', 331, 354, Vector((2.5, -3.5, -4.0)), 24, 's15_climb', handheld=0.015)
     # 16 The dive, toward the camera.
@@ -373,8 +374,8 @@ def build(preview=True):
     shot(379, 's17_smash', t_ + sph(-80, -6, 5.5), t_ + Vector((0, 0, 0.6)), 24, handheld=0.03)
     # 18 Close on the gauntlet: the Power Stone flares.
     g = at(th, 'handL', 435)
-    shot(411, 's18_stone', g + sph(230, 6, 3.6), g + Vector((0, 0, 0.1)), 65, 2.0, moves=[
-        (411, g + sph(230, 6, 4.4), g), (450, g + sph(230, 6, 3.4), g)])
+    shot(411, 's18_stone', g + sph(230, 6, 4.6), g + Vector((0, 0, 0.1)), 55, 4.0, moves=[
+        (411, g + sph(230, 6, 5.2), g), (450, g + sph(230, 6, 4.2), g)])
     # 19 Wide: the blast, the shield breaking, thrown across the rock.
     m_ = (at(th, 'chest', 466) + at(iron, 'chest', 470)) / 2
     shot(451, 's19_stoneblast', m_ + sph(-95, 7, 13.0), m_, 28, handheld=0.02)
@@ -383,9 +384,9 @@ def build(preview=True):
     shot(487, 's20_rise', c_ + Vector((-3.4, -1.5, -0.3)), t_, 40)
     # 21-22 Close on each.
     h_ = at(iron, 'head', 548)
-    shot(541, 's21_iron', h_ + sph(-25, 0, 2.6), h_, 55, 2.0)
+    shot(541, 's21_iron', h_ + sph(40, 2, 2.8), h_, 50, 2.8)
     h_ = at(th, 'head', 564)
-    shot(557, 's22_thanos', h_ + sph(200, -4, 3.4), h_, 60, 2.0)
+    shot(557, 's22_thanos', h_ + sph(140, -4, 3.4), h_, 50, 2.8)
     # 23 Both charge; the impact.
     m_ = (at(th, 'chest', 586) + at(iron, 'chest', 586)) / 2
     shot(573, 's23_charge', m_ + sph(-90, 3, 7.5), m_, 24, handheld=0.03)
@@ -427,7 +428,7 @@ def moments(sc, fx, iron, th, bone_at, when):
     f = when['cannon']
     go(fx.repulsor_charge, sc, iron, I['handR'], f - 12, f - 1)
     go(fx.repulsor_shot, sc, iron, I['handR'], th_chest(f + 1), f - 1, f + 1, 2.4)
-    go(fx.impact, sc, bone_at(iron, I['head'], when['jab']), when['jab'], 1.4)
+    go(fx.impact, sc, bone_at(iron, I['head'], when['jab']), when['jab'], 0.7)
     go(fx.impact, sc, bone_at(iron, I['foreL'], when['swing']) + Vector((0, 0, 0.4)), when['swing'], 1.6)
     go(fx.impact, sc, bone_at(th, T['handL'], when['slash']), when['slash'], 1.2)
     go(fx.impact, sc, bone_at(iron, I['chest'], when['cross']), when['cross'], 1.6)
