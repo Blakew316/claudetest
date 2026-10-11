@@ -72,6 +72,7 @@ const FIGHT_SIDE = [0.7, 1.45]; // the lens films them from across the line betw
 const FOE_FRAME = 0.45; // the camera frames a point this far from Iron Man toward Thanos...
 const FOE_IN = 0.8; // ... back far enough that both stay within this much of the half-frame...
 const FOE_BACK = 2.1; // ... but never more than this much further back than the shot would be
+const HOVER_LIFT = 8; // world units: hovering, his hips ride this far up (world/mocap-clips.js Floating)
 const IMPACT = [0.35, 1.3]; // s: a blow's close shot, from before it lands to after
 const IMPACT_EL = -0.16; // rad: from a little below, looking up at them
 const IMPACT_OFF = [0, 0.35, -0.35, 0.7, -0.7]; // rad round from side-on, tried in turn
@@ -721,9 +722,10 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     return out;
   }
 
-  /** How high he is flying in the fight (sim/fight.js: in the air, over his walker). */
+  /** How high he is flying in the fight (sim/fight.js: in the air, over his walker; his hover pose rides HOVER_LIFT higher still). */
   function heroAlt() {
-    return fight ? fight.state.hero.alt : 0;
+    const a = fight ? fight.state.hero.alt : 0;
+    return a + HOVER_LIFT * clamp(a / 10, 0, 1);
   }
 
   /** Camera basis looking from e toward p: forward F, right R, up Up. */
@@ -1658,11 +1660,14 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       const uz = B[2] - A[2];
       const sep = Math.hypot(ux, uz) || 1;
       const k = imp.victim === 'hero' ? 0.4 : 0.6;
-      const P = [lerp(A[0], B[0], k), (A[1] + B[1]) / 2, lerp(A[2], B[2], k)];
+      // (Up and down, from the lower one's feet to the higher one's head.)
+      const top = Math.max(A[1] + HERO_H / 2, B[1] + (HERO_H * 1.12) / 2);
+      const bottom = Math.min(A[1], B[1]) - HERO_H / 2;
+      const P = [lerp(A[0], B[0], k), (top + bottom) / 2, lerp(A[2], B[2], k)];
       const side = hc.duelSide || 1;
       const az0 = Math.atan2(-(uz / sep) * side, (ux / sep) * side);
       const room = 0.8 * LENS_TAN;
-      const need = Math.max((sep / 2 + 14) / (room * Math.min(aspect(), 1.8)), (HERO_H + Math.abs(A[1] - B[1])) / 2 / room + 6, 60);
+      const need = Math.max((sep / 2 + 14) / (room * Math.min(aspect(), 1.8)), ((top - bottom) / 2 + 6) / room, 60);
       const dist = need * (1 - 0.06 * ss(0, IMPACT[0] + IMPACT[1], run.t - imp.t + IMPACT[0]));
       // Side-on if it can be; else a little round either way (still on that side), clear of the nuclei.
       // (Once on it, held for the blow at the angle it took: the guard eases it out of anything it drifts

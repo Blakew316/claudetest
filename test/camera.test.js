@@ -41,7 +41,10 @@ function view(d, aspect, P = null) {
   const r = [-f[2] / rl, 0, f[0] / rl];
   const u = [-r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1]];
   const sim = d.spider.sim;
-  const H = P || [s.x, s.y + (sim.mode === 'jump' && sim.launched ? 0 : 13), s.z]; // (in the air his middle rides the crawler point)
+  // (In a leap his middle rides the crawler point; flying in the fight, he is up over it, his hover pose
+  // riding about 8 higher still: sim/fight.js alt.)
+  const alt = d.run.duel ? d.run.duel.hero.alt : 0;
+  const H = P || [s.x, s.y + (sim.mode === 'jump' && sim.launched ? 0 : 13) + alt + 8 * Math.min(1, alt / 10), s.z];
   const q = [H[0] - eye[0], H[1] - eye[1], H[2] - eye[2]];
   const z = q[0] * f[0] + q[1] * f[1] + q[2] * f[2];
   return {
