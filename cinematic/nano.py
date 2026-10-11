@@ -4,8 +4,8 @@ and Hot Toys pieces):
 
   cannon      the Mark 50 forearm cannon (after the concept art): an angular sleeve of stepped plates, jaws ahead
               of the fist with a rack of glowing coils between them, gold trim
-  shield      the Mark 50 shield on the left forearm: tall, bowed, red with a gold centre frame and pale blue
-              glass panels, its shell in bands (so it breaks into pieces)
+  shield      the Mark 50 shield on the left forearm, after the Hot Toys figure (shield_mk50.py): its red plates,
+              gold V and centre frame, glass visor and side panels as separate pieces (so it breaks into them)
   blade       the Mark 50's straight blade from the back of the right wrist, its edge bright
   wings       two pairs of long angular blades from the upper back, a thruster glowing at each root
   energy      the Endgame energy shield: a tall curved sheet of see-through blue light off the left palm
@@ -25,6 +25,7 @@ import bpy, bmesh, math, os, random
 from mathutils import Vector, Matrix
 import paths
 import retarget as rt
+import shield_mk50
 
 NANO_OBJ = 'hero_ironman01.obj'  # (inside the uploaded nanotech zip)
 MOBILE_H = 2.03                  # that model's height (its units)
@@ -66,7 +67,8 @@ def _mask(nt, surface):
     rag = math('MULTIPLY_ADD', noise.outputs['Fac'], 0.06)
     L(t, rag.node.inputs[2])
     form = obj_attr('form')
-    shown = math('LESS_THAN', rag, form)
+    # (fully formed shows all of it: the ragged edge would otherwise still eat the far end, where nano_t ~ 1)
+    shown = math('MAXIMUM', math('LESS_THAN', rag, form), math('GREATER_THAN', form, 0.999))
     # a break (cut_on: hide nano_t > cut_at) and a broken piece (keep nano_t > keep_above)
     cut = math('MAXIMUM', math('SUBTRACT', 1.0, obj_attr('cut_on')), math('LESS_THAN', t, obj_attr('cut_at')))
     keep = math('GREATER_THAN', t, math('SUBTRACT', obj_attr('keep_above'), 1e-4))
@@ -100,11 +102,11 @@ def _mat(name):
     return m, m.node_tree
 
 
-def metal(name, color, rough, coat=0.0):
+def metal(name, color, rough, coat=0.0, metallic=1.0):
     m, nt = _mat(name)
     b = nt.nodes.new('ShaderNodeBsdfPrincipled')
     b.inputs['Base Color'].default_value = (*color, 1)
-    b.inputs['Metallic'].default_value = 1.0
+    b.inputs['Metallic'].default_value = metallic
     b.inputs['Roughness'].default_value = rough
     for k in ('Coat Weight', 'Clearcoat'):
         if k in b.inputs:
@@ -114,17 +116,17 @@ def metal(name, color, rough, coat=0.0):
     return m
 
 
-def glass(name):
-    """The shield's pale blue glass panels: lit from within, a little."""
+def glass(name, color=(0.2, 0.4, 0.72), rough=0.38, light=(0.45, 0.66, 0.92), strength=0.04):
+    """The shield's pale blue glass panels: frosted, lit from within a little."""
     m, nt = _mat(name)
     b = nt.nodes.new('ShaderNodeBsdfPrincipled')
-    b.inputs['Base Color'].default_value = (0.55, 0.75, 0.9, 1)
-    b.inputs['Roughness'].default_value = 0.08
+    b.inputs['Base Color'].default_value = (*color, 1)
+    b.inputs['Roughness'].default_value = rough
     for k in ('Emission Color', 'Emission'):
         if k in b.inputs:
-            b.inputs[k].default_value = (0.45, 0.75, 1.0, 1)
+            b.inputs[k].default_value = (*light, 1)
             break
-    b.inputs['Emission Strength'].default_value = 1.2
+    b.inputs['Emission Strength'].default_value = strength
     _mask(nt, b.outputs[0])
     return m
 
@@ -249,48 +251,6 @@ def _arc_x(y, h, sag):
     """x on the circular arc through (0, -h) and (0, h) that bulges to +x by sag."""
     r = (h * h + sag * sag) / (2 * sag)
     return (sag - r) + math.sqrt(max(0.0, r * r - y * y))
-
-
-def _mk50_shield(bm, H, W, T, bulge, red=0, gold=1, glass=2, bands=4, gap=0.004):
-    """The Mark 50 nano shield, upright in XY (y up, facing +z): a rounded top, straight flanks narrowing to a
-    blunt point; a red shell in bands (so it breaks into pieces), a raised gold frame up the middle with a red
-    panel set in it, pale blue glass along the upper flanks and at the top. Bowed outward by bulge."""
-    def half_width(y):  # (of the outline, at height y; y from -H/2 to H/2)
-        t = (y + H / 2) / H  # 0 at the point, 1 at the top
-        if t > 0.86:  # the rounded top
-            u = (t - 0.86) / 0.14
-            return W / 2 * math.sqrt(max(0.0, 1 - u * u)) if u < 1 else 0.0
-        if t > 0.3:
-            return W / 2 * (0.86 + 0.14 * (t - 0.3) / 0.56)
-        return W / 2 * (0.12 + 0.74 * t / 0.3)  # (tapering to the point)
-
-    def outline(y0, y1, k=1.0, n=10):
-        ys = [y0 + (y1 - y0) * i / n for i in range(n + 1)]
-        right = [(half_width(y) * k, y) for y in ys]
-        left = [(-half_width(y) * k, y) for y in reversed(ys)]
-        return right + left
-
-    top = H / 2 - 1e-4
-    cuts = [-H / 2 + H * i / bands for i in range(bands + 1)]
-    cuts[-1] = top
-    for i in range(bands):
-        y0, y1 = cuts[i] + (gap / 2 if i else 0), cuts[i + 1] - (gap / 2 if i < bands - 1 else 0)
-        _prism(bm, outline(y0, y1), -T / 2, T / 2, red)
-    # the gold frame: an elongated hexagon up the middle, a red panel set inside it
-    hexa = lambda k: [(0.0, H * 0.40 * k), (W * 0.2 * k, H * 0.28 * k), (W * 0.2 * k, -H * 0.05 * k),
-                      (0.0, -H * 0.43 * k), (-W * 0.2 * k, -H * 0.05 * k), (-W * 0.2 * k, H * 0.28 * k)]
-    _prism(bm, hexa(1.0), T / 2, T / 2 + 0.25 * T, gold)
-    _prism(bm, hexa(0.72), T / 2 + 0.25 * T, T / 2 + 0.45 * T, red)
-    # pale blue glass: strips along the upper flanks, a window at the top
-    for side in (1, -1):
-        strip = [(side * W * 0.27, H * 0.02), (side * W * 0.40, H * 0.06), (side * W * 0.40, H * 0.30),
-                 (side * W * 0.30, H * 0.36), (side * W * 0.27, H * 0.30)]
-        _prism(bm, strip if side > 0 else list(reversed(strip)), T / 2, T / 2 + 0.2 * T, glass)
-    window = [(-W * 0.16, H * 0.41), (W * 0.16, H * 0.41), (W * 0.1, H * 0.475), (-W * 0.1, H * 0.475)]
-    _prism(bm, window, T / 2, T / 2 + 0.2 * T, glass)
-    # bowed outward across its width
-    for v in bm.verts:
-        v.co.z += bulge * (1 - min(1.0, (2 * v.co.x / W) ** 2))
 
 
 def _box_profile(a, b, c):
@@ -470,7 +430,6 @@ def build(scene, root, arm):
     red = metal('nano_red', (0.30, 0.012, 0.016), 0.22, coat=0.6)
     gold = metal('nano_gold', (0.78, 0.53, 0.2), 0.3)
     silver = metal('nano_silver', (0.6, 0.6, 0.62), 0.25)
-    pale = glass('nano_glass')
     blue = glow('nano_blue', BLUE, 18.0)
     hot = glow('nano_hot', (0.85, 0.9, 0.95), 4.0)
     body = (P['chest'] + P['hips']) / 2
@@ -494,12 +453,16 @@ def build(scene, root, arm):
         _bind(o, arm, I['fore' + side])
         kit[key] = {'objs': [o], 'bone': I['fore' + side]}
 
-    # Shield: the Mark 50 shield on the outside of the left forearm, its top at the fist, its point past the
-    # elbow, facing out from the arm.
+    # Shield: the Mark 50 shield (after the Hot Toys figure) on the outside of the left forearm, its top at the
+    # fist, its points past the elbow, facing out from the arm. Its own paint: deeper red, warmer gold.
     e, w, d, out_ = arm_axes('L')
     across = d.cross(out_).normalized()
-    H, Wd = 0.9 * m, 0.38 * m
-    o = _mesh_obj(scene, coll, 'nano_shield', lambda bm: _mk50_shield(bm, H, Wd, 0.035 * m, 0.06 * m), (red, gold, pale))
+    H = 0.9 * m
+    smats = (metal('shield_red', (0.20, 0.006, 0.009), 0.3, coat=1.0, metallic=0.9),
+             metal('shield_gold', (0.58, 0.38, 0.15), 0.3), glass('shield_glass'),
+             metal('shield_panel', (0.26, 0.16, 0.055), 0.42),
+             metal('shield_backing', (0.035, 0.004, 0.004), 0.5, metallic=0.6))
+    o = _mesh_obj(scene, coll, 'nano_shield', lambda bm: shield_mk50.build(bm, H), smats)
     _set_t(o.data, Vector((0, H / 2, 0)))  # (grows from the top, at the fist, outward)
     top = w + d * 0.1 * m
     o.matrix_world = _frame(top - d * (H / 2) + out_ * 0.075 * m, across, d)  # (x across, y up the arm, z out)
@@ -789,7 +752,7 @@ def _plates(o):
 
 
 def shatter_shield(scene, kit, frame, push, fx=None):
-    """The shield breaks into its pieces (shell bands, frame, glass), thrown along push and spinning."""
+    """The shield breaks into its pieces (plates, gold frames, glass, backing), thrown along push and spinning."""
     k = kit.get('shield')
     if not k:
         return

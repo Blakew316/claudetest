@@ -11,6 +11,9 @@ A 25-second, 15-shot fight on a floating rock in the stardust, built entirely by
 - `shots.py` — the fight itself: clips, placement, aimed arms, 15 cameras with cuts, and the effects' timing.
 - `env.py`, `film.py` — the floating-rock arena, the lighting, the camera and colour grade (in progress).
 - `fx.py` — repulsor charge/shot, impacts, Power Stone, thrusters, dust and ground cracks (in progress).
+- `nano.py` — the nanotech weapons growing out of the suit (cannon, shield, blade, wings, energy shield, giant fist).
+- `shield_mk50.py`, `shield_mk50.json` — the Mark 50 shield's shape after the Hot Toys figure: its panel outlines,
+  traced by hand, built as separate solid pieces.
 - `board.py` — renders one still per shot (a storyboard); `animatic.py` — a fast low-res render of all 600 frames.
 - `paths.py` — finds the models and motion clips: the cloud copies here, or by file name under ~/Downloads on the
   Mac (inside the downloaded zips too).
