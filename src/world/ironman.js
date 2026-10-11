@@ -2274,7 +2274,7 @@ export function createIronMan(renderer, opts = {}) {
         f.swing = null;
       }
     }
-    const ctx = { speed: speedS, across: Math.max(1e-3, across), grade: (st.gx * v.x + st.gz * v.z) / Math.max(1e-3, across), yaw: yawGo, walk: clamp(walk, 0, 1), crouch, acc: st.acc, brace: braceC, wide: wide + 0.6 * combat, dt, active: ez.active.x };
+    const ctx = { speed: speedS, across: Math.max(1e-3, across), grade: (st.gx * v.x + st.gz * v.z) / Math.max(1e-3, across), yaw: yawGo, walk: clamp(walk, 0, 1), crouch, acc: st.acc, brace: braceC, wide: wide + (thanos ? 0.25 : 0.6) * combat, dt, active: ez.active.x };
     if (!st.grounded && g < 0.35 && !tk.on) {
       st.grounded = true;
       // Down on both feet, under the hips, a little apart and one a touch ahead (as a landing is taken);
@@ -2491,7 +2491,7 @@ export function createIronMan(renderer, opts = {}) {
     group.updateMatrixWorld(true);
     // (Crouching, taking a landing, braced to fire: that much lower than the legs would hold him.)
     const lowerCM = JW.depth * lam * JW.cm * (1 - JW.rise); // (winding up: the dip, out again with the drive)
-    const lower = softPos(dip, 0.05) * 0.16 * lam + 0.015 * lam * softAbs(brace, 0.15) + 0.02 * lam * wide + 0.04 * lam * combat + KICK_SINK * lam * clamp(Math.hypot(pushX, pushZ) / (KICK_PUSH * lam), 0, 1.5);
+    const lower = softPos(dip, 0.05) * 0.16 * lam + 0.015 * lam * softAbs(brace, 0.15) + 0.02 * lam * wide + (thanos ? 0.012 : 0.04) * lam * combat + KICK_SINK * lam * clamp(Math.hypot(pushX, pushZ) / (KICK_PUSH * lam), 0, 1.5);
     const blendW = (HANDOVER_IDLE + (HANDOVER - HANDOVER_IDLE) * active) * lam;
     let hCon = Infinity;
     for (const n of SIDES) {
@@ -2837,7 +2837,7 @@ export function createIronMan(renderer, opts = {}) {
       // ready; Thanos's fists raised. The aim takes over from it as the arm comes up to fire.
       const gW = st.foe ? 0.65 * combat * (1 - att) * (1 - LW.on) * (1 - stun) : 0;
       if (gW > 1e-3) {
-        if (thanos) armPose(gA, 0.55, 0.25, 1.5, -0.2, 0.3);
+        if (thanos) armPose(gA, 0.2, 0.15, 0.6, -0.1, 0.2); // (Thanos: arms low, the gauntlet a little forward)
         else {
           gA.clav.updateMatrixWorld(true);
           gA.sh.getWorldPosition(b3);
@@ -2929,7 +2929,9 @@ export function createIronMan(renderer, opts = {}) {
         _m1.copy(A.dir).applyAxisAngle(UP, AIM_SWAY * (Math.sin(1.7 * st.time + ph) + 0.5 * Math.sin(3.1 * st.time + 2 * ph)));
         _m2.crossVectors(_m1, UP).normalize();
         if (_m2.lengthSq() > 0.5) _m1.applyAxisAngle(_m2, AIM_SWAY * 0.8 * Math.sin(2.3 * st.time + 1.7 * ph));
-        aimPose(gA, _m1, rec, 0.5 * st.aimHigh[n], RAISE_FLEX * clamp(2 * (a - aEl), 0, 1));
+        // (Raised to catch a blast: the gauntlet's palm turned out to it, the elbow bent.)
+        const blk = tgt[n] && tgt[n].block ? 1 : 0;
+        aimPose(gA, _m1, rec, 0.5 * st.aimHigh[n] + 0.7 * blk, RAISE_FLEX * clamp(2 * (a - aEl), 0, 1) + 0.35 * blk);
         gA.sh.quaternion.slerp(aimQ.sh, a);
         gA.el.quaternion.slerp(aimQ.el, aEl);
         gA.wr.quaternion.slerp(aimQ.wr, aWr);
@@ -2944,7 +2946,7 @@ export function createIronMan(renderer, opts = {}) {
       // Fingers: loosely curled at rest, open and back to fire (flicked further by each blast), straight in flight;
       // Thanos's fists clenched on guard.
       let curl = (0.42 * (1 - a) - 0.14 * a - 0.18 * rec * a + 0.14 * guard) * (1 - att) + 0.04 * att;
-      if (thanos) curl += (1 - curl) * gW * (1 - a);
+      if (thanos) curl += (1 - curl) * (gW * (1 - a) + (tgt[n] && !tgt[n].block ? a : 0)); // (his fist clenched to fire the stone)
       // (Landing: a fist on the ground; the other hand open behind him.)
       const curled = n === 'R' ? curl + (1 - curl) * LW.fist : curl * (1 - LW.arm);
       gA.knuckles.quaternion.setFromAxisAngle(gA.curlAxis, curled);
@@ -2984,12 +2986,13 @@ export function createIronMan(renderer, opts = {}) {
     fxIn.unit = (U / 22.8) * (thanos ? POWER_STONE.size : 1);
     fxIn.scale = scale;
     const jets = 1 - smooth(0, 0.06, landT); // (cut as his boots meet the ground)
-    fxIn.thrust = Math.max(air, fly, 0.8 * smooth(0, 0.35, JW.push)) * jets; // (lit as he pushes off: they lift him)
+    fxIn.thrust = Math.max(air, fly, 0.8 * smooth(0, 0.35, JW.push), fight && fight.thrust ? fight.thrust : 0) * jets; // (lit as he pushes off: they lift him; a jet-assisted dodge)
     fxIn.fly = fly * jets;
     // Each palm fires only at the word its arm is on, and only once it is pointing there.
-    for (const t of targets) if (t.side && !(tgt[t.side] === t && aimOn[t.side])) t.side = null;
+    for (const t of targets) if (t.side && (t.aimOnly || !(tgt[t.side] === t && aimOn[t.side]))) t.side = null; // (aim-only: the fight times its bolts)
     fxIn.targets = targets;
     fxIn.shots = fight && fight.shots ? fight.shots : null;
+    fxIn.shotTime = fight ? fight.now : undefined; // (the fight's clock: the bolts' times are on it)
     const out = repulsors.update(fxIn);
     // A blast kicks that arm (fast) and pushes through the shoulder and torso (slower); the
     // repulsors light up his own armour.
@@ -3034,7 +3037,7 @@ export function createIronMan(renderer, opts = {}) {
       mocapPath(a.clip, a.t, a.loop, a.mirror, mo.path);
       acc += a.w;
       const k = a.w / acc;
-      if (a.clip === 'Fighting Idle') idle += a.w;
+      if (a.free) idle += a.w; // (his arms his own to aim with: firing as he side-steps)
       for (let b = 0; b < MB.length; b++) {
         mo.q.fromArray(mo.mix.q, b * 4).slerp(mo.q2.fromArray(mo.cur.q, b * 4), k).toArray(mo.mix.q, b * 4);
       }
@@ -3047,7 +3050,7 @@ export function createIronMan(renderer, opts = {}) {
     idle /= acc;
     for (let b = 0; b < MB.length; b++) {
       const side = MB_ARM[b];
-      // (Idling, an arm up on a word stays the procedural aim's.)
+      // (An arm up to aim, in a clip that leaves them free, stays the procedural aim's.)
       const m = side ? W * (1 - idle * clamp(ez.aim[side].x * 1.5, 0, 1)) : W;
       MB[b].quaternion.slerp(mo.q.fromArray(mo.mix.q, b * 4), m);
     }

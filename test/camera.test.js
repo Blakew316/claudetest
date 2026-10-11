@@ -110,7 +110,8 @@ for (const [W, H, least] of [
       const s = d.run.spider;
       const F = d.run.foe;
       const fight = !!(F && F.state === 'here');
-      if (d.run.phase === 'read') (fight ? fighting : reading).push(v.share);
+      // (Thanos withdrawing through his portal is still a two-shot.)
+      if (d.run.phase === 'read') (fight || (F && F.state === 'leaving') ? fighting : reading).push(v.share);
       if (fight) {
         fightSteps++;
         const fv = view(d, W / H, [F.x, F.y + 13, F.z]);
@@ -135,7 +136,7 @@ for (const [W, H, least] of [
       // Reading: from behind him (the lens more than 120 degrees off where his chest faces: his heading,
       // turned toward the words he fires at as world/ironman.js turns him), how much and for how long at a time.
       const bearing = Math.atan2(v.eye[0] - s.x, v.eye[2] - s.z);
-      const isBack = d.run.phase === 'read' && Math.abs(wrap(bearing - chest(d, s))) > (2 * Math.PI) / 3;
+      const isBack = d.run.phase === 'read' && !fight && !(F && F.state === 'leaving') && Math.abs(wrap(bearing - chest(d, s))) > (2 * Math.PI) / 3;
       back += isBack ? 1 : 0;
       backRun = isBack ? backRun + 1 / 60 : 0;
       backLongest = Math.max(backLongest, backRun);

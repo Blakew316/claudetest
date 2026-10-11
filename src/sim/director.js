@@ -58,6 +58,7 @@ const FOE_STAND = [55, 85]; // Thanos keeps about this far from him (world units
 const FOE_SWAY = 0.2; // (of that)
 const FOE_CIRCLE = 0.1; // ... circling him at up to this rate (rad/s), now one way, now the other (every FOE_TURN s)
 const FOE_TURN = [4, 8];
+const FOE_WALK = 15; // Thanos walks in on him no faster than this (world units/s): heavy, unhurried
 const FOE_FIRST = 9; // s: he first steps out of a portal, as Iron Man strolls the first ball
 const PORTAL_OPEN = 0.5; // s: a Space Stone portal opens (and closes) over this
 const PORTAL_AHEAD = 14; // he steps into a portal this far in front of him...
@@ -1390,6 +1391,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     const fx = tr.to[0] - tr.from[0];
     const fz = tr.to[2] - tr.from[2];
     const yaw = Math.hypot(fx, fz) > 4 ? Math.atan2(fx, fz) : run.camera.yaw + PI;
+    // (Straight out of a fight the lens is where the two-shot had it, not where the plan last was.)
+    if ((hc.duel || 0) > 0.5) hc.shot.az = hc.plan.az = run.camera.yaw;
     const launch = launchAz(yaw, hc.shot.az);
     const off = wrap(launch - yaw - PI);
     const side = off < 0 ? -1 : 1;
@@ -1570,7 +1573,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
    * Eased in and out (FOE_EASE), and off while a leap is being filmed.
    */
   function duelFrame(t, dt) {
-    const on = foe && (foe.state === 'here' || foe.state === 'coming') && !(hc.leap && !hc.leap.done) ? 1 : 0;
+    const on = foe && (foe.state === 'here' || foe.state === 'coming' || foe.state === 'leaving') && !(hc.leap && !hc.leap.done) ? 1 : 0;
     // (Taking off, the shot is quickly his alone.)
     [hc.duel, hc.duelV] = smoothDamp(hc.duel || 0, on, hc.duelV || 0, hc.leap && !hc.leap.done ? FOE_EASE / 5 : FOE_EASE / 2, dt);
     const k = clamp(hc.duel, 0, 1);
@@ -1660,6 +1663,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // (With a margin, so it is already easing clear as a fast move nears one.)
     const safe = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, NUCLEUS * 1.3, 0, cam.dist);
     if (safe !== cam.dist) cam.dist += (safe - cam.dist) * (1 - Math.exp(-4 * dt));
+    // (Never inside one, whatever the ease has not yet caught.)
+    const hard = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, NUCLEUS * 1.02, 0, cam.dist);
+    if (hard !== cam.dist) cam.dist = hard;
   }
 
   function stepCamera(dt) {
@@ -1933,6 +1939,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         g.z = P.z + P.nz * 40;
       }
       fr.faceAt = null;
+      fr.cruise = undefined;
       if (throughPortal() > PORTAL_IN) {
         foe.state = 'gone';
         closePortal();
@@ -1948,6 +1955,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         g.z = P.z + P.nz * (PORTAL_IN + 12);
       }
       fr.faceAt = null;
+      fr.cruise = undefined;
       if (throughPortal() > PORTAL_IN) {
         foe.state = 'here';
         closePortal();
@@ -1955,15 +1963,17 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         fight.begin(run.t, { x: s.x, z: s.z, yaw: Math.atan2(F.z - s.z, F.x - s.x) }, { x: F.x, z: F.z, yaw: Math.atan2(s.z - F.z, s.x - F.x) }, standOff());
       }
     } else {
-      // The fight (sim/fight.js) carries him along his clips; between them, if it has him walk in, he walks.
+      // The fight (sim/fight.js) carries him along his clips; between them he stands his ground, or walks
+      // in on Iron Man (a heavy, unhurried walk), his face to him.
       fr.pin = fight.pin('foe');
-      if (!fr.pin) {
+      fr.cruise = FOE_WALK;
+      if (!fr.pin && fight.walking('foe')) {
         const w = fight.walkGoal();
         g.x = w.x;
         g.y = s.y;
         g.z = w.z;
         if (foe.spider.sim.intentT > 0.3) foe.spider.sim.intentT = 0; // (off at once)
-      }
+      } else if (!fr.pin) hold();
     }
     if (foe.state !== 'here') fr.pin = null;
     fr.t = run.t;
@@ -2113,6 +2123,9 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // Leave once the words are read and the shot has eased back out.
     // (Fighting, not until he is standing free: nothing coming, no clip still playing.)
     if (cursor >= end && run.tentacles.length === 0 && run.phaseT >= T - 0.25 && (!fight || !fight.state.on || fight.calm(run.t))) {
+      // (Thanos withdraws through a portal first; Iron Man moves on once he is gone and the shot is his.)
+      if (foe && foe.state === 'here') leave();
+      if (foe && (foe.state !== 'gone' || (hc.duel || 0) > 0.15)) return;
       run.status[run.active] = 'done';
       visitQueue = visits[run.active].slice();
       nextLeg();
@@ -2190,6 +2203,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     if (foe) {
       fight.step(run.t, dt, wordsDone());
       run.pin = fight.pin('hero');
+      // (Fighting, he stands his ground between the clips that carry him.)
+      if (fight.state.on && !run.pin) run.spiderGoal = { x: run.spider.x, y: run.spider.y, z: run.spider.z };
       run.timeScale = fight.timeScale(run.t); // (playback slows round a heavy blast: see main.js)
     }
     spider.update(dt, run);

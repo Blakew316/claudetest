@@ -1,52 +1,38 @@
 /**
- * The fight between Iron Man and Thanos, scripted as motion-captured clips (world/mocap-clips.js) for each
- * of them, deterministic at SIM_DT (the director steps it; world/view3d.js plays it):
- *  - an exchange: one of them plays an attack; each hand the clip thrusts out fires a bolt at the other,
- *    landing a flight time later;
- *  - the other's answer to it, decided as it is fired: struck (a hit reaction as the bolt lands, a heavy
- *    blast knocking him down and getting him up again), or a dodge as it comes, or it goes wide;
- *  - his counter once he has recovered; now and then a strafe round each other, or a breath, between.
- * Each of them is carried over the ground along the clip's own path (so his feet stay planted), facing
- * the way the clip started him: at the other. Between clips he plays his fighting idle, turning to keep
- * his face to the other. If they drift too far apart Thanos walks in (no clip: the procedural walk).
+ * The fight between Iron Man and Thanos, as the films have them fight, deterministic at SIM_DT (the
+ * director steps it; world/view3d.js plays it). Each engagement runs as rounds of beats:
+ *  1. the stare-down: both stand, Iron Man upright and ready, Thanos tall and still;
+ *  2. Iron Man opens up: repulsors, palm out, arm straight, one hand then the other, side-stepping as
+ *     he fires; Thanos walks on into it, catching blasts on the raised gauntlet, barely flinching at
+ *     the rest;
+ *  3. Thanos answers: he plants and fires the Power Stone from his clenched gauntlet fist; Iron Man
+ *     dodges the first on his boot jets and takes the next (a hit reaction; later rounds, knocked down,
+ *     getting up again);
+ *  4. Iron Man's heavy blast, both palms: it staggers Thanos a step back.
+ * Rounds repeat (escalating) while the section's words are read; then Iron Man leaves for the next ball.
+ * Captured motion (world/mocap-clips.js) plays Iron Man's side-steps, dodges, hit reactions, knockdowns
+ * and getting up, and Thanos's stagger; the rest (stance, repulsor and gauntlet firing, the block,
+ * Thanos's walk) is the rig's own procedural animation. A clip carries him along its own path (his
+ * walker pinned to it, feet planted); otherwise he stands or walks on his own, facing the other.
  *
- * state (read by the view): { on, hero: Side, foe: Side, bolts }, where Side = { cur, prev } (the clip
- * playing and the one it eases in over: { clip, mirror, loop, t0 } or { clip: null } walking) and bolts =
- * [{ id, by, hand, tFire, tHit, power, miss }].
+ * state (read by the view): { on, hero: Side, foe: Side, bolts }, Side = { cur, prev } where an act is
+ * { kind, clip|null, mirror, loop, t0, aim: 'L'|'R'|'both'|null, block, thrust, weight } and a bolt is
+ * { id, by, hand, tFire, tHit, power, outcome: 'hit'|'block'|'dodge'|'miss' }.
  */
 
 import { fork, range } from '../core/rng.js';
 import { clip, pathAt } from '../world/mocap-path.js';
 
 const K = 46 / 3.585; // world units per model unit (world/ironman.js K)
-export const FADE = 0.25; // s: a clip eases in over the one before
-const IDLE = 'Fighting Idle';
-const TURN = 1.6; // rad/s, at most, idling and turning to keep his face to the other
+export const FADE = 0.3; // s: a clip eases in over what was playing
+const TURN = 1.4; // rad/s, at most, standing and turning to keep his face to the other
 const BOLT_SPEED = 520; // world units/s (world/repulsor.js BOLT_SPEED), clamped to BOLT_T
 const BOLT_T = [0.15, 0.35];
-const NEAR = 55; // they keep between NEAR and FAR (= SPREAD x the stand-off) apart (world units): too far, Thanos
-const SPREAD = 1.35; // walks in to the stand-off, even while Iron Man is still getting up
-// What each of them throws: the clip, mirrored (left for right), which of its thrusts fire (by time, s),
-// how often it is picked, and how heavy its blasts are (1: can knock him down).
-const ATTACKS = {
-  hero: [
-    { clip: 'Standing 1H Magic Attack 01', mirror: false, fire: [{ hand: 'R', t: 0.933 }], odds: 3, power: 0.6 },
-    { clip: 'Standing 2H Magic Attack 01', mirror: false, fire: [{ hand: 'R', t: 1.167 }, { hand: 'L', t: 1.333 }], odds: 2, power: 0.75 },
-    { clip: 'Fireball', mirror: false, fire: [{ hand: 'R', t: 2.0 }], odds: 1, power: 1 },
-  ],
-  foe: [
-    { clip: 'Fireball', mirror: true, fire: [{ hand: 'L', t: 2.0 }], odds: 2, power: 1 },
-    { clip: 'Standing 1H Magic Attack 01', mirror: true, fire: [{ hand: 'L', t: 0.933 }], odds: 3, power: 0.7 },
-    { clip: 'Standing 2H Magic Attack 05', mirror: false, fire: [{ hand: 'L', t: 0.6 }, { hand: 'R', t: 0.767 }, { hand: 'L', t: 2.1 }], odds: 1, power: 1 },
-  ],
-};
-const HITS = ['Hit Reaction', 'Hit Reaction (1)', 'Hit Reaction (2)', 'Head Hit', 'Big Stomach Hit'];
-const DOWNS = [
-  ['Knocked Down', 'Getting Up'],
-  ['Stumble Backwards', 'Getting Up'],
-];
-const DODGES = ['Dodging', 'Dodging (1)'];
-const STRAFES = { L: 'Left Strafe Walking', R: 'Right Strafe Walk' };
+const SPREAD = 1.4; // thrown further apart than this x the stand-off, Thanos walks back in
+const HITS = ['Hit Reaction', 'Hit Reaction (1)', 'Head Hit', 'Big Stomach Hit'];
+const STAGGER = 'Hit Reaction (2)'; // Thanos's stagger, played at a weight (he is not thrown about)
+const STAGGER_W = 0.65;
+const STRAFE = { L: 'Left Strafe Walking', R: 'Right Strafe Walk' };
 // A heavy blast landing plays in slow motion: time runs at as little as 1 - SLOW_BY, from SLOW[0] s before
 // it lands, back to speed by SLOW[1] s after (fight time).
 const SLOW_BY = 0.7;
@@ -54,45 +40,33 @@ const SLOW = [0.12, 1.0];
 
 const wrap = (a) => Math.atan2(Math.sin(a), Math.cos(a));
 const pick = (rand, list) => list[Math.min(list.length - 1, Math.floor(rand() * list.length))];
-const pickOdds = (rand, list) => {
-  let s = 0;
-  for (const x of list) s += x.odds;
-  let r = rand() * s;
-  for (const x of list) if ((r -= x.odds) < 0) return x;
-  return list[list.length - 1];
-};
 
 function side() {
-  return { cur: null, prev: null, queue: [], x: 0, z: 0, yaw: 0, free: 0, attacked: -9 };
+  return { cur: null, prev: null, queue: [], x: 0, z: 0, yaw: 0 };
 }
 
 export function createFight(seed) {
   const rand = fork(seed, 'fight');
   const state = { on: false, hero: side(), foe: side(), bolts: [], heavy: [] };
   let nextId = -10;
-  let nextBeat = 0;
-  let lastBy = 'foe';
-  let opening = false; // (an engagement opens with fire, not a strafe)
+  let round = 0;
+  let beat = 0; // which beat of the round is next
+  let nextAt = 0; // when it starts
   let STAND = 80; // how far apart they fight (see begin)
-  let FAR = STAND * SPREAD;
   const P = [0, 0];
 
-  /** Start an act on a side at t (facing yaw), from where he stands. */
+  /** Start an act on a side at t, facing yaw (by default where he faces). */
   function start(f, act, t) {
-    f.prev = f.cur && f.cur.clip ? { ...f.cur, endedAt: t } : f.cur;
+    f.prev = f.cur && f.cur.clip ? { ...f.cur } : f.cur;
     act.t0 = t;
     act.yaw = act.yaw ?? f.yaw;
     act.lastP = [0, 0];
     f.cur = act;
   }
+  const stand = (extra = {}) => ({ kind: 'stand', clip: null, ...extra });
+  const ends = (a) => (a.until !== undefined ? a.until : a.clip && !a.loop ? a.t0 + clip(a.clip).duration : Infinity);
 
-  const ends = (a) => (a.clip && !a.loop ? a.t0 + clip(a.clip).duration : Infinity);
-  const busy = (f, t) => f.queue.length > 0 || (f.cur && f.cur.kind !== 'idle' && f.cur.kind !== 'strafe' && t < ends(f.cur));
-
-  /**
-   * Carry him on along his clip's path to t, turned to his facing as it is now (so a strafe that keeps
-   * turning to face the other curves round him).
-   */
+  /** Carry him on along his clip's path to t, turned to his facing as it is now. */
   function carry(f, t) {
     const a = f.cur;
     if (!a || !a.clip) return;
@@ -108,71 +82,95 @@ export function createFight(seed) {
     f.z += (dz * s - dx * c) * K;
   }
 
-  /** Plan the next beat at t: an exchange (whoever did not attack last, mostly), a strafe, or a breath. */
-  function beat(t, d) {
-    const r = rand();
-    if (d > FAR) {
-      // Too far apart: Thanos walks in on him (no clip: the procedural walk).
-      start(state.foe, { clip: null, kind: 'walk' }, t);
-      state.foe.walkTo = t + 2.5;
-      nextBeat = t + 1.2;
-      return;
-    }
-    if (!opening && r < 0.2 && d > NEAR) {
-      // Circling: both strafe the same way round, a cycle or two.
-      const dir = rand() < 0.5 ? 'L' : 'R';
-      const cycles = rand() < 0.75 ? 1 : 2;
-      for (const k of ['hero', 'foe']) {
-        const name = STRAFES[dir];
-        start(state[k], { clip: name, mirror: false, loop: true, kind: 'strafe', until: t + cycles * clip(name).duration }, t);
-      }
-      nextBeat = t + cycles * clip(STRAFES[dir]).duration + range(rand, 0.2, 0.5);
-      return;
-    }
-    const by = rand() < 0.7 ? (lastBy === 'hero' ? 'foe' : 'hero') : lastBy;
-    opening = false;
-    exchange(by, t, d);
+  const dist = () => Math.hypot(state.foe.x - state.hero.x, state.foe.z - state.hero.z);
+  const flight = () => Math.min(BOLT_T[1], Math.max(BOLT_T[0], dist() / BOLT_SPEED));
+  function bolt(by, hand, tFire, power, outcome) {
+    const b = { id: nextId--, by, hand, tFire, tHit: tFire + flight(), power, outcome };
+    state.bolts.push(b);
+    return b;
+  }
+  /** Queue an act for a side at time `at`. */
+  const queue = (f, at, act) => f.queue.push({ at, act });
+
+  /* ---- the beats: each schedules both sides from t, and returns when the next may start ---- */
+
+  /** The stare-down. */
+  function stare(t) {
+    start(state.hero, stand(), t);
+    start(state.foe, stand(), t);
+    return t + range(rand, 0.9, 1.4);
   }
 
-  /** `by` attacks the other at t; the other's answer is decided now, as it will be fired. */
-  function exchange(by, t, d) {
-    const A = state[by];
-    const B = state[by === 'hero' ? 'foe' : 'hero'];
-    const atk = pickOdds(rand, ATTACKS[by]);
-    start(A, { clip: atk.clip, mirror: atk.mirror, loop: false, kind: 'attack' }, t);
-    A.queue.length = 0;
-    lastBy = by;
-    const r = rand();
-    const outcome = r < 0.55 ? 'hit' : r < 0.85 ? 'dodge' : 'miss';
-    const heavy = outcome === 'hit' && atk.power >= 1 && rand() < 0.6;
-    let first = Infinity;
-    atk.fire.forEach((f, i) => {
-      const tFire = t + f.t;
-      const tHit = tFire + Math.min(BOLT_T[1], Math.max(BOLT_T[0], d / BOLT_SPEED));
-      // (After the first, the rest of a volley follow it: a dodge evades them all, a hit lands them all.)
-      state.bolts.push({ id: nextId--, by, hand: f.hand, tFire, tHit, power: heavy ? 1 : atk.power, miss: outcome !== 'hit' });
-      if (i === 0) first = tHit;
-    });
-    const firstFire = t + atk.fire[0].t;
-    if (outcome === 'hit') {
-      if (heavy) {
-        state.heavy.push(first);
-        const [down, up] = pick(rand, DOWNS);
-        B.queue = [
-          { at: first - 0.02, act: { clip: down, mirror: rand() < 0.5, loop: false, kind: 'react' } },
-          { at: first - 0.02 + clip(down).duration - FADE, act: { clip: up, mirror: false, loop: false, kind: 'react' } },
-        ];
-        nextBeat = first + clip(down).duration + clip(up).duration + range(rand, 0.3, 0.7);
-      } else {
-        B.queue = [{ at: first - 0.02, act: { clip: pick(rand, HITS), mirror: rand() < 0.5, loop: false, kind: 'react' } }];
-        nextBeat = Math.max(t + clip(atk.clip).duration, first + 1.2) + range(rand, 0.1, 0.5);
-      }
-    } else if (outcome === 'dodge') {
-      const name = pick(rand, DODGES);
-      B.queue = [{ at: firstFire - 0.2, act: { clip: name, mirror: rand() < 0.5, loop: false, kind: 'dodge' } }];
-      nextBeat = Math.max(t + clip(atk.clip).duration, firstFire + clip(name).duration) + range(rand, 0.1, 0.4);
-    } else nextBeat = t + clip(atk.clip).duration + range(rand, 0.1, 0.4);
+  /** Iron Man opens up, side-stepping; Thanos walks on into it, the gauntlet up for some. */
+  function volley(t) {
+    const H = state.hero;
+    const F = state.foe;
+    const dir = rand() < 0.5 ? 'L' : 'R';
+    const n = 3 + Math.floor(rand() * 3) + Math.min(2, round);
+    const gap = range(rand, 0.32, 0.42);
+    const dur = 0.45 + n * gap + 0.4;
+    start(H, { kind: 'repulsor', clip: STRAFE[dir], mirror: false, loop: true, aim: 'both', until: t + dur }, t);
+    start(F, { kind: 'advance', clip: null, until: t + dur, block: 1 }, t);
+    let hand = rand() < 0.5 ? 'L' : 'R';
+    for (let i = 0; i < n; i++) {
+      const tFire = t + 0.45 + i * gap + range(rand, -0.05, 0.05);
+      const r = rand();
+      // Thanos catches about half on the gauntlet; the rest he takes, or they go wide.
+      const outcome = r < 0.45 ? 'block' : r < 0.85 ? 'hit' : 'miss';
+      bolt('hero', hand, tFire, 0.5, outcome);
+      hand = hand === 'L' ? 'R' : 'L';
+    }
+    return t + dur;
   }
+
+  /** Thanos plants and fires from the gauntlet; Iron Man dodges the first on his jets, takes the next. */
+  function answer(t) {
+    const H = state.hero;
+    const F = state.foe;
+    const shots = 2 + (round >= 2 && rand() < 0.5 ? 1 : 0);
+    const charge = range(rand, 0.55, 0.75);
+    const gap = range(rand, 0.75, 0.95);
+    start(F, { kind: 'gauntlet', clip: null, aim: 'L', until: t + charge + shots * gap + 0.4 }, t);
+    start(H, stand(), t);
+    let end = t + charge + shots * gap + 0.6;
+    let down = false;
+    for (let i = 0; i < shots; i++) {
+      const tFire = t + charge + i * gap;
+      // The first he sees coming and dodges; the next finds him (from the second round, it may put him down).
+      const heavy = i > 0 && !down && round >= 1 && rand() < 0.45;
+      const outcome = i === 0 ? 'dodge' : 'hit';
+      const b = bolt('foe', 'L', tFire, heavy ? 1 : 0.8, outcome);
+      if (outcome === 'dodge') {
+        queue(H, tFire - 0.25, { kind: 'dodge', clip: 'Dodging (1)', mirror: rand() < 0.5, loop: false, thrust: 1 });
+      } else if (heavy) {
+        down = true;
+        state.heavy.push(b.tHit);
+        queue(H, b.tHit - 0.02, { kind: 'react', clip: 'Knocked Down', mirror: false, loop: false });
+        queue(H, b.tHit - 0.02 + clip('Knocked Down').duration - FADE, { kind: 'react', clip: 'Getting Up', mirror: false, loop: false });
+        end = Math.max(end, b.tHit + clip('Knocked Down').duration + clip('Getting Up').duration);
+      } else {
+        queue(H, b.tHit - 0.02, { kind: 'react', clip: pick(rand, HITS), mirror: rand() < 0.5, loop: false });
+        end = Math.max(end, b.tHit + 1.4);
+      }
+    }
+    return end + range(rand, 0.2, 0.5);
+  }
+
+  /** Iron Man's heavy blast, both palms: Thanos staggers back. */
+  function heavy(t) {
+    const H = state.hero;
+    const F = state.foe;
+    const tFire = t + range(rand, 0.6, 0.8);
+    start(H, stand({ kind: 'repulsor', aim: 'both', until: tFire + 0.6 }), t);
+    start(F, stand(), t);
+    const L = bolt('hero', 'L', tFire, 1, 'hit');
+    bolt('hero', 'R', tFire + 0.03, 1, 'hit');
+    state.heavy.push(L.tHit);
+    queue(F, L.tHit - 0.02, { kind: 'react', clip: STAGGER, mirror: rand() < 0.5, loop: false, weight: STAGGER_W });
+    return L.tHit + clip(STAGGER).duration * 0.8;
+  }
+
+  const BEATS = [stare, volley, answer, heavy];
 
   return {
     state,
@@ -180,7 +178,8 @@ export function createFight(seed) {
     begin(t, hero, foe, stand = 80) {
       state.on = true;
       STAND = stand;
-      FAR = stand * SPREAD;
+      round = 0;
+      beat = 0;
       for (const [k, p] of [['hero', hero], ['foe', foe]]) {
         const f = state[k];
         f.x = p.x;
@@ -188,10 +187,9 @@ export function createFight(seed) {
         f.yaw = p.yaw;
         f.queue.length = 0;
         f.cur = null;
-        start(f, { clip: IDLE, mirror: false, loop: true, kind: 'idle' }, t);
+        f.prev = null;
       }
-      nextBeat = t + range(rand, 0.5, 0.9);
-      opening = true;
+      nextAt = t;
     },
     /** It is over (he is taking off): the clips ease out, the bolts in the air finish. */
     end(t) {
@@ -200,17 +198,18 @@ export function createFight(seed) {
       for (const k of ['hero', 'foe']) {
         const f = state[k];
         f.queue.length = 0;
-        start(f, { clip: null, kind: 'none' }, t);
+        start(f, { kind: 'none', clip: null }, t);
       }
       state.bolts = state.bolts.filter((b) => b.tFire <= t);
     },
-    /** Whether he is free to leave (standing in his idle, nothing coming). */
+    /** Whether he may leave: the round's beat over, nothing coming, both on their feet. */
     calm(t) {
-      return !busy(state.hero, t) && !busy(state.foe, t) && !state.bolts.some((b) => b.tHit > t);
+      const busy = (f) => f.queue.length > 0 || (f.cur && f.cur.kind !== 'stand' && f.cur.kind !== 'advance' && t < ends(f.cur));
+      return t >= nextAt && !busy(state.hero) && !busy(state.foe) && !state.bolts.some((b) => b.tHit > t);
     },
     /**
-     * Advance to t: start what is due, carry each along his clip, keep the idle faces turned to each other,
-     * plan the next beat. `winding` (the section's words are done): no new exchanges, so he comes to rest.
+     * Advance to t: start what is due, carry each along his clip, keep faces turned to each other, run the
+     * next beat when it is time. `winding` (the section's words are done): no new round.
      */
     step(t, dt, winding) {
       if (!state.on) {
@@ -219,38 +218,35 @@ export function createFight(seed) {
       }
       const H = state.hero;
       const F = state.foe;
+      if (t >= nextAt && !(winding && beat === 0)) {
+        nextAt = BEATS[beat](t);
+        beat = (beat + 1) % BEATS.length;
+        if (beat === 0) round++;
+      }
       for (const [f, o] of [[H, F], [F, H]]) {
-        // Due next: a struck fighter's attack is cut short (and its bolts not yet fired with it).
         while (f.queue.length && f.queue[0].at <= t) {
           const q = f.queue.shift();
-          if (f.cur && f.cur.kind === 'attack') {
-            const who = f === H ? 'hero' : 'foe';
-            state.bolts = state.bolts.filter((b) => !(b.by === who && b.tFire > t));
-          }
           q.act.yaw = Math.atan2(o.z - f.z, o.x - f.x);
           start(f, q.act, t);
         }
         const a = f.cur;
-        // A clip run out (or a strafe or walk over): back to his idle, facing the other.
-        if (a && ((a.clip && !a.loop && t >= ends(a)) || (a.until && t >= a.until) || (a.kind === 'walk' && (t >= f.walkTo || Math.hypot(o.x - f.x, o.z - f.z) < STAND + 5)))) {
+        // An act run out: back to standing, facing the other.
+        if (a && t >= ends(a) && a.kind !== 'stand') {
           carry(f, t);
-          start(f, { clip: IDLE, mirror: false, loop: true, kind: 'idle', yaw: Math.atan2(o.z - f.z, o.x - f.x) }, t);
+          start(f, stand({ yaw: Math.atan2(o.z - f.z, o.x - f.x) }), t);
         }
         carry(f, t);
-        if (f.cur.kind === 'idle' || f.cur.kind === 'strafe') {
+        // Standing, firing or side-stepping: his face kept to the other.
+        if (!f.cur.clip || f.cur.kind === 'repulsor') {
           const want = Math.atan2(o.z - f.z, o.x - f.x);
           const turn = wrap(want - f.cur.yaw);
           f.cur.yaw += Math.sign(turn) * Math.min(Math.abs(turn), TURN * dt);
         }
-        f.yaw = f.cur.yaw ?? f.yaw;
+        f.yaw = f.cur.yaw;
       }
-      // Thrown too far apart: Thanos walks in on him at once, whatever Iron Man is doing.
-      const d = Math.hypot(F.x - H.x, F.z - H.z);
-      if (d > FAR && F.cur && F.cur.kind === 'idle' && !F.queue.length) {
-        start(F, { clip: null, kind: 'walk' }, t);
-        F.walkTo = t + 3;
-      }
-      if (!winding && t >= nextBeat && !busy(H, t) && !busy(F, t) && F.cur.kind !== 'walk') beat(t, d);
+      // Thrown too far apart, Thanos walks back in on him.
+      if (F.cur.kind === 'stand' && !F.queue.length && dist() > STAND * SPREAD) start(F, { kind: 'advance', clip: null, until: t + 3 }, t);
+      if (F.cur.kind === 'advance' && dist() < STAND * 0.85) F.cur.until = Math.min(F.cur.until, t);
       state.bolts = state.bolts.filter((b) => t < b.tHit + 1.5);
     },
     /** How fast time runs at t (1: normal; a heavy blast landing slows it, see SLOW). */
@@ -266,26 +262,31 @@ export function createFight(seed) {
       if (state.heavy.length > 8) state.heavy.splice(0, state.heavy.length - 8);
       return 1 - SLOW_BY * k;
     },
-    /** Each one's pin for his walker (null while he walks on his own). */
+    /** His walker's pin while a clip carries him (else null: he stands or walks on his own). */
     pin(k) {
       const f = state[k];
       if (!state.on || !f.cur || !f.cur.clip) return null;
       return { x: f.x, z: f.z, yaw: f.yaw };
     },
-    /** Where Thanos walks to, when he walks in (world x, z). */
+    /** Whether he is walking in (Thanos advancing). */
+    walking(k) {
+      const f = state[k];
+      return !!(state.on && f.cur && f.cur.kind === 'advance');
+    },
+    /** Where Thanos walks in to (world x, z). */
     walkGoal() {
       const H = state.hero;
       const F = state.foe;
-      const d = Math.hypot(F.x - H.x, F.z - H.z) || 1;
-      return { x: H.x + ((F.x - H.x) / d) * STAND, z: H.z + ((F.z - H.z) / d) * STAND };
+      const d = dist() || 1;
+      return { x: H.x + ((F.x - H.x) / d) * STAND * 0.8, z: H.z + ((F.z - H.z) / d) * STAND * 0.8 };
     },
-    /** Track where the walker actually is (when he walks on his own). */
+    /** Track where the walker actually is (when no clip carries him). */
     at(k, x, z, yaw) {
       const f = state[k];
       if (f.cur && f.cur.clip) return;
       f.x = x;
       f.z = z;
-      f.yaw = yaw;
+      if (!f.cur || f.cur.kind === 'advance' || f.cur.kind === 'none') f.yaw = yaw;
     },
   };
 }

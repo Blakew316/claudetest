@@ -517,7 +517,7 @@ export function createView3D(canvas) {
   const foeClip = new THREE.Plane(new THREE.Vector3(0, 1, 0), 1e9);
   const foeView = { clipped: false, last: null };
   // Each one's fight input, reused every frame (see fightFor).
-  const fightView = { hero: { foe: null, acts: [], shots: [], aim: null }, foe: { foe: null, acts: [], shots: [], aim: null } };
+  const fightView = { hero: { foe: null, acts: [], shots: [], aims: [], aim: null, thrust: 0, now: 0 }, foe: { foe: null, acts: [], shots: [], aims: [], aim: null, thrust: 0, now: 0 } };
   if (foeHero) {
     foeHero.group.visible = foeHero.fx.visible = false;
     scene.add(foeHero.group, foeHero.fx, portal.mesh);
@@ -971,7 +971,9 @@ export function createView3D(canvas) {
       const foeOn = !!(foeHero && foe && F && F.on);
       const fighting = foeOn && (F.state === 'here' || F.state === 'coming');
       const D = run.duel;
-      hero.update(spider, dt, camera, targets, halfH, foeHero && (fighting || D?.hero.prev) ? fightFor(D, 'hero', t, fighting ? foeHero.chest() : null) : null);
+      const fh = foeHero && (fighting || D?.hero.prev) ? fightFor(D, 'hero', t, fighting ? foeHero.chest() : null) : null;
+      if (fh) for (const a of fh.aims) targets.push(a);
+      landed(D, hero.update(spider, dt, camera, targets, halfH, fh));
       if (foeOn) drawFoe(foe, dt, halfH, F.portal, fighting, t, D);
       else if (foeHero) foeHero.group.visible = foeHero.fx.visible = false;
       if (portal) portal.update(F && F.portal, t);
@@ -1298,27 +1300,59 @@ export function createView3D(canvas) {
     fz.foe = foeChest;
     fz.acts.length = 0;
     fz.shots.length = 0;
+    fz.aims.length = 0;
     fz.aim = null;
+    fz.thrust = 0;
+    fz.now = t;
     if (!D) return fz;
     const side = D[k];
     const cur = side.cur;
+    // The clips: the current easing in over the last (FADE s); a stagger played at its weight.
     const wc = cur && cur.clip ? smooth01((t - cur.t0) / DUEL_FADE) : 0;
     if (side.prev && side.prev.clip && wc < 1) {
-      const fadeOut = cur && cur.clip ? 1 - wc : 1 - smooth01((t - cur.t0) / DUEL_FADE);
-      if (fadeOut > 1e-3) fz.acts.push({ clip: side.prev.clip, t: t - side.prev.t0, loop: side.prev.loop, mirror: side.prev.mirror, w: fadeOut });
+      const fadeOut = (cur && cur.clip ? 1 - wc : 1 - smooth01((t - cur.t0) / DUEL_FADE)) * (side.prev.weight ?? 1);
+      if (fadeOut > 1e-3) fz.acts.push({ clip: side.prev.clip, t: t - side.prev.t0, loop: side.prev.loop, mirror: side.prev.mirror, w: fadeOut, free: side.prev.kind === 'repulsor' });
     }
-    if (cur && cur.clip && wc > 0) fz.acts.push({ clip: cur.clip, t: t - cur.t0, loop: cur.loop, mirror: cur.mirror, w: wc });
+    if (cur && cur.clip && wc > 0) fz.acts.push({ clip: cur.clip, t: t - cur.t0, loop: cur.loop, mirror: cur.mirror, w: wc * (cur.weight ?? 1), free: cur.kind === 'repulsor' });
     const victim = k === 'hero' ? 'foe' : 'hero';
     const at = victim === 'hero' ? hero.chest() : foeHero.chest();
+    const me = k === 'hero' ? hero.chest() : foeHero.chest();
+    // His left, facing the other (for both palms up, one a little each side of him).
+    const ux = at[0] - me[0];
+    const uz = at[2] - me[2];
+    const ul = Math.hypot(ux, uz) || 1;
+    const lx = uz / ul;
+    const lz = -ux / ul;
+    // Arms up on him: Iron Man's palms (repulsors), Thanos's gauntlet (firing, or raised to catch a blast).
+    if (cur && (cur.aim || cur.block)) {
+      const id0 = -(100000 + Math.round(cur.t0 * 60) * 2);
+      const hands = cur.aim === 'both' ? ['L', 'R'] : [cur.aim || 'L'];
+      for (const h of hands) {
+        const s = hands.length > 1 ? (h === 'L' ? 1 : -1) * 10 : 0;
+        fz.aims.push({ at: [at[0] + lx * s, at[1], at[2] + lz * s], id: id0 - (h === 'R' ? 1 : 0), p: 1, aimOnly: true, block: !!cur.block && !cur.aim });
+      }
+    }
+    if (cur && cur.thrust) fz.thrust = smooth01((t - cur.t0) / 0.15) * (1 - smooth01((t - cur.t0 - 0.5) / 0.4));
+    // The bolts he fires: at the other's chest; caught on the raised gauntlet; or wide (dodged or missed).
     for (const b of D.bolts) {
       if (b.by !== k || t < b.tFire - 0.4) continue;
-      fz.shots.push({ id: b.id, hand: b.hand, at, tFire: b.tFire, tHit: b.tHit, power: b.power, miss: b.miss });
-      // The arm on its way out for this one: turned onto him (the clip has it thrust roughly his way).
-      const u = t - b.tFire;
-      const w = smooth01((u + 0.4) / 0.3) * (1 - smooth01((u - 0.05) / 0.3));
-      if (w > (fz.aim ? fz.aim.w : 0)) fz.aim = { hand: b.hand, at, w };
+      let to = at;
+      if (b.outcome === 'block') to = [at[0] - (ux / ul) * 9, at[1] + 4, at[2] - (uz / ul) * 9];
+      fz.shots.push({ id: b.id, hand: b.hand, at: to, tFire: b.tFire, tHit: b.tHit, power: b.power, miss: b.outcome === 'miss' || b.outcome === 'dodge' });
     }
     return fz;
+  }
+
+  /** A bolt of the fight landing (the rig reports its id): Thanos flinches at the light ones he takes. */
+  function landed(D, ids) {
+    if (!D || !ids || !ids.length) return;
+    for (const id of ids) {
+      const b = D.bolts.find((x) => x.id === id);
+      if (!b || b.by !== 'hero') continue;
+      const d = [foeHero.chest()[0] - hero.chest()[0], 0, foeHero.chest()[2] - hero.chest()[2]];
+      if (b.outcome === 'hit') foeHero.hit(d, b.power >= 1 ? 0.35 : 0.3);
+      else if (b.outcome === 'block') foeHero.hit(d, 0.1);
+    }
   }
 
   function drawFoe(foe, dt, halfH, P, fighting, t, D) {
@@ -1338,7 +1372,8 @@ export function createView3D(canvas) {
     const jump = foe !== foeView.last || !foeHero.group.visible;
     foeView.last = foe;
     foeHero.group.visible = foeHero.fx.visible = true;
-    foeHero.update(foe, jump ? 1 : dt, camera, [], halfH, fighting || D?.foe.prev ? fightFor(D, 'foe', t, fighting ? hero.chest() : null) : null);
+    const ff = fighting || D?.foe.prev ? fightFor(D, 'foe', t, fighting ? hero.chest() : null) : null;
+    foeHero.update(foe, jump ? 1 : dt, camera, ff ? ff.aims.slice() : [], halfH, ff);
   }
 
   return { resize, setWorld, render, project, orbit, camera, hero, foe: foeHero, silhouette: sil };

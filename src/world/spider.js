@@ -118,6 +118,7 @@ export class Spider {
     r.spider.arrived = run.spider.arrived;
     r.tentacles = run.tentacles; // (firing, it walks slower)
     r.fight = !!run.fight; // (fighting, it keeps its face to whoever it is squaring up to: see faceAt)
+    r.cruise = run.cruise ? run.cruise * K : undefined; // (how fast it may walk, if held back)
     // Played by motion capture: held where the director puts it.
     if (run.pin) {
       this.pin.x = run.pin.x * K;

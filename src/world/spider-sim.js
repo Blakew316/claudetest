@@ -1118,7 +1118,7 @@ export class Spider {
     const cruise = fight ? STRAFE + (CRUISE - STRAFE) * clamp(dot(this.hF, n), 0, 1) : CRUISE * facing;
     // The speed it means to go eases too, so a burst gathers and dies away rather than kicking in.
     // (Firing, he slows to a purposeful step rather than strolling on at full pace.)
-    const target = this.walking ? Math.min(cruise, dist * 1.2) * (run.tentacles && run.tentacles.length ? FIRE_SLOW : 1) : 0;
+    const target = this.walking ? Math.min(cruise, run.cruise ?? Infinity, dist * 1.2) * (run.tentacles && run.tentacles.length ? FIRE_SLOW : 1) : 0;
     this.speedT += (target - this.speedT) * (1 - Math.exp(-10 * dt));
     this.speedV += ((this.speedT - this.speed) * 36 - this.speedV * 12) * dt;
     this.speed = Math.max(0, this.speed + this.speedV * dt);
