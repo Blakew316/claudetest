@@ -1,16 +1,22 @@
-"""Iron Man's nanotech: weapons that grow out of the suit behind a glowing edge, fed by a stream of nanites from the
-chest reactor, and that break.
+"""Iron Man's nanotech: weapons that grow out of the suit behind a glowing edge, fed by a shimmer of nanites from
+the chest reactor, and that break. Shapes after the Mark 50 / Mark 85 references (the Titan fight, the threezero
+and Hot Toys pieces):
 
-  kit = build(scene, root, arm)        # before any motion is put on him: every piece made and bound to his bones
-  form(kit, 'cannon', f0, f1)          # grows over f0..f1 (stream from the reactor while it does)
+  cannon      the long forearm cannon: stacked red armour plates, gold strips, blue rings glowing at the muzzle
+  shield      a pair of tall crescent panels on the left forearm: red rim, a field of glowing blue cells,
+              built in segments (so they break into pieces)
+  blade       twin curved blades from the right forearm, their outer edges white-hot
+  wings, fist the booster wings and the giant fist of the uploaded nanotech model (smoothed, in the suit's metal)
+
+  kit = build(scene, root, arm)        # in his imported pose, before any motion: every piece made and bound
+  form(kit, 'cannon', f0, f1)          # grows over f0..f1
   retract(kit, 'cannon', f0, f1)       # flows back in
-  snap_blade(scene, kit, frame)        # the blade breaks in a fist: the tip falls away spinning, sparks
-  shatter_shield(scene, kit, frame, push)  # the shield breaks into its plates, thrown along push
+  snap_blade(scene, kit, frame, fx)    # the blades break in a fist: the outer halves fall away spinning
+  shatter_shield(scene, kit, frame, push, fx)   # the crescents break into their segments, thrown along push
 
-Pieces: cannon (right forearm) and shield (left forearm) are built here; the blade (right forearm), the booster
-wings (back) and the giant fist (right arm) are the uploaded nanotech model's (smoothed, in the suit's metal).
-Each piece carries a 'nano_t' attribute: 0 where it grows from, 1 at its far end; its material shows the part
-of it with nano_t below its 'form' value (keyed 0..1) and lights the edge."""
+Every piece carries a 'nano_t' point attribute (0 where it grows from, 1 at its far end). Its materials read the
+object's own keyed properties: 'form' (shown where nano_t < form, the edge glowing), 'cut_on'/'cut_at' (a break:
+hide nano_t > cut_at) and 'keep_above' (a broken-off piece: show nano_t > keep_above)."""
 import bpy, bmesh, math, os, random
 from mathutils import Vector, Matrix
 import paths
@@ -19,126 +25,172 @@ import retarget as rt
 NANO_OBJ = 'hero_ironman01.obj'  # (inside the uploaded nanotech zip)
 MOBILE_H = 2.03                  # that model's height (its units)
 EDGE = (0.55, 0.85, 1.0)         # the forming edge's light
+BLUE = (0.08, 0.5, 1.0)          # the cells and rings
 
 
 # ---------- materials ----------
-def nano_material(name):
-    """Dark red nanotech metal with gold flecks, cut off above 'form' along nano_t, the cut edge glowing."""
-    m = bpy.data.materials.new(name)
-    m.use_nodes = True
-    nt = m.node_tree
-    nt.nodes.clear()
+def _mask(nt, surface):
+    """Wrap a surface shader in the nanotech mask (shown where nano_t < the object's 'form', its edge lit; the
+    break and broken-piece cuts)."""
     N, L = nt.nodes.new, nt.links.new
-    out = N('ShaderNodeOutputMaterial')
-    bsdf = N('ShaderNodeBsdfPrincipled')
-    bsdf.inputs['Metallic'].default_value = 1.0
-    bsdf.inputs['Roughness'].default_value = 0.28
-    tc = N('ShaderNodeTexCoord')
-    vor = N('ShaderNodeTexVoronoi')
-    vor.inputs['Scale'].default_value = 60.0
-    L(tc.outputs['Object'], vor.inputs['Vector'])
-    ramp = N('ShaderNodeValToRGB')
-    ramp.color_ramp.elements[0].position, ramp.color_ramp.elements[0].color = 0.0, (0.33, 0.025, 0.02, 1)
-    ramp.color_ramp.elements[1].position, ramp.color_ramp.elements[1].color = 0.9, (0.5, 0.06, 0.04, 1)
-    gold = ramp.color_ramp.elements.new(0.97)
-    gold.color = (0.85, 0.6, 0.25, 1)
-    L(vor.outputs['Distance'], ramp.inputs['Fac'])
-    L(ramp.outputs['Color'], bsdf.inputs['Base Color'])
+
+    def obj_attr(name):
+        a = N('ShaderNodeAttribute')
+        a.attribute_type = 'OBJECT'
+        a.attribute_name = name
+        return a.outputs['Fac']
+
+    def math(op, a, b=None):
+        m = N('ShaderNodeMath')
+        m.operation = op
+        for i, v in enumerate((a, b)):
+            if v is None:
+                continue
+            if isinstance(v, (int, float)):
+                m.inputs[i].default_value = v
+            else:
+                L(v, m.inputs[i])
+        return m.outputs[0]
+
     t = N('ShaderNodeAttribute')
     t.attribute_name = 'nano_t'
-    form = N('ShaderNodeValue')
-    form.name = 'form'
-    form.outputs[0].default_value = 0.0
-    # Shown where t < form (a little ragged: nanites, not a clean line).
+    t = t.outputs['Fac']
+    tc = N('ShaderNodeTexCoord')
     noise = N('ShaderNodeTexNoise')
-    noise.inputs['Scale'].default_value = 40.0
+    noise.inputs['Scale'].default_value = 45.0
     L(tc.outputs['Object'], noise.inputs['Vector'])
-    rag = N('ShaderNodeMath')
-    rag.operation = 'MULTIPLY_ADD'
-    rag.inputs[1].default_value = 0.06
-    L(noise.outputs['Fac'], rag.inputs[0])
-    L(t.outputs['Fac'], rag.inputs[2])
-    shown = N('ShaderNodeMath')
-    shown.operation = 'LESS_THAN'
-    L(rag.outputs[0], shown.inputs[0])
-    L(form.outputs[0], shown.inputs[1])
-    # The edge: within a band below form, bright.
-    gap = N('ShaderNodeMath')
-    gap.operation = 'SUBTRACT'
-    L(form.outputs[0], gap.inputs[0])
-    L(rag.outputs[0], gap.inputs[1])
+    rag = math('MULTIPLY_ADD', noise.outputs['Fac'], 0.06)
+    L(t, rag.node.inputs[2])
+    form = obj_attr('form')
+    shown = math('LESS_THAN', rag, form)
+    # a break (cut_on: hide nano_t > cut_at) and a broken piece (keep nano_t > keep_above)
+    cut = math('MAXIMUM', math('SUBTRACT', 1.0, obj_attr('cut_on')), math('LESS_THAN', t, obj_attr('cut_at')))
+    keep = math('GREATER_THAN', t, math('SUBTRACT', obj_attr('keep_above'), 1e-4))
+    shown = math('MULTIPLY', math('MULTIPLY', shown, cut), keep)
+    # the edge: a band below form, bright, while forming
     band = N('ShaderNodeMapRange')
     band.inputs['From Min'].default_value, band.inputs['From Max'].default_value = 0.0, 0.08
     band.inputs['To Min'].default_value, band.inputs['To Max'].default_value = 1.0, 0.0
     band.clamp = True
-    L(gap.outputs[0], band.inputs['Value'])
-    # (no edge once fully formed)
-    full = N('ShaderNodeMath')
-    full.operation = 'LESS_THAN'
-    full.inputs[1].default_value = 0.999
-    L(form.outputs[0], full.inputs[0])
-    edge = N('ShaderNodeMath')
-    edge.operation = 'MULTIPLY'
-    L(band.outputs[0], edge.inputs[0])
-    L(full.outputs[0], edge.inputs[1])
+    L(math('SUBTRACT', form, rag), band.inputs['Value'])
+    edge = math('MULTIPLY', band.outputs[0], math('LESS_THAN', form, 0.999))
     emit = N('ShaderNodeEmission')
     emit.inputs['Color'].default_value = (*EDGE, 1)
-    strength = N('ShaderNodeMath')
-    strength.operation = 'MULTIPLY'
-    strength.inputs[1].default_value = 30.0
-    L(edge.outputs[0], strength.inputs[0])
-    L(strength.outputs[0], emit.inputs['Strength'])
+    L(math('MULTIPLY', edge, 30.0), emit.inputs['Strength'])
     add = N('ShaderNodeAddShader')
-    L(bsdf.outputs[0], add.inputs[0])
+    L(surface, add.inputs[0])
     L(emit.outputs[0], add.inputs[1])
     clear = N('ShaderNodeBsdfTransparent')
     mix = N('ShaderNodeMixShader')
-    L(shown.outputs[0], mix.inputs['Fac'])
+    L(shown, mix.inputs['Fac'])
     L(clear.outputs[0], mix.inputs[1])
     L(add.outputs[0], mix.inputs[2])
+    out = N('ShaderNodeOutputMaterial')
     L(mix.outputs[0], out.inputs['Surface'])
+
+
+def _mat(name):
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    m.node_tree.nodes.clear()
+    return m, m.node_tree
+
+
+def metal(name, color, rough, coat=0.0):
+    m, nt = _mat(name)
+    b = nt.nodes.new('ShaderNodeBsdfPrincipled')
+    b.inputs['Base Color'].default_value = (*color, 1)
+    b.inputs['Metallic'].default_value = 1.0
+    b.inputs['Roughness'].default_value = rough
+    for k in ('Coat Weight', 'Clearcoat'):
+        if k in b.inputs:
+            b.inputs[k].default_value = coat
+            break
+    _mask(nt, b.outputs[0])
+    return m
+
+
+def glow_cells(name):
+    """A field of small glowing blue cells with dark seams between them."""
+    m, nt = _mat(name)
+    N, L = nt.nodes.new, nt.links.new
+    tc = N('ShaderNodeTexCoord')
+    brick = N('ShaderNodeTexBrick')
+    brick.inputs['Scale'].default_value = 26.0
+    brick.inputs['Mortar Size'].default_value = 0.035
+    brick.inputs['Color1'].default_value = (1, 1, 1, 1)
+    brick.inputs['Color2'].default_value = (0.55, 0.55, 0.55, 1)
+    brick.inputs['Mortar'].default_value = (0, 0, 0, 1)
+    L(tc.outputs['Object'], brick.inputs['Vector'])
+    emit = N('ShaderNodeEmission')
+    emit.inputs['Color'].default_value = (*BLUE, 1)
+    st = N('ShaderNodeMath')
+    st.operation = 'MULTIPLY'
+    st.inputs[1].default_value = 3.2
+    L(brick.outputs['Fac'], st.inputs[0])
+    L(st.outputs[0], emit.inputs['Strength'])
+    glass = N('ShaderNodeBsdfPrincipled')
+    glass.inputs['Base Color'].default_value = (0.02, 0.05, 0.08, 1)
+    glass.inputs['Roughness'].default_value = 0.15
+    add = N('ShaderNodeAddShader')
+    L(glass.outputs[0], add.inputs[0])
+    L(emit.outputs[0], add.inputs[1])
+    _mask(nt, add.outputs[0])
+    return m
+
+
+def glow(name, color, strength):
+    m, nt = _mat(name)
+    e = nt.nodes.new('ShaderNodeEmission')
+    e.inputs['Color'].default_value = (*color, 1)
+    e.inputs['Strength'].default_value = strength
+    _mask(nt, e.outputs[0])
     return m
 
 
 def stream_material(name):
-    """The nanite stream: bright dashes running along it (keyed 'flow')."""
-    m = bpy.data.materials.new(name)
-    m.use_nodes = True
-    nt = m.node_tree
-    nt.nodes.clear()
+    """The nanite stream: a fine shimmer of specks running along it (keyed 'flow')."""
+    m, nt = _mat(name)
     N, L = nt.nodes.new, nt.links.new
-    out = N('ShaderNodeOutputMaterial')
     tc = N('ShaderNodeTexCoord')
     sep = N('ShaderNodeSeparateXYZ')
     L(tc.outputs['UV'], sep.inputs[0])
     flow = N('ShaderNodeValue')
     flow.name = 'flow'
-    add = N('ShaderNodeMath')
-    add.operation = 'ADD'
-    L(sep.outputs['X'], add.inputs[0])
-    L(flow.outputs[0], add.inputs[1])
-    wave = N('ShaderNodeTexWave')
-    wave.inputs['Scale'].default_value = 9.0
-    wave.inputs['Distortion'].default_value = 4.0
+    u = N('ShaderNodeMath')
+    u.operation = 'MULTIPLY_ADD'
+    u.inputs[1].default_value = 90.0
+    L(sep.outputs['X'], u.inputs[0])
+    L(flow.outputs[0], u.inputs[2])
+    v = N('ShaderNodeMath')
+    v.operation = 'MULTIPLY'
+    v.inputs[1].default_value = 7.0
+    L(sep.outputs['Y'], v.inputs[0])
     comb = N('ShaderNodeCombineXYZ')
-    L(add.outputs[0], comb.inputs['X'])
-    L(comb.outputs[0], wave.inputs['Vector'])
-    pw = N('ShaderNodeMath')
-    pw.operation = 'POWER'
-    pw.inputs[1].default_value = 6.0
-    L(wave.outputs['Fac'], pw.inputs[0])
+    L(u.outputs[0], comb.inputs['X'])
+    L(v.outputs[0], comb.inputs['Y'])
+    vor = N('ShaderNodeTexVoronoi')
+    vor.inputs['Scale'].default_value = 1.0
+    vor.inputs['Randomness'].default_value = 1.0
+    L(comb.outputs[0], vor.inputs['Vector'])
+    spark = N('ShaderNodeMapRange')
+    spark.inputs['From Min'].default_value, spark.inputs['From Max'].default_value = 0.0, 0.16
+    spark.inputs['To Min'].default_value, spark.inputs['To Max'].default_value = 1.0, 0.0
+    spark.clamp = True
+    L(vor.outputs['Distance'], spark.inputs['Value'])
     emit = N('ShaderNodeEmission')
     emit.inputs['Color'].default_value = (*EDGE, 1)
     st = N('ShaderNodeMath')
     st.operation = 'MULTIPLY'
-    st.inputs[1].default_value = 25.0
-    L(pw.outputs[0], st.inputs[0])
+    st.inputs[1].default_value = 40.0
+    L(spark.outputs[0], st.inputs[0])
     L(st.outputs[0], emit.inputs['Strength'])
     clear = N('ShaderNodeBsdfTransparent')
     mix = N('ShaderNodeMixShader')
-    L(pw.outputs[0], mix.inputs['Fac'])
+    L(spark.outputs[0], mix.inputs['Fac'])
     L(clear.outputs[0], mix.inputs[1])
     L(emit.outputs[0], mix.inputs[2])
+    out = N('ShaderNodeOutputMaterial')
     L(mix.outputs[0], out.inputs['Surface'])
     return m
 
@@ -153,70 +205,143 @@ def _set_t(me, anchor, axis=None):
         at.data[i].value = (d - lo) / max(1e-6, hi - lo)
 
 
-def _obj(scene, coll, name, me, mat):
+def _prism(bm, pts, z0, z1, mat=0):
+    """A flat polygon (2D points, in order) extruded from z0 to z1; faces given material index mat."""
+    lo = [bm.verts.new((x, y, z0)) for x, y in pts]
+    hi = [bm.verts.new((x, y, z1)) for x, y in pts]
+    faces = [bm.faces.new(list(reversed(lo))), bm.faces.new(hi)]
+    n = len(pts)
+    for i in range(n):
+        faces.append(bm.faces.new((lo[i], lo[(i + 1) % n], hi[(i + 1) % n], hi[i])))
+    for f in faces:
+        f.material_index = mat
+    return faces
+
+
+def _arc_x(y, h, sag):
+    """x on the circular arc through (0, -h) and (0, h) that bulges to +x by sag."""
+    r = (h * h + sag * sag) / (2 * sag)
+    return (sag - r) + math.sqrt(max(0.0, r * r - y * y))
+
+
+def _crescent(bm, length, width, bulge, thick, segments, gap, inset=0.2, rim_mat=0, cell_mat=1):
+    """A crescent in the XY plane (tips at y = +-length/2, bulging to +x), cut into segments along y; each
+    segment a red rim with a slightly proud glowing panel set into it (both faces)."""
+    h = length / 2
+    for s in range(segments):
+        y0 = -h + length * s / segments + gap / 2
+        y1 = -h + length * (s + 1) / segments - gap / 2
+        ys = [y0 + (y1 - y0) * k / 4 for k in range(5)]
+        outer = [(_arc_x(y, h, bulge), y) for y in ys]
+        inner = [(_arc_x(y, h, bulge - width), y) for y in reversed(ys)]
+        pts = outer + inner
+        _prism(bm, pts, -thick / 2, thick / 2, rim_mat)
+        cx = sum(p[0] for p in pts) / len(pts)
+        cy = sum(p[1] for p in pts) / len(pts)
+        cell = [(cx + (x - cx) * (1 - inset), cy + (y - cy) * (1 - inset)) for x, y in pts]
+        _prism(bm, cell, -thick * 0.62, thick * 0.62, cell_mat)
+
+
+def _blade(bm, length, width, bulge, thick, body_mat=0, edge_mat=1):
+    """A curved blade along y (0 at the arm, length at the tip), bulging to +x; its outer edge a glowing strip."""
+    h = length / 2
+    n = 14
+    ys = [-h + length * k / n for k in range(n + 1)]
+    taper = lambda y: max(0.15, 1 - ((y + h) / length) ** 3)  # (narrowing to the point)
+    outer = [(_arc_x(y, h, bulge), y) for y in ys]
+    inner = [(_arc_x(y, h, bulge) - width * taper(y), y) for y in reversed(ys)]
+    _prism(bm, outer + inner, -thick / 2, thick / 2, body_mat)
+    edge_out = [(x + width * 0.12, y) for x, y in outer]
+    edge_in = [(x - width * 0.04, y) for x, y in reversed(outer)]
+    _prism(bm, edge_out + edge_in, -thick * 0.25, thick * 0.25, edge_mat)
+    bmesh.ops.translate(bm, verts=bm.verts[:], vec=(0, h, 0))  # (base at y = 0)
+
+
+def _cannon(bm, length, r, red=0, gold=1, blue=2):
+    """The forearm cannon along +y from 0 (the elbow end): octagonal, four stacked plates, a collar, gold
+    strips on its flanks and glowing rings in the muzzle."""
+    oct8 = lambda rad: [(rad * math.cos(math.pi / 8 + k * math.pi / 4), rad * math.sin(math.pi / 8 + k * math.pi / 4)) for k in range(8)]
+
+    def ring(rad, y):
+        return [bm.verts.new((x, y, z)) for x, z in oct8(rad)]
+
+    def bridge(a, b, mat):
+        for k in range(8):
+            f = bm.faces.new((a[k], a[(k + 1) % 8], b[(k + 1) % 8], b[k]))
+            f.material_index = mat
+
+    profile = []
+    plates = 4
+    for i in range(plates):  # (each plate starts narrow and ends wide: the stacked look)
+        y0, y1 = length * (0.04 + 0.19 * i), length * (0.04 + 0.19 * (i + 1))
+        r0, r1 = r * (0.9 + 0.05 * i), r * (1.02 + 0.05 * i)
+        profile.append((r0, y0, True))
+        profile.append((r1, y1 - 0.01 * length, False))
+    profile += [(r * 1.25, 0.80 * length, True), (r * 1.25, 0.9 * length, False), (r * 1.12, length, False)]
+    rings = [ring(rad, y) for rad, y, _ in profile]
+    cap = ring(r * 0.85, 0.0)
+    bridge(cap, rings[0], red)
+    for i in range(len(rings) - 1):
+        bridge(rings[i], rings[i + 1], red)
+    # muzzle: recessed, with an emitter at the back of it
+    mouth = ring(r * 0.95, length)
+    bridge(rings[-1], mouth, red)
+    back = ring(r * 0.95, 0.93 * length)
+    bridge(mouth, back, red)
+    disc_c = bm.verts.new((0, 0.93 * length, 0))
+    for k in range(8):
+        f = bm.faces.new((back[k], back[(k + 1) % 8], disc_c))
+        f.material_index = blue
+    # gold strips along both flanks
+    for side in (1, -1):
+        for i in range(plates):
+            y0, y1 = length * (0.08 + 0.19 * i), length * (0.17 + 0.19 * i)
+            rr = r * (1.05 + 0.05 * i)
+            pts = [(side * rr, y0), (side * (rr + 0.08 * r), y0 + 0.01 * length), (side * (rr + 0.08 * r), y1), (side * rr, y1)]
+            vs = [bm.verts.new((x, y, z)) for x, y in pts for z in (-0.18 * r, 0.18 * r)]
+            for f in (bm.faces.new((vs[0], vs[2], vs[4], vs[6])), bm.faces.new((vs[1], vs[7], vs[5], vs[3])),
+                      bm.faces.new((vs[0], vs[1], vs[3], vs[2])), bm.faces.new((vs[4], vs[5], vs[7], vs[6])),
+                      bm.faces.new((vs[2], vs[3], vs[5], vs[4])), bm.faces.new((vs[6], vs[7], vs[1], vs[0]))):
+                f.material_index = gold
+    # glowing rings in the muzzle
+    for y, rr in ((0.965 * length, r * 1.0), (0.99 * length, r * 1.08)):
+        res = bmesh.ops.create_circle(bm, cap_ends=False, segments=24, radius=rr)
+        ring_v = res['verts']
+        bmesh.ops.rotate(bm, verts=ring_v, cent=(0, 0, 0), matrix=Matrix.Rotation(math.pi / 2, 3, 'X'))
+        bmesh.ops.translate(bm, verts=ring_v, vec=(0, y, 0))
+        ext = bmesh.ops.extrude_edge_only(bm, edges=list({e for v in ring_v for e in v.link_edges}))
+        nv = [v for v in ext['geom'] if isinstance(v, bmesh.types.BMVert)]
+        for v in nv:
+            d = Vector((v.co.x, 0, v.co.z)).normalized()
+            v.co += d * (-0.07 * r)
+        for f in ext['geom']:
+            if isinstance(f, bmesh.types.BMFace):
+                f.material_index = blue
+
+
+def _mesh_obj(scene, coll, name, build_fn, mats):
+    bm = bmesh.new()
+    build_fn(bm)
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    for m in mats:
+        me.materials.append(m)
     o = bpy.data.objects.new(name, me)
     coll.objects.link(o)
-    me.materials.clear()
-    me.materials.append(mat)
-    for p in me.polygons:
-        p.use_smooth = True
+    o['form'] = 0.0
     return o
 
 
-def _cannon_mesh(name, length, r):
-    """A forearm cannon along +Y from 0: a sleeve, rings, a flared barrel."""
-    prof = [(r * 0.95, 0.0), (r * 1.05, 0.08 * length), (r * 1.1, 0.35 * length), (r * 0.9, 0.42 * length),
-            (r * 1.0, 0.48 * length), (r * 0.78, 0.62 * length), (r * 0.72, 0.9 * length), (r * 0.82, 0.97 * length),
-            (r * 0.82, length), (r * 0.5, length), (r * 0.48, 0.9 * length)]
-    bm = bmesh.new()
-    seg = 28
-    rings = []
-    for rad, y in prof:
-        rings.append([bm.verts.new((rad * math.cos(2 * math.pi * k / seg), y, rad * math.sin(2 * math.pi * k / seg))) for k in range(seg)])
-    for a, b in zip(rings, rings[1:]):
-        for k in range(seg):
-            bm.faces.new((a[k], a[(k + 1) % seg], b[(k + 1) % seg], b[k]))
-    me = bpy.data.meshes.new(name)
-    bm.to_mesh(me)
-    bm.free()
-    return me
-
-
-def _shield_mesh(name, radius, rings=4, seg=10):
-    """A round shield of separate plates (rings of curved plates, slightly domed), facing +Z."""
-    bm = bmesh.new()
-    gap = 0.012 * radius
-    for ri in range(rings):
-        r0, r1 = radius * ri / rings, radius * (ri + 1) / rings
-        n = max(1, seg * ri) if ri else 1
-        for k in range(n):
-            a0, a1 = 2 * math.pi * k / n, 2 * math.pi * (k + 1) / n
-            steps = max(2, int(12 / max(1, n / 6)))
-            outer, inner = [], []
-            for s in range(steps + 1):
-                a = a0 + (a1 - a0) * s / steps
-                ga = gap / max(r1, 1e-3)
-                a = min(max(a, a0 + ga), a1 - ga) if n > 1 else a
-                for rr, lst in ((r1 - gap, outer), (max(0.0, r0 + gap) if ri else 0.0, inner)):
-                    z = 0.18 * radius * (1 - (rr / radius) ** 2)
-                    lst.append(bm.verts.new((rr * math.cos(a), rr * math.sin(a), z)))
-            if ri == 0:
-                c = bm.verts.new((0, 0, 0.18 * radius))
-                for s in range(steps):
-                    bm.faces.new((c, outer[s], outer[s + 1]))
-            else:
-                for s in range(steps):
-                    bm.faces.new((inner[s], outer[s], outer[s + 1], inner[s + 1]))
-    # (some thickness)
-    bmesh.ops.solidify(bm, geom=bm.faces[:], thickness=0.04 * radius)
-    me = bpy.data.meshes.new(name)
-    bm.to_mesh(me)
-    bm.free()
-    return me
+def _frame(origin, x, y):
+    """A world matrix at origin with axes x, y (made orthonormal) and z = x cross y."""
+    x = x.normalized()
+    y = (y - x * y.dot(x)).normalized()
+    return Matrix.Translation(origin) @ Matrix((x, y, x.cross(y))).transposed().to_4x4()
 
 
 def _mobile_parts():
-    """The uploaded nanotech model's weapon meshes (blade pair, wings, giant arms), in its own space."""
+    """The uploaded nanotech model's weapon meshes (wings, giant arms), in its own space."""
     z = None
     for root in paths.roots():
         for d, _, fs in os.walk(root):
@@ -226,16 +351,13 @@ def _mobile_parts():
         if z:
             break
     if z is None:  # (still zipped: the nanotech zip holds a zip holding the OBJ)
-        p = paths.clip(NANO_OBJ)
-        z = p
+        z = paths.clip(NANO_OBJ)
     before = set(bpy.data.objects)
     bpy.ops.wm.obj_import(filepath=z)
     new = [o for o in bpy.data.objects if o not in before]
     parts = {}
     for o in new:
-        if o.name.startswith('hero_ironman01_S04_wp2'):
-            parts['blades'] = o
-        elif o.name.startswith('hero_ironman01_S04_wp4'):
+        if o.name.startswith('hero_ironman01_S04_wp4'):
             parts['wings'] = o
         elif o.name.startswith('hero_ironman01_S04_wp5'):
             parts['giant'] = o
@@ -266,116 +388,122 @@ def _bind(o, arm, bone):
 # ---------- the kit ----------
 def build(scene, root, arm):
     """Every nanotech piece, made in his imported pose and bound to his bones (call before any motion is put on
-    him). Returns the kit: {name: {'objs': [...], 'mat': material, 'bone': where it grows from}}."""
+    him). Returns the kit: {name: {'objs': [...], 'bone': where it grows from}}."""
     coll = bpy.data.collections.new('Nanotech')
     scene.collection.children.link(coll)
     I = rt.IRON
     bpy.context.view_layer.update()
     W = {n: arm.matrix_world @ arm.pose.bones[n].matrix for n in I.values()}
     P = {k: W[I[k]].translation.copy() for k in I}
-    scale = (P['head'] - (P['footL'] + P['footR']) / 2).length  # (his size in the world, for sizing pieces)
+    scale = (P['head'] - (P['footL'] + P['footR']) / 2).length
+    m = scale / 1.62  # (world units per metre: head-to-foot ~1.62 m on him)
+    red = metal('nano_red', (0.30, 0.012, 0.016), 0.22, coat=0.6)
+    gold = metal('nano_gold', (0.78, 0.53, 0.2), 0.3)
+    silver = metal('nano_silver', (0.6, 0.6, 0.62), 0.25)
+    cells = glow_cells('nano_cells')
+    blue = glow('nano_blue', BLUE, 18.0)
+    hot = glow('nano_hot', (0.75, 0.92, 1.0), 12.0)
+    body = (P['chest'] + P['hips']) / 2
     kit = {}
 
-    def piece(name, me, *_):
-        mat = nano_material('nano_' + name)
-        o = _obj(scene, coll, 'nano_' + name, me, mat)
-        return o, mat
+    def arm_axes(side):
+        e, w = P['fore' + side], P['hand' + side]
+        d = (w - e).normalized()
+        out_ = body.copy()
+        out_ = (e + (w - e) * 0.5) - body
+        out_ = (out_ - d * out_.dot(d)).normalized()
+        return e, w, d, out_
 
-    # Cannon: along the right forearm from the elbow, out past the fist.
-    e, w = P['foreR'], P['handR']
-    d = (w - e).normalized()
-    length = (w - e).length * 1.9
-    me = _cannon_mesh('nano_cannon', length, 0.11 * scale)
-    _set_t(me, Vector((0, 0, 0)), Vector((0, 1, 0)))
-    o, mat = piece('cannon', me, I['foreR'], e)
-    side = d.cross(Vector((0, 0, 1))).normalized()
-    o.matrix_world = Matrix.Translation(e) @ Matrix((side, d, side.cross(d))).transposed().to_4x4()
-    _bind(o, arm, I['foreR'])
-    kit['cannon'] = {'objs': [o], 'mat': mat, 'bone': I['foreR']}
-    # A second cannon on the left arm (the ending).
-    e2, w2 = P['foreL'], P['handL']
-    d2 = (w2 - e2).normalized()
-    me2 = _cannon_mesh('nano_cannon_l', length, 0.11 * scale)
-    _set_t(me2, Vector((0, 0, 0)), Vector((0, 1, 0)))
-    o2, mat2 = piece('cannon_l', me2, I['foreL'], e2)
-    side2 = d2.cross(Vector((0, 0, 1))).normalized()
-    o2.matrix_world = Matrix.Translation(e2) @ Matrix((side2, d2, side2.cross(d2))).transposed().to_4x4()
-    _bind(o2, arm, I['foreL'])
-    kit['cannon_l'] = {'objs': [o2], 'mat': mat2, 'bone': I['foreL']}
+    # Cannons (each forearm): from the elbow over the fist and past it.
+    for side, key in (('R', 'cannon'), ('L', 'cannon_l')):
+        e, w, d, out_ = arm_axes(side)
+        length = (w - e).length * 1.85
+        o = _mesh_obj(scene, coll, 'nano_' + key, lambda bm: _cannon(bm, length, 0.062 * m), (red, gold, blue))
+        _set_t(o.data, Vector((0, 0, 0)), Vector((0, 1, 0)))
+        o.matrix_world = _frame(e - d * 0.02 * m, out_.cross(d), d)  # (x across, y along the arm)
+        _bind(o, arm, I['fore' + side])
+        kit[key] = {'objs': [o], 'bone': I['fore' + side]}
 
-    # Shield: on the outside of the left forearm, facing out from it.
-    e, w = P['foreL'], P['handL']
-    mid = e + (w - e) * 0.55
-    body = (P['chest'] + P['hips']) / 2
-    out_ = (mid - body)
-    fd = (w - e).normalized()
-    out_ = (out_ - fd * out_.dot(fd)).normalized()
-    me = _shield_mesh('nano_shield', 0.32 * scale)
-    _set_t(me, Vector((0, 0, 0)))
-    o, mat = piece('shield', me, I['foreL'], mid)
-    y = fd
-    x = y.cross(out_).normalized()
-    o.matrix_world = Matrix.Translation(mid + out_ * 0.05 * scale) @ Matrix((x, y, out_)).transposed().to_4x4()
-    _bind(o, arm, I['foreL'])
-    kit['shield'] = {'objs': [o], 'mat': mat, 'bone': I['foreL']}
+    # Shield: two crescents on the left forearm, standing across it, facing out from it, bulging toward the hand.
+    e, w, d, out_ = arm_axes('L')
+    across = d.cross(out_).normalized()
+    pieces = []
+    for i, (along, size) in enumerate(((0.0, 1.0), (0.17, 1.12))):
+        L_ = 1.0 * m * size  # (tall: about his arm's length, as in the references)
+        o = _mesh_obj(scene, coll, f'nano_shield{i}',
+                      lambda bm, L_=L_: _crescent(bm, L_, 0.16 * m, 0.28 * m, 0.032 * m, 8, 0.008 * m, 0.24), (red, cells))
+        _set_t(o.data, Vector((0, 0, 0)))
+        o.matrix_world = _frame(w + d * along * m + out_ * 0.05 * m, d, across)  # (bulge toward the hand)
+        _bind(o, arm, I['foreL'])
+        pieces.append(o)
+    kit['shield'] = {'objs': pieces, 'bone': I['foreL']}
 
-    # The uploaded model's pieces, brought from its space into his: same stance (feet at 0, facing -y), so a
-    # uniform scale, then his root's turn and place.
+    # Blades: twin curves from the right forearm, past the fist, their edges white-hot.
+    e, w, d, out_ = arm_axes('R')
+    across = d.cross(out_).normalized()
+    blades = []
+    for i, off in enumerate((-0.022, 0.022)):
+        o = _mesh_obj(scene, coll, f'nano_blade{i}',
+                      lambda bm: _blade(bm, 0.72 * m, 0.045 * m, 0.09 * m, 0.012 * m), (silver, hot))
+        _set_t(o.data, Vector((0, 0, 0)), Vector((0, 1, 0)))
+        base = e + (w - e) * 0.45 + out_ * 0.045 * m + across * off * m
+        o.matrix_world = _frame(base, out_, d)  # (along the arm, curving outward)
+        _bind(o, arm, I['foreR'])
+        blades.append(o)
+    kit['blade'] = {'objs': blades, 'bone': I['foreR']}
+
+    # The uploaded model's wings and giant fist, brought from its space into his.
     try:
         parts = _mobile_parts()
     except Exception as e_:
         print('(nanotech model not found:', e_, ')')
         parts = {}
     to_him = root.matrix_world @ Matrix.Scale((scale / root.matrix_world.to_scale().x) / (0.85 * MOBILE_H), 4)
-    for key, bone_key, side_neg in (('blades', 'foreR', True), ('giant', 'foreR', True), ('wings', 'chest', None)):
+    for key, bone_key, side_neg, name in (('giant', 'foreR', True, 'fist'), ('wings', 'chest', None, 'wings')):
         o = parts.get(key)
         if o is None:
             continue
         if side_neg is not None:
             _split_side(o, side_neg)
         o.matrix_world = to_him @ o.matrix_world
+        bpy.context.view_layer.update()
+        anchor = P[bone_key]
+        a_local = o.matrix_world.inverted() @ anchor
+        near = min((v.co for v in o.data.vertices), key=lambda c: (c - a_local).length)
+        k_ = {'giant': 0.42, 'wings': 0.5}[key]
+        pw = o.matrix_world @ near
+        o.matrix_world = Matrix.Translation(pw) @ Matrix.Scale(k_, 4) @ Matrix.Translation(-pw) @ o.matrix_world
         mod = o.modifiers.new('smooth', 'SUBSURF')
         mod.levels, mod.render_levels = 1, 2
-        bpy.context.view_layer.update()
-        # Grows from the point nearest the bone it hangs on (and, for the oversized game pieces, scaled down
-        # about that point to the suit's size).
-        anchor_w = P[bone_key]
-        mw_inv = o.matrix_world.inverted()
-        a_local = mw_inv @ anchor_w
-        near = min((v.co for v in o.data.vertices), key=lambda c: (c - a_local).length)
-        k_ = {'blades': 1.0, 'giant': 0.42, 'wings': 0.5}[key]
-        if k_ != 1.0:
-            pw = o.matrix_world @ near
-            o.matrix_world = Matrix.Translation(pw) @ Matrix.Scale(k_, 4) @ Matrix.Translation(-pw) @ o.matrix_world
-            bpy.context.view_layer.update()
         _set_t(o.data, near.copy())
-        mat = nano_material('nano_' + key)
         o.data.materials.clear()
-        o.data.materials.append(mat)
+        o.data.materials.append(red)
         for p in o.data.polygons:
             p.use_smooth = True
+            p.material_index = 0
         for c in list(o.users_collection):
             c.objects.unlink(o)
         coll.objects.link(o)
-        o.name = 'nano_' + {'blades': 'blade', 'giant': 'fist', 'wings': 'wings'}[key]
-        _bind(o, arm, I[bone_key] if key != 'giant' else I['handR'])
-        kit[{'blades': 'blade', 'giant': 'fist', 'wings': 'wings'}[key]] = {'objs': [o], 'mat': mat, 'bone': I[bone_key]}
+        o.name = 'nano_' + name
+        o['form'] = 0.0
+        _bind(o, arm, I['handR'] if key == 'giant' else I[bone_key])
+        kit[name] = {'objs': [o], 'bone': I[bone_key]}
 
-    # The stream: a thin tube from the reactor to the forming piece's root, hooked to both ends.
     kit['_stream'] = _stream(scene, coll, arm, P, scale)
     for k, v in kit.items():
         if not k.startswith('_'):
             for o in v['objs']:
                 o.hide_render = True
                 o.keyframe_insert('hide_render', frame=1)
+                o.keyframe_insert('["form"]', frame=1)
     return kit
 
 
 def _stream(scene, coll, arm, P, scale):
     cu = bpy.data.curves.new('nano_stream', 'CURVE')
     cu.dimensions = '3D'
-    cu.bevel_depth = 0.012 * scale
-    cu.bevel_resolution = 2
+    cu.bevel_depth = 0.01 * scale
+    cu.bevel_resolution = 3
     cu.use_fill_caps = True
     sp = cu.splines.new('BEZIER')
     sp.bezier_points.add(1)
@@ -405,10 +533,9 @@ def _stream(scene, coll, arm, P, scale):
 
 
 # ---------- timing ----------
-def _key_form(mat, frame, value):
-    s = mat.node_tree.nodes['form'].outputs[0]
-    s.default_value = value
-    s.keyframe_insert('default_value', frame=frame)
+def _key(o, prop, frame, value):
+    o[prop] = value
+    o.keyframe_insert(f'["{prop}"]', frame=frame)
 
 
 def _vis(objs, frame, on):
@@ -418,30 +545,26 @@ def _vis(objs, frame, on):
 
 
 def form(kit, name, f0, f1, stream=True):
-    """The piece grows over f0..f1 (the stream feeding it from the reactor)."""
+    """The piece grows over f0..f1 (the nanites streaming from the reactor to it)."""
     k = kit.get(name)
     if not k:
         return
     _vis(k['objs'], f0 - 1, True)
-    _key_form(k['mat'], f0 - 1, 0.0)
-    _key_form(k['mat'], f1, 1.0)
+    for o in k['objs']:
+        _key(o, 'form', f0 - 1, 0.0)
+        _key(o, 'form', f1, 1.0)
     if stream:
         s = kit['_stream']
         end = s['ends']['end']
-        # (re-hung on the forming piece's bone for this stretch: one stream, moved to where it's needed)
-        con = end.constraints.new('CHILD_OF')
+        con = end.constraints.new('CHILD_OF')  # (one stream, hung on whichever piece is forming)
         con.target = s['arm']
         con.subtarget = k['bone']
         con.inverse_matrix = Matrix.Identity(4)
         if hasattr(con, 'set_inverse_pending'):
             con.set_inverse_pending = False  # (new Child Ofs otherwise keep the object where it is)
-        con.influence = 0.0
-        con.keyframe_insert('influence', frame=f0 - 2)
-        con.influence = 1.0
-        con.keyframe_insert('influence', frame=f0 - 1)
-        con.keyframe_insert('influence', frame=f1 + 1)
-        con.influence = 0.0
-        con.keyframe_insert('influence', frame=f1 + 2)
+        for f, v in ((f0 - 2, 0.0), (f0 - 1, 1.0), (f1 + 1, 1.0), (f1 + 2, 0.0)):
+            con.influence = v
+            con.keyframe_insert('influence', frame=f)
         o = s['obj']
         o.hide_render = False
         o.keyframe_insert('hide_render', frame=f0 - 1)
@@ -450,7 +573,7 @@ def form(kit, name, f0, f1, stream=True):
         flow = o.data.materials[0].node_tree.nodes['flow'].outputs[0]
         flow.default_value = 0.0
         flow.keyframe_insert('default_value', frame=f0 - 1)
-        flow.default_value = -0.12 * (f1 - f0 + 2)
+        flow.default_value = -3.0 * (f1 - f0 + 2)
         flow.keyframe_insert('default_value', frame=f1 + 1)
 
 
@@ -458,25 +581,26 @@ def retract(kit, name, f0, f1):
     k = kit.get(name)
     if not k:
         return
-    _key_form(k['mat'], f0, 1.0)
-    _key_form(k['mat'], f1, 0.0)
+    for o in k['objs']:
+        _key(o, 'form', f0, 1.0)
+        _key(o, 'form', f1, 0.0)
     _vis(k['objs'], f1 + 1, False)
 
 
 def _free_copy(scene, o, frame, name):
-    """A stand-alone copy of o, fixed where o is at frame (evaluated: modifiers applied)."""
+    """A stand-alone copy of o, fixed where o is at frame (evaluated: modifiers applied), fully formed."""
     scene.frame_set(frame)
     dg = bpy.context.evaluated_depsgraph_get()
-    ev = o.evaluated_get(dg)
-    me = bpy.data.meshes.new_from_object(ev)
+    me = bpy.data.meshes.new_from_object(o.evaluated_get(dg))
     c = bpy.data.objects.new(name, me)
     o.users_collection[0].objects.link(c)
     c.matrix_world = o.matrix_world.copy()
-    mat = o.data.materials[0].copy()
-    mat.node_tree.animation_data_clear()  # (its own: fully formed, not keyed with the original)
-    mat.node_tree.nodes['form'].outputs[0].default_value = 1.0
-    me.materials.clear()
-    me.materials.append(mat)
+    for i, mt in enumerate(o.data.materials):
+        if i < len(me.materials):
+            me.materials[i] = mt
+        else:
+            me.materials.append(mt)
+    c['form'] = 1.0
     return c
 
 
@@ -489,58 +613,30 @@ def _fly(o, f0, vel, spin, frames=30, gravity=-0.02):
         o.rotation_euler = (r0.x + spin.x * i, r0.y + spin.y * i, r0.z + spin.z * i)
         o.keyframe_insert('location', frame=f0 + i)
         o.keyframe_insert('rotation_euler', frame=f0 + i)
-    o.hide_render = True
-    o.keyframe_insert('hide_render', frame=f0 - 1)
-    o.hide_render = False
-    o.keyframe_insert('hide_render', frame=f0)
-    o.hide_render = True
-    o.keyframe_insert('hide_render', frame=f0 + frames)
+    for f, hide in ((f0 - 1, True), (f0, False), (f0 + frames, True)):
+        o.hide_render = hide
+        o.keyframe_insert('hide_render', frame=f)
 
 
 def snap_blade(scene, kit, frame, fx=None):
-    """The blade breaks in the fist that holds it: its outer half falls away spinning; the stump stays."""
+    """The blades break in the fist that holds them: their outer halves fall away spinning; the stumps stay."""
     k = kit.get('blade')
     if not k:
         return
-    o = k['objs'][0]
-    tip = _free_copy(scene, o, frame, 'nano_blade_tip')
-    # Keep the outer half on the falling piece, the inner on the arm (by nano_t, through the material).
-    _cut(tip.data.materials[0], keep_above=0.5)
-    _cut(o.data.materials[0], keep_above=None, below=0.5, from_frame=frame)
     rng = random.Random(frame)
-    _fly(tip, frame, Vector((rng.uniform(-0.05, 0.05), rng.uniform(-0.05, 0.05), 0.06)), Vector((0.25, 0.1, 0.3)))
+    for i, o in enumerate(k['objs']):
+        tip = _free_copy(scene, o, frame, f'{o.name}_tip')
+        tip['keep_above'] = 0.5
+        _key(o, 'cut_on', frame - 1, 0.0)
+        _key(o, 'cut_on', frame, 1.0)
+        o['cut_at'] = 0.5
+        _fly(tip, frame, Vector((rng.uniform(-0.05, 0.05), rng.uniform(-0.05, 0.05), 0.05 + 0.02 * i)),
+             Vector((0.25, 0.1 * (i + 1), 0.3)))
     if fx:
         try:
-            fx.impact(scene, tip.matrix_world.translation, frame, 1.0)
+            fx.impact(scene, k['objs'][0].matrix_world.translation, frame, 1.0)
         except Exception as e:
             print('(snap sparks skipped:', e, ')')
-
-
-def _cut(mat, keep_above=None, below=None, from_frame=None):
-    """Hide part of a piece by nano_t: keep_above shows only t > value (always); below hides t > value from a
-    frame on (keyed)."""
-    nt = mat.node_tree
-    t = next(n for n in nt.nodes if n.type == 'ATTRIBUTE')
-    mix = next(n for n in nt.nodes if n.type == 'MIX_SHADER')
-    fac_src = mix.inputs['Fac'].links[0].from_socket
-    cmp = nt.nodes.new('ShaderNodeMath')
-    cmp.operation = 'GREATER_THAN' if keep_above is not None else 'LESS_THAN'
-    cmp.inputs[1].default_value = keep_above if keep_above is not None else below
-    nt.links.new(t.outputs['Fac'], cmp.inputs[0])
-    if from_frame is not None:  # (a switch: 1 before the frame = no cut)
-        sw = nt.nodes.new('ShaderNodeMath')
-        sw.operation = 'MAXIMUM'
-        sw.inputs[1].default_value = 1.0
-        sw.inputs[1].keyframe_insert('default_value', frame=from_frame - 1)
-        sw.inputs[1].default_value = 0.0
-        sw.inputs[1].keyframe_insert('default_value', frame=from_frame)
-        nt.links.new(cmp.outputs[0], sw.inputs[0])
-        cmp = sw
-    both = nt.nodes.new('ShaderNodeMath')
-    both.operation = 'MULTIPLY'
-    nt.links.new(fac_src, both.inputs[0])
-    nt.links.new(cmp.outputs[0], both.inputs[1])
-    nt.links.new(both.outputs[0], mix.inputs['Fac'])
 
 
 def _plates(o):
@@ -576,10 +672,12 @@ def _plates(o):
         me = bpy.data.meshes.new(f'{o.name}_{i}')
         nb.to_mesh(me)
         nb.free()
-        me.materials.append(o.data.materials[0])
+        for mt in o.data.materials:
+            me.materials.append(mt)
         p = bpy.data.objects.new(me.name, me)
         o.users_collection[0].objects.link(p)
         p.matrix_world = mw @ Matrix.Translation(c)
+        p['form'] = 1.0
         out.append(p)
     bm.free()
     bpy.data.objects.remove(o, do_unlink=True)
@@ -587,22 +685,23 @@ def _plates(o):
 
 
 def shatter_shield(scene, kit, frame, push, fx=None):
-    """The shield breaks into its plates, thrown along push (a world direction) and spinning."""
+    """The crescents break into their segments (rim and glowing panel apart), thrown along push and spinning."""
     k = kit.get('shield')
     if not k:
         return
-    o = k['objs'][0]
-    whole = _free_copy(scene, o, frame, 'nano_shield_broken')
-    center = whole.matrix_world.translation.copy()  # (before the split: it removes the whole)
-    plates = _plates(whole)
     rng = random.Random(frame)
-    for p in plates:
-        out_ = (p.matrix_world.translation - center)
-        v = push.normalized() * rng.uniform(0.1, 0.22) + out_.normalized() * rng.uniform(0.04, 0.1)
-        _fly(p, frame, v, Vector((rng.uniform(-0.4, 0.4), rng.uniform(-0.4, 0.4), rng.uniform(-0.4, 0.4))), frames=26)
-    o.hide_render = True
-    o.keyframe_insert('hide_render', frame=frame)
-    if fx:
+    center = None
+    for o in k['objs']:
+        whole = _free_copy(scene, o, frame, o.name + '_broken')
+        c = whole.matrix_world.translation.copy()  # (before the split: it removes the whole)
+        center = c if center is None else center
+        for p in _plates(whole):
+            out_ = (p.matrix_world.translation - c)
+            v = push.normalized() * rng.uniform(0.1, 0.22) + out_.normalized() * rng.uniform(0.04, 0.1)
+            _fly(p, frame, v, Vector((rng.uniform(-0.4, 0.4), rng.uniform(-0.4, 0.4), rng.uniform(-0.4, 0.4))), frames=26)
+        o.hide_render = True
+        o.keyframe_insert('hide_render', frame=frame)
+    if fx and center is not None:
         try:
             fx.impact(scene, center, frame, 1.8)
         except Exception as e:
