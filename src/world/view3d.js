@@ -1306,10 +1306,14 @@ export function createView3D(canvas) {
     fz.aims.length = 0;
     fz.aim = null;
     fz.thrust = 0;
+    fz.alt = 0;
     fz.now = t;
     if (!D) return fz;
     const side = D[k];
     const cur = side.cur;
+    // In the air: held up on his jets (more as he climbs).
+    fz.alt = side.alt || 0;
+    if (fz.alt > 0.5) fz.thrust = Math.min(1, 0.55 + Math.max(0, side.altV || 0) / 60);
     // The clips: the current easing in over the last (FADE s); a stagger played at its weight.
     const wc = cur && cur.clip ? smooth01((t - cur.t0) / DUEL_FADE) : 0;
     if (side.prev && side.prev.clip && wc < 1) {
@@ -1335,7 +1339,7 @@ export function createView3D(canvas) {
         fz.aims.push({ at: [at[0] + lx * s, at[1], at[2] + lz * s], id: id0 - (h === 'R' ? 1 : 0), p: 1, aimOnly: true, block: !!cur.block && !cur.aim });
       }
     }
-    if (cur && cur.thrust) fz.thrust = smooth01((t - cur.t0) / 0.15) * (1 - smooth01((t - cur.t0 - 0.5) / 0.4));
+    if (cur && cur.thrust) fz.thrust = Math.max(fz.thrust, smooth01((t - cur.t0) / 0.15) * (1 - smooth01((t - cur.t0 - 0.5) / 0.4)));
     // The bolts he fires: at the other's chest; caught on the raised gauntlet; or wide (dodged or missed).
     for (const b of D.bolts) {
       if (b.by !== k || t < b.tFire - 0.4) continue;

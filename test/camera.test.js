@@ -98,6 +98,7 @@ for (const [W, H, least] of [
     let cuts = 0;
     let landings = 0;
     let mode = '';
+    let leapCuts = 0;
     let touch = -1;
     let touchYaw = 0;
     const kneel = []; // per step of each kneel: [his kneeling share of the view height (a little less on a phone), lens off his front (rad), lens height over his middle (rad)]
@@ -126,6 +127,8 @@ for (const [W, H, least] of [
       if (d.run.camera.cut !== cuts) {
         cuts = d.run.camera.cut;
         prev = prevV = null;
+        // (The fight cuts in close on its big blows; a leap and its landing are one unbroken move.)
+        if (d.spider.sim.mode === 'jump' || d.spider.sim.mode === 'land') leapCuts++;
       }
       if (prev) {
         const vel = v.eye.map((x, i) => (x - prev[i]) * 60);
@@ -196,7 +199,7 @@ for (const [W, H, least] of [
 
     test('it swings round onto each landing (no cuts) and films the kneel from in front, low and close', () => {
       assert.ok(landings >= 2, `${landings} landings`);
-      assert.equal(cuts, 0);
+      assert.equal(leapCuts, 0);
       const med = (k) => median(kneel.map((r) => r[k]));
       assert.ok(med(0) > 0.3 && med(0) < 0.7, `kneeling he fills ${med(0).toFixed(2)} of the view height`);
       assert.ok(med(1) < 0.7, `the lens is ${((med(1) * 180) / Math.PI).toFixed(0)} degrees off his front`);

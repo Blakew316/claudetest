@@ -72,6 +72,9 @@ const FIGHT_SIDE = [0.7, 1.45]; // the lens films them from across the line betw
 const FOE_FRAME = 0.45; // the camera frames a point this far from Iron Man toward Thanos...
 const FOE_IN = 0.8; // ... back far enough that both stay within this much of the half-frame...
 const FOE_BACK = 2.1; // ... but never more than this much further back than the shot would be
+const IMPACT = [0.35, 1.3]; // s: a blow's close shot, from before it lands to after
+const IMPACT_EL = -0.16; // rad: from a little below, looking up at them
+const IMPACT_OFF = [0, 0.35, -0.35, 0.7, -0.7]; // rad round from side-on, tried in turn
 const FOE_EASE = 1.2; // ... easing onto (and off) the two of them over about this long (s); not while filming a leap
 const INTRO_AIR = 7.5; // the opening fly-in, while the spider wakes and walks on the first ball
 const INTRO_HOLD = 1.0; // breath on the first ball before reading starts
@@ -713,9 +716,14 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       mid = lerp(kneel, mid - RISE_SINK * (1 - ss(LAND_TIME, LAND_TIME + SINK_SETTLE, ts)), ss(LAND_HOLD, LAND_TIME, ts));
     }
     out[0] = s.x;
-    out[1] = s.y + mid;
+    out[1] = s.y + mid + heroAlt();
     out[2] = s.z;
     return out;
+  }
+
+  /** How high he is flying in the fight (sim/fight.js: in the air, over his walker). */
+  function heroAlt() {
+    return fight ? fight.state.hero.alt : 0;
   }
 
   /** Camera basis looking from e toward p: forward F, right R, up Up. */
@@ -1610,7 +1618,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     for (const yaw of [t.yaw, run.camera.yaw]) {
       orbitDir(yaw, t.pitch, dir);
       for (const [x, y, z, him] of [
-        [s.x, s.y + HERO_MID, s.z, true],
+        [s.x, s.y + HERO_MID + heroAlt(), s.z, true],
         [F.x, F.y + HERO_MID, F.z, false],
       ]) {
         const qx = x - t.x;
@@ -1626,6 +1634,59 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // they close in: it keeps to the side of it the lens is on.)
     orbitDir(t.yaw, t.pitch, dir);
     t.dist = lerp(t.dist, clearDistance(t.x, t.y, t.z, dir, t.dist, clusters, NUCLEUS * 1.3, 0, run.camera.dist), k);
+  }
+
+  /**
+   * A blow worth seeing up close (sim/fight.js impacts): a cut, IMPACT[0] s before it lands, to the two of
+   * them tight and side-on from low down (on the side of the line between them the two-shot is on, so
+   * neither changes sides on screen), pushing in a little through the blow; then, IMPACT[1] s after it,
+   * a cut back to the two-shot. Not where the lens would have to sit in a nucleus or on top of him.
+   */
+  function impactShot(t) {
+    const D = fight && fight.state;
+    let imp = null;
+    if (D && D.on && foe && foe.state === 'here' && !(hc.leap && !hc.leap.done) && hc.duel > 0.9) {
+      for (const m of D.impacts) if (run.t >= m.t - IMPACT[0] && run.t < m.t + IMPACT[1]) imp = m;
+    }
+    let ok = false;
+    if (imp) {
+      const s = run.spider;
+      const F = run.foe;
+      const A = [s.x, s.y + HERO_MID + heroAlt(), s.z];
+      const B = [F.x, F.y + HERO_MID * 1.12, F.z];
+      const ux = B[0] - A[0];
+      const uz = B[2] - A[2];
+      const sep = Math.hypot(ux, uz) || 1;
+      const k = imp.victim === 'hero' ? 0.4 : 0.6;
+      const P = [lerp(A[0], B[0], k), (A[1] + B[1]) / 2, lerp(A[2], B[2], k)];
+      const side = hc.duelSide || 1;
+      const az0 = Math.atan2(-(uz / sep) * side, (ux / sep) * side);
+      const room = 0.8 * LENS_TAN;
+      const need = Math.max((sep / 2 + 14) / (room * Math.min(aspect(), 1.8)), (HERO_H + Math.abs(A[1] - B[1])) / 2 / room + 6, 60);
+      const dist = need * (1 - 0.06 * ss(0, IMPACT[0] + IMPACT[1], run.t - imp.t + IMPACT[0]));
+      // Side-on if it can be; else a little round either way (still on that side), clear of the nuclei.
+      // (Once on it, held for the blow at the angle it took: the guard eases it out of anything it drifts
+      // into. And never cut in late, for a moment.)
+      let az = az0;
+      if (hc.impact === imp.t) {
+        az = az0 + hc.impactOff;
+        ok = true;
+      } else if (run.t < imp.t - IMPACT[0] + 0.2) {
+        for (const off of IMPACT_OFF) {
+          orbitDir(az0 + off, IMPACT_EL, dir);
+          if (Math.abs(clearDistance(P[0], P[1], P[2], dir, dist, clusters, NUCLEUS * 1.3, 0, dist) - dist) < 1) {
+            az = az0 + off;
+            hc.impactOff = off;
+            ok = true;
+            break;
+          }
+        }
+      }
+      if (ok) compose(P, az, IMPACT_EL, dist, 0, 0, t);
+    }
+    const on = ok ? imp.t : 0;
+    if (on !== (hc.impact || 0)) hc.cutNow = true;
+    hc.impact = on;
   }
 
   /** Backstops: the lens never comes nearer him than MIN_GAP, nor into a nucleus (eased out, so it can't fight the springs). */
@@ -1689,6 +1750,7 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // back into one the guard is easing it out of, nor through one.)
     orbitDir(run.camera.yaw, run.camera.pitch, dir);
     aimT.dist = clearDistance(run.camera.x, run.camera.y, run.camera.z, dir, aimT.dist, clusters, NUCLEUS * 1.3, Math.min(aimT.dist, MIN_GAP * 1.4), run.camera.dist);
+    impactShot(aimT);
     const cam = run.camera;
     if (hc.cutNow) {
       // A deliberate cut (to the landing): straight onto the new shot, nothing carried over.

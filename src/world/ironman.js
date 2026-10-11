@@ -3064,8 +3064,9 @@ export function createIronMan(renderer, opts = {}) {
     sk.root.position.x += (hx - sk.root.position.x) * W;
     sk.root.position.y += (hy - sk.root.position.y) * W;
     sk.root.position.z += (hz - sk.root.position.z) * W;
-    // (His origin at the pelvis's rest height over the ground: the clip's hips do the rest.)
-    group.position.y += (st.gy + J.pelvis[1] * Ks - group.position.y) * W;
+    // (His origin at the pelvis's rest height over the ground, and up in the air as high as he flies: the
+    // clip's hips do the rest.)
+    group.position.y += (st.gy + J.pelvis[1] * Ks + (fight.alt || 0) - group.position.y) * W;
     group.updateMatrixWorld(true);
     // The thrust onto the target: the upper arm swung so the hand points at it (at most AIM_FIX rad).
     const A = fight.aim;
