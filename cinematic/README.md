@@ -12,6 +12,8 @@ A 25-second, 15-shot fight on a floating rock in the stardust, built entirely by
 - `env.py`, `film.py` — the floating-rock arena, the lighting, the camera and colour grade (in progress).
 - `fx.py` — repulsor charge/shot, impacts, Power Stone, thrusters, dust and ground cracks (in progress).
 - `board.py` — renders one still per shot (a storyboard); `animatic.py` — a fast low-res render of all 600 frames.
+- `prepare_model.py` — run on the Mac against a purchased model: writes a report of its rig, face, fingers,
+  helmet, armour pieces and textures, and a light proxy copy (small textures, under ~25 MB) for uploading.
 - `decompress-models.mjs` — writes Blender-readable copies of `assets/ironman-mk/ironman.glb` and
   `assets/thanos/thanos.glb` (the app's copies are meshopt-compressed, which Blender cannot read).
 
