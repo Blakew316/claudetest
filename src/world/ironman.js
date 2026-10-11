@@ -55,6 +55,7 @@ const HEIGHT = 46; // world units: he reads at the distances the camera keeps fr
 const THANOS_H = 63.8;
 const THANOS_X = 1.0;
 const THANOS_SIZE = 1.12;
+const THANOS_TRUNK = 0.5; // of his clips' spine, chest and neck rotation he keeps (see MB_KEEP)
 // The Power Stone's purple, for his gauntlet's blasts.
 const POWER_STONE = { sheath: [0.78, 0.26, 1.0], edge: [0.45, 0.06, 0.9], light: 0xd28cff, size: 1.7 }; // (heavier than a repulsor)
 const K = HEIGHT / MODEL_HEIGHT; // world units per model unit (feet at y = 0)
@@ -3019,6 +3020,8 @@ export function createIronMan(renderer, opts = {}) {
     return { clav: L.clav, sh: L.sh, el: L.el, wr: L.wr, fing: L.knuckles, hip: L.hip, knee: L.knee, ankle: L.ankle, toe: L.toe }[part];
   });
   const MB_ARM = MOCAP_BONES.map((n) => (/^(clav|sh|el|wr|fing)[LR]$/.test(n) ? n.slice(-1) : null));
+  // (Thanos's clips are a hunched brute's: he keeps only part of their bend through the trunk, and stands tall.)
+  const MB_KEEP = MOCAP_BONES.map((n) => (thanos && (n === 'spine' || n === 'chest' || n === 'neck') ? THANOS_TRUNK : 1));
   const mo = { cur: mocapPose(), mix: mocapPose(), path: [0, 0], pathMix: [0, 0], q: new THREE.Quaternion(), q2: new THREE.Quaternion(), v: new THREE.Vector3(), w: new THREE.Vector3() };
 
   /**
@@ -3051,7 +3054,7 @@ export function createIronMan(renderer, opts = {}) {
     for (let b = 0; b < MB.length; b++) {
       const side = MB_ARM[b];
       // (An arm up to aim, in a clip that leaves them free, stays the procedural aim's.)
-      const m = side ? W * (1 - idle * clamp(ez.aim[side].x * 1.5, 0, 1)) : W;
+      const m = (side ? W * (1 - idle * clamp(ez.aim[side].x * 1.5, 0, 1)) : W) * MB_KEEP[b];
       MB[b].quaternion.slerp(mo.q.fromArray(mo.mix.q, b * 4), m);
     }
     // Hips (model units) where the clip has them, less the path the walker is carried along.

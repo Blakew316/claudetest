@@ -1621,12 +1621,11 @@ export function createDirector(analysis, world, getStage, seed = 1) {
         need = Math.max(need, along + (across + 14) / room, him ? d0 + along : 0);
       }
     }
-    if (need > d0) {
-      t.dist = lerp(d0, Math.min(need, FOE_BACK * d0), k);
-      // (Never back into a ball's nucleus to fit them.)
-      orbitDir(t.yaw, t.pitch, dir);
-      t.dist = Math.max(d0, Math.min(t.dist, clearDistance(t.x, t.y, t.z, dir, t.dist, clusters, NUCLEUS, 0, t.dist)));
-    }
+    if (need > d0) t.dist = lerp(d0, Math.min(need, FOE_BACK * d0), k);
+    // (Never into a ball's nucleus, turned across the line or backing up to fit them, nor through one as
+    // they close in: it keeps to the side of it the lens is on.)
+    orbitDir(t.yaw, t.pitch, dir);
+    t.dist = lerp(t.dist, clearDistance(t.x, t.y, t.z, dir, t.dist, clusters, NUCLEUS * 1.3, 0, run.camera.dist), k);
   }
 
   /** Backstops: the lens never comes nearer him than MIN_GAP, nor into a nucleus (eased out, so it can't fight the springs). */
@@ -1663,9 +1662,6 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     // (With a margin, so it is already easing clear as a fast move nears one.)
     const safe = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, NUCLEUS * 1.3, 0, cam.dist);
     if (safe !== cam.dist) cam.dist += (safe - cam.dist) * (1 - Math.exp(-4 * dt));
-    // (Never inside one, whatever the ease has not yet caught.)
-    const hard = clearDistance(cam.x, cam.y, cam.z, dir, cam.dist, clusters, NUCLEUS * 1.02, 0, cam.dist);
-    if (hard !== cam.dist) cam.dist = hard;
   }
 
   function stepCamera(dt) {
@@ -1689,6 +1685,10 @@ export function createDirector(analysis, world, getStage, seed = 1) {
     aimT.y += hc.vel[1] * lead;
     aimT.z += hc.vel[2] * lead;
     duelFrame(aimT, dt);
+    // (Its distance kept clear of the nuclei along the lens's line as it is now: the follow never pulls it
+    // back into one the guard is easing it out of, nor through one.)
+    orbitDir(run.camera.yaw, run.camera.pitch, dir);
+    aimT.dist = clearDistance(run.camera.x, run.camera.y, run.camera.z, dir, aimT.dist, clusters, NUCLEUS * 1.3, Math.min(aimT.dist, MIN_GAP * 1.4), run.camera.dist);
     const cam = run.camera;
     if (hc.cutNow) {
       // A deliberate cut (to the landing): straight onto the new shot, nothing carried over.
@@ -2204,7 +2204,8 @@ export function createDirector(analysis, world, getStage, seed = 1) {
       fight.step(run.t, dt, wordsDone());
       run.pin = fight.pin('hero');
       // (Fighting, he stands his ground between the clips that carry him.)
-      if (fight.state.on && !run.pin) run.spiderGoal = { x: run.spider.x, y: run.spider.y, z: run.spider.z };
+      // (He holds his ground through the fight, and watches Thanos go.)
+      if ((fight.state.on || foe.state === 'leaving') && !run.pin) run.spiderGoal = { x: run.spider.x, y: run.spider.y, z: run.spider.z };
       run.timeScale = fight.timeScale(run.t); // (playback slows round a heavy blast: see main.js)
     }
     spider.update(dt, run);

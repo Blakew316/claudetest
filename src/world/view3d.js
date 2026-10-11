@@ -1295,6 +1295,9 @@ export function createView3D(canvas) {
    * plays (the current easing in over the last, FADE s), his firing arm turned onto the other as a clip thrusts
    * it out, and the bolts he fires (from the hand, at the other's chest, or wide of him).
    */
+  /** Acts whose arms are the procedural aim's where they fire or block (the clip has the rest of him). */
+  const freeArms = (a) => a.kind === 'repulsor' || a.kind === 'gauntlet' || ((a.kind === 'advance' || a.kind === 'stand') && !!a.block);
+
   function fightFor(D, k, t, foeChest) {
     const fz = fightView[k];
     fz.foe = foeChest;
@@ -1311,9 +1314,9 @@ export function createView3D(canvas) {
     const wc = cur && cur.clip ? smooth01((t - cur.t0) / DUEL_FADE) : 0;
     if (side.prev && side.prev.clip && wc < 1) {
       const fadeOut = (cur && cur.clip ? 1 - wc : 1 - smooth01((t - cur.t0) / DUEL_FADE)) * (side.prev.weight ?? 1);
-      if (fadeOut > 1e-3) fz.acts.push({ clip: side.prev.clip, t: t - side.prev.t0, loop: side.prev.loop, mirror: side.prev.mirror, w: fadeOut, free: side.prev.kind === 'repulsor' });
+      if (fadeOut > 1e-3) fz.acts.push({ clip: side.prev.clip, t: t - side.prev.t0, loop: side.prev.loop, mirror: side.prev.mirror, w: fadeOut, free: freeArms(side.prev) });
     }
-    if (cur && cur.clip && wc > 0) fz.acts.push({ clip: cur.clip, t: t - cur.t0, loop: cur.loop, mirror: cur.mirror, w: wc * (cur.weight ?? 1), free: cur.kind === 'repulsor' });
+    if (cur && cur.clip && wc > 0) fz.acts.push({ clip: cur.clip, t: t - cur.t0, loop: cur.loop, mirror: cur.mirror, w: wc * (cur.weight ?? 1), free: freeArms(cur) });
     const victim = k === 'hero' ? 'foe' : 'hero';
     const at = victim === 'hero' ? hero.chest() : foeHero.chest();
     const me = k === 'hero' ? hero.chest() : foeHero.chest();
