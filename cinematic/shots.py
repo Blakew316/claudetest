@@ -288,8 +288,12 @@ def build(preview=True):
         if amount <= 0:
             return
         for path in paths_:
-            for f in (f0, f1):
-                obj.keyframe_insert(path, frame=f)
+            # (a still shot gets keys to carry the noise; a moving one already has its own, which keying
+            # here would overwrite with where it ends: its first frames would look at the wrong place)
+            ad = obj.animation_data
+            if not (ad and ad.action and any(fc.data_path == path for fc in A.fcurves_of(ad.action))):
+                for f in (f0, f1):
+                    obj.keyframe_insert(path, frame=f)
         rnd = random.Random(obj.name)
         for fc in A.fcurves_of(obj.animation_data.action):
             if fc.data_path in paths_:
@@ -348,10 +352,10 @@ def build(preview=True):
     a_ = at(iron, 'hips', when['im_land'])
     shot(49, 's03_land', a_ + sph(-70, 4, 9.0), a_ + Vector((0, 0, 0.6)), 24)
     # 4 Low angle, looking up: Thanos leaps.
-    track(th, 'chest', 67, 90, sph(-115, -12, 7.5), 22, 's04_leap', handheld=0.018)
+    track(th, 'chest', 67, 90, sph(-115, -12, 5.2), 26, 's04_leap', handheld=0.018)
     # 5 Wide: the crash down, Iron Man rolling clear.
     m_ = (at(th, 'hips', when['th_land']) + at(iron, 'hips', 100)) / 2
-    shot(91, 's05_crash', m_ + sph(-95, 8, 9.5), m_ + Vector((0, 0, 0.8)), 26, handheld=0.02)
+    shot(91, 's05_crash', m_ + sph(-95, 8, 7.0), m_ + Vector((0, 0, 0.8)), 26, handheld=0.02)
     # 6 Close: up on one knee, the cannon forming on his right arm.
     c_ = at(iron, 'chest', 124)
     shot(113, 's06_cannon', c_ + sph(-50, 8, 4.4), c_, 40, 4.0)
@@ -360,12 +364,16 @@ def build(preview=True):
     shot(132, 's07_blast', s_ + Vector((-1.6, -1.1, 0.5)), at(th, 'chest', when['cannon']), 32, handheld=0.015)
     # 8 Two-shot, handheld: the hook, slipped.
     track(iron, 'chest', 151, 176, Vector((1.3, -7.8, 0.6)), 32, 's08_hook', look_off=Vector((1.3, 0, 0.1)), handheld=0.02)
-    # 9 Close: the punch lands on his head.
-    h_ = at(iron, 'head', when['jab'])
-    shot(177, 's09_headhit', h_ + sph(-60, 2, 2.4), h_, 50, 2.0, handheld=0.03)
-    # 10 Low behind Iron Man, up at the swing coming down on the shield.
-    b_ = at(iron, 'hips', when['swing'])
-    shot(199, 's10_shield', b_ + Vector((-2.2, -1.4, -0.2)), at(th, 'head', when['swing']), 22, handheld=0.02)
+    # 9 Close: the punch lands on his head (riding with the head, so its snap stays in focus).
+    track(iron, 'head', 177, 198, sph(-60, 2, 2.4), 50, 's09_headhit', handheld=0.03, step=3)
+    # 10 Low, on his shield side: the swing coming down onto the shield on his left forearm.
+    s_ = at(iron, 'foreL', when['swing'])
+    d_ = at(th, 'chest', when['swing']) - at(iron, 'chest', when['swing'])
+    d_.z = 0
+    d_.normalize()
+    left = Vector((0, 0, 1)).cross(d_)  # (his left, facing Thanos)
+    shot(199, 's10_shield', s_ + left * 3.0 - d_ * 0.8 - Vector((0, 0, 0.5)), s_ + d_ * 0.5 + Vector((0, 0, 0.3)), 26,
+         handheld=0.02)
     # 11 Close: the blade forming on his right arm.
     r_ = at(iron, 'chest', 245)
     shot(235, 's11_blade', r_ + sph(-60, 10, 4.2), r_, 40, 4.0)
@@ -410,6 +418,7 @@ def build(preview=True):
     if film:
         film.grade(sc)
     S.render_settings(sc, 960, 540, 16) if preview else None
+    sc.render.fps, sc.render.fps_base = 24, 1.0  # (each clip's import set the scene to its own 30 fps)
     S.live(iobjs + tobjs, True)  # (back in the viewport: the saved scene shows them in Blender)
     return sc, (ir, iron), (tr, th)
 

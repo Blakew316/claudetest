@@ -2,8 +2,8 @@
 the chest reactor, and that break. Shapes after the Mark 50 / Mark 85 references (the Titan fight, the threezero
 and Hot Toys pieces):
 
-  cannon      the Mark 50 forearm cannon (after the concept art): an angular sleeve of stepped plates, jaws ahead
-              of the fist with a rack of glowing coils between them, gold trim
+  cannon      the Mark 50 forearm cannon after the Hot Toys piece (weapon_cannon.py): a red hull with gold and
+              silver trim, open jaws lined with chrome ribs and teeth, the emitter glowing in the throat
   shield      the Mark 50 shield on the left forearm, after the Hot Toys figure (shield_mk50.py): its red plates,
               gold V and centre frame, glass visor and side panels as separate pieces (so it breaks into them)
   blade       the Mark 50 sword from the right wrist: long, curved, red back, glowing silver edge, after the
@@ -31,7 +31,7 @@ import shield_mk50
 
 NANO_OBJ = 'hero_ironman01.obj'  # (inside the uploaded nanotech zip)
 MOBILE_H = 2.03                  # that model's height (its units)
-EDGE = (0.55, 0.85, 1.0)         # the forming edge's light
+EDGE = (0.25, 0.75, 1.0)         # the forming edge's light (faint cyan, as in the film)
 BLUE = (0.08, 0.5, 1.0)          # the cells and rings
 
 
@@ -63,10 +63,14 @@ def _mask(nt, surface):
     t.attribute_name = 'nano_t'
     t = t.outputs['Fac']
     tc = N('ShaderNodeTexCoord')
-    noise = N('ShaderNodeTexNoise')
-    noise.inputs['Scale'].default_value = 45.0
-    L(tc.outputs['Object'], noise.inputs['Vector'])
-    rag = math('MULTIPLY_ADD', noise.outputs['Fac'], 0.06)
+    # (the frontier is made of small blocky cells, as in the film: each cell a step ahead or behind)
+    cells = N('ShaderNodeTexVoronoi')
+    cells.inputs['Scale'].default_value = 70.0
+    cells.inputs['Randomness'].default_value = 0.6
+    L(tc.outputs['Object'], cells.inputs['Vector'])
+    cell = N('ShaderNodeSeparateColor')
+    L(cells.outputs['Color'], cell.inputs[0])
+    rag = math('MULTIPLY_ADD', cell.outputs[0], 0.07)
     L(t, rag.node.inputs[2])
     form = obj_attr('form')
     # (fully formed shows all of it: the ragged edge would otherwise still eat the far end, where nano_t ~ 1)
@@ -82,11 +86,20 @@ def _mask(nt, surface):
     band.clamp = True
     L(math('SUBTRACT', form, rag), band.inputs['Value'])
     edge = math('MULTIPLY', band.outputs[0], math('LESS_THAN', form, 0.999))
+    # the forming band: bare silver-chrome nanites with a faint cyan glow, the finished surface just behind it
+    chrome = N('ShaderNodeBsdfPrincipled')
+    chrome.inputs['Base Color'].default_value = (0.13, 0.14, 0.16, 1)  # (dark gunmetal, as in the film)
+    chrome.inputs['Metallic'].default_value = 1.0
+    chrome.inputs['Roughness'].default_value = 0.2
     emit = N('ShaderNodeEmission')
     emit.inputs['Color'].default_value = (*EDGE, 1)
-    L(math('MULTIPLY', edge, 30.0), emit.inputs['Strength'])
+    L(math('MULTIPLY', edge, 0.8), emit.inputs['Strength'])
+    bare = N('ShaderNodeMixShader')
+    L(math('MINIMUM', math('MULTIPLY', edge, 1.6), 1.0), bare.inputs['Fac'])
+    L(surface, bare.inputs[1])
+    L(chrome.outputs[0], bare.inputs[2])
     add = N('ShaderNodeAddShader')
-    L(surface, add.inputs[0])
+    L(bare.outputs[0], add.inputs[0])
     L(emit.outputs[0], add.inputs[1])
     clear = N('ShaderNodeBsdfTransparent')
     mix = N('ShaderNodeMixShader')
@@ -236,82 +249,6 @@ def _set_t(me, anchor, axis=None):
         at.data[i].value = (d - lo) / max(1e-6, hi - lo)
 
 
-def _prism(bm, pts, z0, z1, mat=0):
-    """A flat polygon (2D points, in order) extruded from z0 to z1; faces given material index mat."""
-    lo = [bm.verts.new((x, y, z0)) for x, y in pts]
-    hi = [bm.verts.new((x, y, z1)) for x, y in pts]
-    faces = [bm.faces.new(list(reversed(lo))), bm.faces.new(hi)]
-    n = len(pts)
-    for i in range(n):
-        faces.append(bm.faces.new((lo[i], lo[(i + 1) % n], hi[(i + 1) % n], hi[i])))
-    for f in faces:
-        f.material_index = mat
-    return faces
-
-
-def _arc_x(y, h, sag):
-    """x on the circular arc through (0, -h) and (0, h) that bulges to +x by sag."""
-    r = (h * h + sag * sag) / (2 * sag)
-    return (sag - r) + math.sqrt(max(0.0, r * r - y * y))
-
-
-def _box_profile(a, b, c):
-    """A flat octagon: half-width a, half-height b, corners chamfered by c (x across, z up)."""
-    return [(a, b - c), (a - c, b), (-(a - c), b), (-a, b - c), (-a, -(b - c)), (-(a - c), -b), (a - c, -b), (a, -(b - c))]
-
-
-def _loft(bm, sections, mat, cap_start=True, cap_end=True):
-    """Rings of the same point count at given y (each (y, [(x, z) ...])) joined into a tube."""
-    rings = [[bm.verts.new((x, y, z)) for x, z in pts] for y, pts in sections]
-    n = len(rings[0])
-    for r0, r1 in zip(rings, rings[1:]):
-        for k in range(n):
-            bm.faces.new((r0[k], r0[(k + 1) % n], r1[(k + 1) % n], r1[k])).material_index = mat
-    if cap_start:
-        bm.faces.new(list(reversed(rings[0]))).material_index = mat
-    if cap_end:
-        bm.faces.new(rings[-1]).material_index = mat
-    return rings
-
-
-def _cannon(bm, length, r, red=0, gold=1, blue=2):
-    """The Mark 50 forearm cannon along +y from 0 (the elbow end), after the concept art: an angular sleeve of
-    stepped plates over the forearm and fist; ahead of the fist it splits into an upper and a lower jaw with a
-    rack of glowing coils between them and the emitter glowing at the back of the gap; gold trim along the top
-    and down the jaws."""
-    L = length
-    # the sleeve: stepped plates, each a little wider than the last
-    for i, (y0, y1, k0, k1) in enumerate(((0.0, 0.17, 0.82, 0.95), (0.15, 0.33, 0.92, 1.05), (0.31, 0.5, 1.02, 1.12),
-                                           (0.48, 0.62, 1.1, 1.16))):
-        _loft(bm, [(y0 * L, _box_profile(r * k0 * 1.25, r * k0 * 0.95, r * 0.3)),
-                   (y1 * L, _box_profile(r * k1 * 1.25, r * k1 * 0.95, r * 0.3))], red)
-    # the jaws: upper and lower slabs ahead of the fist, tapering, a gap between them
-    for side in (1, -1):
-        z0, z1 = side * r * 0.32, side * r * 1.05
-        lo_, hi_ = min(z0, z1), max(z0, z1)
-        def slab(y, w, zl, zh):
-            return [(w, zl), (w * 0.8, zh), (-w * 0.8, zh), (-w, zl)] if side > 0 else [(w * 0.8, zl), (w, zh), (-w, zh), (-w * 0.8, zl)]
-        _loft(bm, [(0.6 * L, slab(0, r * 1.38, lo_, hi_)), (0.86 * L, slab(0, r * 1.25, lo_ + (0.08 * r if side < 0 else 0), hi_ - (0.08 * r if side > 0 else 0))),
-                   (1.0 * L, slab(0, r * 1.0, lo_ + (0.25 * r if side < 0 else 0), hi_ - (0.25 * r if side > 0 else 0)))], red)
-        # gold trim down each jaw's flanks
-        for sx in (1, -1):
-            x = sx * r * 1.33
-            zc = side * r * 0.68
-            _loft(bm, [(0.62 * L, [(x, zc - 0.06 * r), (x + sx * 0.05 * r, zc - 0.06 * r), (x + sx * 0.05 * r, zc + 0.06 * r), (x, zc + 0.06 * r)]),
-                       (0.95 * L, [(x * 0.8, zc - 0.06 * r), (x * 0.8 + sx * 0.05 * r, zc - 0.06 * r), (x * 0.8 + sx * 0.05 * r, zc + 0.06 * r), (x * 0.8, zc + 0.06 * r)])], gold)
-    # the rack of coils in the gap, glowing
-    for i in range(8):
-        y = (0.64 + 0.03 * i) * L
-        _loft(bm, [(y, _box_profile(r * 1.15, r * 0.3, r * 0.08)), (y + 0.012 * L, _box_profile(r * 1.15, r * 0.3, r * 0.08))], blue)
-    # the emitter at the back of the gap
-    _loft(bm, [(0.6 * L, _box_profile(r * 0.9, r * 0.3, r * 0.1)), (0.605 * L, _box_profile(r * 0.9, r * 0.3, r * 0.1))], blue)
-    # gold trim along the top of the sleeve
-    for sx in (1, -1):
-        x = sx * r * 0.45
-        _loft(bm, [(0.05 * L, [(x - 0.05 * r, r * 0.86), (x + 0.05 * r, r * 0.86), (x + 0.05 * r, r * 0.95), (x - 0.05 * r, r * 0.95)]),
-                   (0.6 * L, [(x - 0.05 * r, r * 1.12), (x + 0.05 * r, r * 1.12), (x + 0.05 * r, r * 1.21), (x - 0.05 * r, r * 1.21)])], gold)
-
-
 def _energy_panel(bm, height, width, bulge, rows=24, cols=16):
     """The Endgame energy shield: a tall curved sheet (y up, bowed toward +z), as a fine grid."""
     vs = []
@@ -451,9 +388,6 @@ def build(scene, root, arm):
     scale = (P['head'] - (P['footL'] + P['footR']) / 2).length
     m = scale / 1.62  # (world units per metre: head-to-foot ~1.62 m on him)
     red = metal('nano_red', (0.30, 0.012, 0.016), 0.22, coat=0.6)
-    gold = metal('nano_gold', (0.78, 0.53, 0.2), 0.3)
-    silver = metal('nano_silver', (0.6, 0.6, 0.62), 0.25)
-    blue = glow('nano_blue', BLUE, 18.0)
     body = (P['chest'] + P['hips']) / 2
     kit = {}
 
@@ -465,15 +399,25 @@ def build(scene, root, arm):
         out_ = (out_ - d * out_.dot(d)).normalized()
         return e, w, d, out_
 
-    # Cannons (each forearm): from the elbow over the fist and past it.
+    # Cannons (each forearm): the Mark 50 cannon after the Hot Toys piece (weapon_cannon.py), from the elbow over
+    # the fist and past it, its top on the back of the forearm; the left one its mirror (sharing its meshes).
+    cannon = _traced(scene, coll, 'weapon_cannon', 'weapon_cannon.json')
     for side, key in (('R', 'cannon'), ('L', 'cannon_l')):
         e, w, d, out_ = arm_axes(side)
         length = (w - e).length * 1.85
-        o = _mesh_obj(scene, coll, 'nano_' + key, lambda bm: _cannon(bm, length, 0.062 * m), (red, gold, blue))
-        _set_t(o.data, Vector((0, 0, 0)), Vector((0, 1, 0)))
-        o.matrix_world = _frame(e - d * 0.02 * m, out_.cross(d), d)  # (x across, y along the arm)
-        _bind(o, arm, I['fore' + side])
-        kit[key] = {'objs': [o], 'bone': I['fore' + side]}
+        top_ = Vector((0, 0, 1)) - d * d.z
+        objs = cannon if side == 'R' else [o.copy() for o in cannon]
+        place = _frame(e - d * 0.02 * m, d.cross(top_), d) @ Matrix.Scale(length, 4)
+        if side == 'L':
+            place = place @ Matrix.Scale(-1, 4, Vector((1, 0, 0)))
+        for i, o in enumerate(objs):
+            if side == 'L':
+                coll.objects.link(o)
+            o.name = 'nano_' + key + ('' if i == 0 else f'_{i}')
+            o['form'] = 0.0
+            o.matrix_world = place
+            _bind(o, arm, I['fore' + side])
+        kit[key] = {'objs': objs, 'bone': I['fore' + side]}
 
     # Shield: the Mark 50 shield (after the Hot Toys figure) on the outside of the left forearm, its top at the
     # fist, its points past the elbow, facing out from the arm. Its own paint: deeper red, warmer gold.
