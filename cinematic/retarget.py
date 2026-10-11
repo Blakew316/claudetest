@@ -19,18 +19,34 @@ SRC = {'hips': 'Hips', 'spine': 'Spine', 'spine1': 'Spine1', 'chest': 'Spine2', 
        'clavR': 'RightShoulder', 'armR': 'RightArm', 'foreR': 'RightForeArm', 'handR': 'RightHand',
        'thighL': 'LeftUpLeg', 'shinL': 'LeftLeg', 'footL': 'LeftFoot', 'toeL': 'LeftToeBase',
        'thighR': 'RightUpLeg', 'shinR': 'RightLeg', 'footR': 'RightFoot', 'toeR': 'RightToeBase'}
-IRON = {'hips': 'DEF-spine', 'spine': 'DEF-spine001', 'spine1': 'DEF-spine002', 'chest': 'DEF-spine003',
-        'neck': 'DEF-spine004', 'head': 'DEF-spine006',
-        'clavL': 'DEF-shoulderL', 'armL': 'DEF-upper_armL', 'foreL': 'DEF-forearmL', 'handL': 'DEF-handL',
-        'clavR': 'DEF-shoulderR', 'armR': 'DEF-upper_armR', 'foreR': 'DEF-forearmR', 'handR': 'DEF-handR',
-        'thighL': 'DEF-thighL', 'shinL': 'DEF-shinL', 'footL': 'DEF-footL', 'toeL': 'DEF-toeL',
-        'thighR': 'DEF-thighR', 'shinR': 'DEF-shinR', 'footR': 'DEF-footR', 'toeR': 'DEF-toeR'}
-THANOS = {'hips': 'Root_M_01', 'spine': 'Spine1_M_011', 'spine1': 'Spine2_M_012', 'chest': 'Chest_M_013',
-          'neck': 'Neck_M_043', 'head': 'Head_M_046',
-          'clavL': 'Scapula_L_076', 'armL': 'Shoulder_L_077', 'foreL': 'Elbow_L_080', 'handL': 'Wrist_L_083',
-          'clavR': 'Scapula_R_014', 'armR': 'Shoulder_R_015', 'foreR': 'Elbow_R_018', 'handR': 'Wrist_R_021',
-          'thighL': 'Hip_L_0111', 'shinL': 'Knee_L_0114', 'footL': 'Ankle_L_0115', 'toeL': 'Toes_L_0116',
-          'thighR': 'Hip_R_02', 'shinR': 'Knee_R_05', 'footR': 'Ankle_R_06', 'toeR': 'Toes_R_07'}
+# The purchased models. Iron Man (MK85, a game rig: bones are numbered, so mapped by where they sit) and Thanos
+# (an Auto-Rig Pro rig driven through its FK controls; its deform bones follow those by constraints).
+IRON = {'hips': 'bone002', 'spine': 'bone024', 'spine1': 'bone025', 'chest': 'bone027',
+        'neck': 'bone098', 'head': 'bone100',
+        'clavL': 'bone032', 'armL': 'bone033', 'foreL': 'bone034', 'handL': 'bone035',
+        'clavR': 'bone065', 'armR': 'bone066', 'foreR': 'bone067', 'handR': 'bone068',
+        'thighL': 'bone004', 'shinL': 'bone005', 'footL': 'bone006', 'toeL': 'bone007',
+        'thighR': 'bone018', 'shinR': 'bone019', 'footR': 'bone020', 'toeR': 'bone021'}
+THANOS = {'hips': 'c_root.x', 'spine': 'c_spine_01.x', 'spine1': 'c_spine_02.x', 'chest': 'c_spine_03.x',
+          'neck': 'c_neck.x', 'head': 'c_head.x',
+          'clavL': 'c_shoulder.l', 'armL': 'c_arm_fk.l', 'foreL': 'c_forearm_fk.l', 'handL': 'c_hand_fk.l',
+          'clavR': 'c_shoulder.r', 'armR': 'c_arm_fk.r', 'foreR': 'c_forearm_fk.r', 'handR': 'c_hand_fk.r',
+          'thighL': 'c_thigh_fk.l', 'shinL': 'c_leg_fk.l', 'footL': 'c_foot_fk.l', 'toeL': 'c_toes_fk.l',
+          'thighR': 'c_thigh_fk.r', 'shinR': 'c_leg_fk.r', 'footR': 'c_foot_fk.r', 'toeR': 'c_toes_fk.r'}
+# Bones whose real parent follows another bone by constraint (Auto-Rig Pro's head hangs off the neck through
+# a Child Of): posed as if parented to that bone.
+EFF_PARENT = {'c_head.x': 'c_neck.x'}
+# Where the hips' travel goes when it isn't the hips bone itself (Auto-Rig Pro: c_root.x turns the pelvis only;
+# c_root_master.x carries the whole body).
+LOC_BONE = {'c_root.x': 'c_root_master.x'}
+
+
+def eff_parent(arm, name):
+    p = EFF_PARENT.get(name)
+    if p and p in arm.data.bones:
+        return p
+    b = arm.data.bones[name]
+    return b.parent.name if b.parent else None
 
 
 def rot_of(m):
@@ -142,8 +158,8 @@ def retarget(src_path, tgt, tgt_names, name, scale_to=None, frames=None, step=1,
     Ainv = A.inverted()
     bones = tgt.data.bones
     pose = tgt.pose.bones
-    for pb in pose:
-        pb.rotation_mode = 'QUATERNION'
+    for n in tgt_names.values():
+        pose[n].rotation_mode = 'QUATERNION'  # (only the bones it keys: other bones keep theirs, rig drivers read them)
     if not tgt.animation_data:
         tgt.animation_data_create()
     action = bpy.data.actions.new(name)
@@ -158,7 +174,8 @@ def retarget(src_path, tgt, tgt_names, name, scale_to=None, frames=None, step=1,
     for b in bones:
         if b.parent is None:
             walk(b)
-    rest_rel = {b.name: rot_of(b.parent.matrix_local.inverted() @ b.matrix_local) if b.parent else rot_of(b.matrix_local) for b in bones}
+    par = {b.name: eff_parent(tgt, b.name) for b in bones}
+    rest_rel = {b.name: rot_of(bones[par[b.name]].matrix_local.inverted() @ b.matrix_local) if par[b.name] else rot_of(b.matrix_local) for b in bones}
     out_f = 0
     n_out = int((f1 - f0) / rate) + 1
     for i in range(n_out):
@@ -169,16 +186,16 @@ def retarget(src_path, tgt, tgt_names, name, scale_to=None, frames=None, step=1,
         for k in LOGICAL:
             D = q_yaw @ Rs[k] @ Rs0[k].inverted() @ q_yaw.inverted()
             want[tgt_names[k]] = Ainv @ (D @ C[k] @ Rt0[k])  # armature space
-        arm_rot = {}
+        arm_rot = dict(want)
         for b in order:
-            parent = arm_rot[b.parent.name] if b.parent else Quaternion()
+            parent = arm_rot[par[b.name]] if par[b.name] else Quaternion()
             ident = parent @ rest_rel[b.name]
             if b.name in want:
                 q = ident.inverted() @ want[b.name]
                 arm_rot[b.name] = want[b.name]
             else:
-                q = B0[b.name].to_quaternion()
-                arm_rot[b.name] = ident @ q
+                arm_rot[b.name] = ident @ B0[b.name].to_quaternion()
+                continue  # (unmapped bones are not keyed: they hold their pose)
             pb = pose[b.name]
             pb.rotation_quaternion = q
             pb.keyframe_insert('rotation_quaternion', frame=out_f + 1)
@@ -187,10 +204,10 @@ def retarget(src_path, tgt, tgt_names, name, scale_to=None, frames=None, step=1,
         d = q_yaw @ ((s_hip - s_hip0) * k_len)
         if not root_motion:
             d.x = d.y = 0
-        hb = bones[tgt_names['hips']]
+        hb = bones[LOC_BONE.get(tgt_names['hips'], tgt_names['hips'])]
         loc = B0[hb.name].to_translation() + rot_of(hb.matrix_local).inverted() @ (Ainv @ d) / max(1e-6, tgt.matrix_world.to_scale()[0])
-        pose[tgt_names['hips']].location = loc
-        pose[tgt_names['hips']].keyframe_insert('location', frame=out_f + 1)
+        pose[hb.name].location = loc
+        pose[hb.name].keyframe_insert('location', frame=out_f + 1)
         out_f += 1
     # Remove the source.
     for o in new:

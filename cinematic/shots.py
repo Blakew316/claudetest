@@ -30,12 +30,12 @@ def first(*paths):
 
 
 def build(preview=True):
-    bpy.ops.wm.read_factory_settings(use_empty=True)
+    (ir, iron, iobjs), (tr, th, tobjs) = S.fighters()  # (opens Thanos's file as the scene)
     sc = bpy.context.scene
     sc.render.fps = 24
     sc.frame_start, sc.frame_end = 1, 600
     env, film, fx, chars = have('env'), have('film'), have('fx'), have('chars')
-    (ir, iron, iobjs), (tr, th, tobjs) = S.fighters()
+    S.live(iobjs + tobjs, False)  # (motion first: only the armatures are evaluated)
     if chars:
         chars.apply_iron(iobjs)
         chars.apply_thanos(tobjs)
@@ -116,7 +116,7 @@ def build(preview=True):
     # Where the knockdown left him: the get-up starts there (his hips matched across the cut, on the ground).
     def hips(f):
         sc.frame_set(f)
-        return (iron.matrix_world @ iron.pose.bones['DEF-spine'].head).copy()
+        return (iron.matrix_world @ iron.pose.bones[rt.IRON['hips']].head).copy()
     K(ir, 301, IM0, IM_YAW, 'CONSTANT')
     d = hips(300) - hips(301)
     d.z = 0
@@ -132,9 +132,9 @@ def build(preview=True):
     DOWN.z = 0
 
     # ---------- aimed arms ----------
-    th_chest = lambda f: th.matrix_world @ th.pose.bones['Chest_M_013'].head + Vector((0, 0, 0.2))
-    gaunt = lambda f: th.matrix_world @ th.pose.bones['Wrist_L_083'].head
-    im_chest = lambda f: iron.matrix_world @ iron.pose.bones['DEF-spine003'].head
+    th_chest = lambda f: th.matrix_world @ th.pose.bones[rt.THANOS['chest']].head + Vector((0, 0, 0.2))
+    gaunt = lambda f: th.matrix_world @ th.pose.bones[rt.THANOS['handL']].head
+    im_chest = lambda f: iron.matrix_world @ iron.pose.bones[rt.IRON['chest']].head
     # Iron Man: both palms on Thanos while he fires (shots 4-6), and down at him from the air (shot 10).
     A.aim_arm(iron, 'iron', 'L', 128, 226, th_chest, ramp=6)
     A.aim_arm(iron, 'iron', 'R', 132, 226, th_chest, ramp=6)
@@ -179,8 +179,8 @@ def build(preview=True):
         cams.append((frame, cam))
         return cam
 
-    IMC, IMH, IMS = 'DEF-spine003', 'DEF-spine006', 'DEF-spine'  # Iron Man: chest, head, hips
-    THC, THH, THG = 'Chest_M_013', 'Head_M_046', 'Wrist_L_083'  # Thanos: chest, head, gauntlet
+    IMC, IMH, IMS = rt.IRON['chest'], rt.IRON['head'], rt.IRON['hips']  # Iron Man: chest, head, hips
+    THC, THH, THG = rt.THANOS['chest'], rt.THANOS['head'], rt.THANOS['handL']  # Thanos: chest, head, gauntlet
     # 1 Wide: Thanos waiting on the rock; Iron Man streaking in from high on the left.
     c = at(th, THC, 24)
     m1, m48 = c.lerp(at(iron, IMC, 1), 0.3), c.lerp(at(iron, IMC, 48), 0.4)
@@ -193,7 +193,7 @@ def build(preview=True):
     c = at(th, THH, 100)
     shot(85, 's03_thanos', c + sph(202, -6, 2.6), c + Vector((0, 0, -0.15)), 85, 2.0)
     # 4 Over Thanos's right shoulder onto Iron Man raising his palms.
-    sh, ch = at(th, 'Shoulder_R_015', 140), at(th, THC, 140)
+    sh, ch = at(th, rt.THANOS['armR'], 140), at(th, THC, 140)
     t = at(iron, IMC, 150)
     back = Vector((sh.x - t.x, sh.y - t.y, 0)).normalized()
     out = Vector((sh.x - ch.x, sh.y - ch.y, 0)).normalized()
@@ -207,7 +207,7 @@ def build(preview=True):
     shot(193, 's06_track', p0 + Vector((1.4, -4.2, 0.1)), p0 + Vector((-1.2, 0, 0)), 45,
          moves=[(193, p0 + Vector((1.4, -4.2, 0.1)), p0 + Vector((-1.2, 0, 0))), (228, p1 + Vector((1.4, -4.2, 0.1)), p1 + Vector((-1.2, 0, 0)))])
     # 7 The backhand landing, close.
-    a_, b_ = at(iron, IMH, 238), at(th, 'Wrist_R_021', 237)
+    a_, b_ = at(iron, IMH, 238), at(th, rt.THANOS['handR'], 237)
     m_ = (a_ + b_) / 2
     shot(229, 's07_close', m_ + sph(-72, 2, 4.2), m_, 40, 2.8)
     # 8 Wide: thrown back across the rock.
@@ -255,22 +255,22 @@ def build(preview=True):
 def fx_moments(sc, fx, iron, th, im_chest, th_chest, gaunt, DOWN, FALL):
     """Where the effects go (see fx.py)."""
     land = Vector((-3.0, 0, 0))
-    fx.thrusters(sc, iron, ['DEF-footL', 'DEF-footR', 'DEF-handL', 'DEF-handR'], 1, 56, [(1, 1.0), (48, 1.2), (54, 0.0)])
+    fx.thrusters(sc, iron, [rt.IRON['footL'], rt.IRON['footR'], rt.IRON['handL'], rt.IRON['handR']], 1, 56, [(1, 1.0), (48, 1.2), (54, 0.0)])
     fx.dust_burst(sc, land, 55, 2.6)
     fx.ground_crack(sc, land, 55, 1.6)
-    fx.repulsor_charge(sc, iron, 'DEF-handL', 128, 148)
-    fx.repulsor_charge(sc, iron, 'DEF-handR', 132, 154)
-    for i, (h, f) in enumerate((('DEF-handL', 148), ('DEF-handR', 154), ('DEF-handL', 168), ('DEF-handR', 176), ('DEF-handL', 198), ('DEF-handR', 207), ('DEF-handL', 216))):
+    fx.repulsor_charge(sc, iron, rt.IRON['handL'], 128, 148)
+    fx.repulsor_charge(sc, iron, rt.IRON['handR'], 132, 154)
+    for i, (h, f) in enumerate(((rt.IRON['handL'], 148), (rt.IRON['handR'], 154), (rt.IRON['handL'], 168), (rt.IRON['handR'], 176), (rt.IRON['handL'], 198), (rt.IRON['handR'], 207), (rt.IRON['handL'], 216))):
         fx.repulsor_shot(sc, iron, h, gaunt(f), f, f + 4, 0.8)
     fx.impact(sc, Vector((-1.9, 0, 3.2)), 246, 0.6)
     fx.dust_burst(sc, DOWN, 280, 1.4)
-    fx.thrusters(sc, iron, ['DEF-footL', 'DEF-footR', 'DEF-handL', 'DEF-handR'], 322, 478, [(322, 0.0), (330, 1.3), (342, 1.0), (470, 0.9), (478, 0.0)])
-    fx.repulsor_charge(sc, iron, 'DEF-handL', 346, 360)
-    fx.repulsor_shot(sc, iron, 'DEF-handL', th_chest(362), 360, 366, 2.0)
-    fx.repulsor_shot(sc, iron, 'DEF-handR', th_chest(362), 361, 367, 2.0)
+    fx.thrusters(sc, iron, [rt.IRON['footL'], rt.IRON['footR'], rt.IRON['handL'], rt.IRON['handR']], 322, 478, [(322, 0.0), (330, 1.3), (342, 1.0), (470, 0.9), (478, 0.0)])
+    fx.repulsor_charge(sc, iron, rt.IRON['handL'], 346, 360)
+    fx.repulsor_shot(sc, iron, rt.IRON['handL'], th_chest(362), 360, 366, 2.0)
+    fx.repulsor_shot(sc, iron, rt.IRON['handR'], th_chest(362), 361, 367, 2.0)
     fx.ground_crack(sc, Vector((-0.2, 0, 0)), 390, 1.4)
-    fx.power_stone(sc, th, 'Wrist_L_083', 421, 486)
-    fx.stone_blast(sc, th, 'Wrist_L_083', im_chest(478), 472, 478)
+    fx.power_stone(sc, th, rt.THANOS['handL'], 421, 486)
+    fx.stone_blast(sc, th, rt.THANOS['handL'], im_chest(478), 472, 478)
     fx.dust_burst(sc, FALL, 505, 2.2)
     fx.ground_crack(sc, FALL, 505, 1.2)
 

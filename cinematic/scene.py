@@ -107,41 +107,97 @@ def height_of(objs):
     return min(zs), max(zs)
 
 
+# The purchased models: the full-detail files on the Mac, light proxies here (see prepare_model.py).
+MODELS = os.environ.get('CINE_MODELS', '/tmp/claude-0/-home-user-claudetest/1ca86f98-efae-51e1-a103-bd6371f97c5d/scratchpad/models/')
+IRON_FILE = os.environ.get('CINE_IRONMAN', os.path.join(MODELS, 'ironman_proxy.blend'))
+THANOS_FILE = os.environ.get('CINE_THANOS', os.path.join(MODELS, 'thanos_proxy.blend'))
+
+
+def rooted(scene, name, objs):
+    """A root empty for a character: every top-level object of his parented to it, in place."""
+    root = bpy.data.objects.new(name, None)
+    scene.collection.objects.link(root)
+    for o in objs:
+        if o.parent is None and o is not root:
+            mw = o.matrix_world.copy()
+            o.parent = root
+            o.matrix_world = mw
+    return root
+
+
+def visible_meshes(objs):
+    return [o for o in objs if o.type == 'MESH' and not o.hide_render and o.visible_get()]
+
+
 def fighters():
-    """Iron Man and Thanos, his size times 1.12, each with a root empty (Iron Man faces +x, Thanos -x)."""
-    iron_root, iron_arm, iron_objs = import_glb(os.path.join(HERE, 'ironman.glb'))
-    # (A stray sphere ships in his file.)
-    for o in [o for o in iron_objs if o.name.startswith('Icosphere')]:
-        iron_objs.remove(o)
+    """Iron Man and Thanos (Thanos his size times 1.12), each under a root empty: Iron Man faces +x, Thanos -x.
+    Opens Thanos's file as the scene (his rig, face rig and armour come as they are) and appends Iron Man."""
+    bpy.ops.wm.open_mainfile(filepath=THANOS_FILE, load_ui=False)
+    sc = bpy.context.scene
+    for o in [o for o in bpy.data.objects if o.type in ('CAMERA', 'LIGHT')]:
         bpy.data.objects.remove(o, do_unlink=True)
-    iron_materials(iron_objs)
-    th_root, th_arm, th_objs = import_glb(os.path.join(HERE, 'thanos.glb'))
-    # His file plays a stray animation ('Loser'): drop it, and stand him in his bind pose.
-    if th_arm.animation_data:
-        th_arm.animation_data.action = None
-    for pb in th_arm.pose.bones:
-        pb.matrix_basis.identity()
+    # (Nor his file's compositing or video-editing setup: the film's own grade goes on later. And its clock: the
+    # file remaps time tenfold, which plays every action and motion clip at the wrong frame.)
+    sc.render.frame_map_old = sc.render.frame_map_new = 100
+    sc.render.fps, sc.render.fps_base = 24, 1.0
+    sc.render.use_sequencer = False
+    try:
+        sc.use_nodes = False
+    except Exception:
+        pass
     bpy.context.view_layer.update()
-    lo, hi = posed_height(th_objs)
-    s = IRON_H * 1.12 / (hi - lo)
-    th_root.scale = (s, s, s)
+    th_all = list(sc.objects)
+    th_arm = bpy.data.objects['rig']
+    # His arms and legs on their FK controls (the motion is put on those).
+    for s_ in 'lr':
+        for c in ('c_hand_ik.', 'c_foot_ik.'):
+            pb = th_arm.pose.bones.get(c + s_)
+            if pb is not None and 'ik_fk_switch' in pb:
+                pb['ik_fk_switch'] = 1.0
+    with bpy.data.libraries.load(IRON_FILE, link=False) as (src, dst):
+        dst.objects = [n for n in src.objects if n not in ('Camera', 'Light')]
+    coll = bpy.data.collections.new('IronMan')
+    sc.collection.children.link(coll)
+    iron_all = [o for o in dst.objects if o is not None]
+    for o in iron_all:
+        coll.objects.link(o)
+    iron_arm = [o for o in iron_all if o.type == 'ARMATURE'][0]
+    # His faceplate and its eye glass ship bound to the skeleton's root, not his head (they stay put when he
+    # moves): bind them to the head.
+    root_bone = [b.name for b in iron_arm.data.bones if b.parent is None][0]
+    for o in iron_all:
+        if o.type == 'MESH' and [g.name for g in o.vertex_groups] == [root_bone]:
+            o.vertex_groups[root_bone].name = rt.IRON['head']
     bpy.context.view_layer.update()
-    lo, hi = posed_height(th_objs)
-    th_root.location.z -= lo
+    iron_root = rooted(sc, 'IronMan_root', iron_all)
+    th_root = rooted(sc, 'Thanos_root', th_all)
+    iron_objs, th_objs = visible_meshes(iron_all), visible_meshes(th_all)
+    for root, objs, h in ((iron_root, iron_objs, IRON_H), (th_root, th_objs, IRON_H * 1.12)):
+        bpy.context.view_layer.update()
+        lo, hi = height_of(objs)
+        s_ = h / (hi - lo)
+        root.scale = (s_, s_, s_)
+        bpy.context.view_layer.update()
+        lo, hi = height_of(objs)
+        root.location.z -= lo
     bpy.context.view_layer.update()
-    # Face them: the rest pose forward (toes) onto +x for Iron Man, -x for Thanos.
-    bpy.context.view_layer.update()
+    # Face them: the rest pose forward (heel to toe) onto +x for Iron Man, -x for Thanos.
     for root, arm, names, want in ((iron_root, iron_arm, rt.IRON, Vector((1, 0, 0))), (th_root, th_arm, rt.THANOS, Vector((-1, 0, 0)))):
         f = Vector((0, 0, 0))
         for s_ in 'LR':
             f += arm.matrix_world @ arm.pose.bones[names['toe' + s_]].head - arm.matrix_world @ arm.pose.bones[names['foot' + s_]].head
         f.z = 0
         f.normalize()
-        ang = f.to_2d().angle_signed(want.to_2d())
-        root.rotation_euler.z = -ang
+        root.rotation_euler.z = -f.to_2d().angle_signed(want.to_2d())
     bpy.context.view_layer.update()
-
     return (iron_root, iron_arm, iron_objs), (th_root, th_arm, th_objs)
+
+
+def live(objs, on):
+    """Meshes in or out of the scene's evaluation. Out while the motion is built (the armatures are all that is
+    read, and Thanos's 1.4 million faces would be deformed at every frame); renders draw them either way."""
+    for o in objs:
+        o.hide_viewport = not on
 
 
 def space(scene):
@@ -223,6 +279,5 @@ def render_settings(scene, w, h, samples=24):
     scene.cycles.samples = samples
     scene.cycles.use_denoising = True
     scene.render.resolution_x, scene.render.resolution_y = w, h
-    scene.render.fps = 30
     scene.view_settings.view_transform = 'AgX'
     scene.view_settings.look = 'AgX - High Contrast'

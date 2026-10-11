@@ -5,16 +5,15 @@ from mathutils import Matrix, Quaternion, Vector
 import retarget as rt
 
 ARM_BONES = {
-    'iron': {'L': ['DEF-shoulderL', 'DEF-upper_armL', 'DEF-upper_armL001', 'DEF-forearmL', 'DEF-forearmL001', 'DEF-handL'],
-             'R': ['DEF-shoulderR', 'DEF-upper_armR', 'DEF-upper_armR001', 'DEF-forearmR', 'DEF-forearmR001', 'DEF-handR']},
-    'thanos': {'L': ['Scapula_L_076', 'Shoulder_L_077', 'ShoulderPart1_L_078', 'ShoulderPart2_L_079', 'Elbow_L_080', 'ElbowPart1_L_081', 'ElbowPart2_L_082', 'Wrist_L_083'],
-               'R': ['Scapula_R_014', 'Shoulder_R_015', 'ShoulderPart1_R_016', 'ShoulderPart2_R_017', 'Elbow_R_018', 'ElbowPart1_R_019', 'ElbowPart2_R_020', 'Wrist_R_021']},
+    'iron': {'L': ['bone032', 'bone033', 'bone034', 'bone035'], 'R': ['bone065', 'bone066', 'bone067', 'bone068']},
+    'thanos': {'L': ['c_shoulder.l', 'c_arm_fk.l', 'c_forearm_fk.l', 'c_hand_fk.l'],
+               'R': ['c_shoulder.r', 'c_arm_fk.r', 'c_forearm_fk.r', 'c_hand_fk.r']},
 }
-# Which of those bones carry the upper arm, the forearm and the hand (the rest are twist bones, left as captured).
-KEY = {'iron': {'upper': 1, 'fore': 3, 'hand': 5}, 'thanos': {'upper': 1, 'fore': 4, 'hand': 7}}
-# Knuckles across the hand (index, pinky) and the middle knuckle, for the palm's facing and the fingers' line.
-KNUCKLES = {'iron': {'L': ('DEF-f_index01L', 'DEF-f_pinky01L', 'DEF-f_middle01L'), 'R': ('DEF-f_index01R', 'DEF-f_pinky01R', 'DEF-f_middle01R')},
-            'thanos': {'L': None, 'R': ('IndexFinger1_R_030', 'PinkyFinger1_R_035', 'MiddleFinger1_R_022')}}
+# Which of those bones carry the upper arm, the forearm and the hand.
+KEY = {'iron': {'upper': 1, 'fore': 2, 'hand': 3}, 'thanos': {'upper': 1, 'fore': 2, 'hand': 3}}
+# First knuckles of the index and little fingers and the middle finger, for the palm's facing and the fingers' line.
+KNUCKLES = {'iron': {'L': ('bone052', 'bone037', 'bone047'), 'R': ('bone085', 'bone070', 'bone080')},
+            'thanos': {'L': ('index1.l', 'pinky1.l', 'middle1.l'), 'R': ('index1.r', 'pinky1.r', 'middle1.r')}}
 
 
 def rot(m):
@@ -128,7 +127,10 @@ def aim_arm(arm, who, side, f0, f1, target, palm=True, bend=0.12, ramp=5, up_hin
     A = rot(arm.matrix_world)
     Ainv = A.inverted()
     data = arm.data.bones
-    rest_rel = {b: rot(data[b].parent.matrix_local.inverted() @ data[b].matrix_local) for b in bones[1:]}
+    # Each bone measured from the one before it in the chain (rig helper bones in between hold their rest), the
+    # upper arm from its own parent.
+    cpar = {b: rt.eff_parent(arm, b) if i == k['upper'] else bones[i - 1] for i, b in enumerate(bones) if i >= 1}
+    rest_rel = {b: rot(data[cpar[b]].matrix_local.inverted() @ data[b].matrix_local) for b in bones[1:]}
     # Each limb bone's line (to the next joint) in its own frame, from the imported pose: skeleton-agnostic.
     W0 = rt.capture_default(arm)[0]
     line = {}
@@ -140,8 +142,8 @@ def aim_arm(arm, who, side, f0, f1, target, palm=True, bend=0.12, ramp=5, up_hin
         sc.frame_set(f)
         dg = bpy.context.evaluated_depsgraph_get()
         ev = arm.evaluated_get(dg)
-        P = {b: ev.pose.bones[b] for b in bones}
-        Wm = {b: arm.matrix_world @ P[b].matrix for b in bones}
+        P = {b: ev.pose.bones[b] for b in set(bones) | {cpar[bones[k['upper']]]}}
+        Wm = {b: arm.matrix_world @ P[b].matrix for b in P}
         T = target(f) if callable(target) else Vector(target)
         sh = Wm[bones[k['upper']]].translation
         to = (T - sh).normalized()
@@ -190,7 +192,7 @@ def aim_arm(arm, who, side, f0, f1, target, palm=True, bend=0.12, ramp=5, up_hin
             else:
                 world[b] = ident @ basis
         # Local bases (armature space throughout: the object's own turn taken out).
-        parent0 = rot(arm.matrix_world @ P[bones[0]].matrix)
+        parent0 = rot(Wm[cpar[bones[k['upper']]]])  # (the upper arm's own parent: the clavicle, or the chest)
         out = {}
         prev = parent0
         for i, b in enumerate(chain):
