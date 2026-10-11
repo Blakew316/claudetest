@@ -8,8 +8,8 @@
  *  3. Thanos answers: he plants and fires the Power Stone from his clenched gauntlet fist; Iron Man
  *     dodges the first on his boot jets and takes the next (a hit reaction; later rounds, knocked down,
  *     getting up again);
- *  4. Thanos closes in under fire, the gauntlet up, and takes it hand to hand: a swipe Iron Man ducks,
- *     then a punch that lands (it throws him back; later rounds, off his feet);
+ *  4. Thanos closes in under fire, the gauntlet up, and takes it hand to hand: a punch Iron Man sways
+ *     out of, then a lunging swipe that lands and throws him back off his feet (he gets up again);
  *  5. Iron Man's heavy blast, both palms: it staggers Thanos a step back.
  * Rounds repeat (escalating) while the section's words are read; then Thanos withdraws and Iron Man
  * leaves for the next ball. Captured motion (world/mocap-clips.js) plays Iron Man's side-steps, dodges,
@@ -43,16 +43,7 @@ const T_WALK = 'Mutant Walking';
 const T_SWIPE = 'Mutant Swiping';
 const T_PUNCH = 'Mutant Punch';
 const WALK_V = (Math.hypot(...clip(T_WALK).end) / clip(T_WALK).duration) * FOE_K; // world units/s
-const CLOSE = 24; // hand to hand, this far apart (world units)
-// The swipe lunges him in: [when he is furthest in (s), how far (model units)]; he punches from there.
-const LUNGE = (() => {
-  const best = [0, 0];
-  for (let t = 0; t < clip(T_SWIPE).duration; t += 1 / 30) {
-    const z = pathAt(T_SWIPE, t)[1];
-    if (z > best[1]) [best[0], best[1]] = [t, z];
-  }
-  return best;
-})();
+const CLOSE = 26; // hand to hand, this far apart (world units): the punch's reach; the swipe lunges in from it
 const ADVANCE_TO = 0.6; // under a volley he walks in to this x the stand-off
 // (Acts in which he turns to keep his face to the other.)
 const TURNS = new Set(['stand', 'repulsor', 'advance', 'gauntlet']);
@@ -182,28 +173,26 @@ export function createFight(seed) {
     return end + range(rand, 0.2, 0.5);
   }
 
-  /** Thanos walks in on him under fire, the gauntlet up, and takes it hand to hand: a swipe ducked, a punch landed. */
+  /** Thanos walks in on him under fire, the gauntlet up, and takes it hand to hand: a punch slipped, a swipe landed. */
   function close(t) {
     const H = state.hero;
     const F = state.foe;
-    const reach = CLOSE + LUNGE[1] * FOE_K; // (he swipes from here, lunging in)
-    const walk = Math.max(0, dist() - reach) / WALK_V;
+    const walk = Math.max(0, dist() - CLOSE) / WALK_V;
     const at = t + walk;
-    start(F, walkIn(at + 0.6, { block: 1, close: reach }), t);
+    start(F, walkIn(at + 0.6, { block: 1, close: CLOSE }), t);
     start(H, stand({ kind: 'repulsor', aim: 'both', until: Math.max(t + 0.3, at - 0.2) }), t);
     let hand = rand() < 0.5 ? 'L' : 'R';
     for (let tFire = t + 0.35; tFire < at - 0.35; tFire += range(rand, 0.4, 0.5)) {
       bolt('hero', hand, tFire, 0.5, 'block');
       hand = hand === 'L' ? 'R' : 'L';
     }
-    // The swipe: Iron Man sways out of it.
-    const swing = clip(T_SWIPE).releases[0].t;
-    queue(F, at, { kind: 'melee', clip: T_SWIPE, mirror: rand() < 0.5, loop: false, until: at + LUNGE[0] });
-    queue(H, at + swing - 0.45, { kind: 'dodge', clip: 'Dodging', mirror: rand() < 0.5, loop: false });
-    // The punch, straight out of the lunge: it lands.
-    const tP = at + LUNGE[0];
-    queue(F, tP, { kind: 'melee', clip: T_PUNCH, mirror: rand() < 0.5, loop: false });
-    const tHit = tP + clip(T_PUNCH).releases.at(-1).t;
+    // The punch: Iron Man sways out of it.
+    queue(F, at, { kind: 'melee', clip: T_PUNCH, mirror: rand() < 0.5, loop: false });
+    queue(H, at + clip(T_PUNCH).releases.at(-1).t - 0.45, { kind: 'dodge', clip: 'Dodging', mirror: rand() < 0.5, loop: false });
+    // Straight into the swipe, lunging in: it lands.
+    const tS = at + clip(T_PUNCH).duration - FADE;
+    queue(F, tS, { kind: 'melee', clip: T_SWIPE, mirror: rand() < 0.5, loop: false });
+    const tHit = tS + clip(T_SWIPE).releases[0].t;
     if (round >= 1 && rand() < 0.5) {
       state.heavy.push(tHit);
       queue(H, tHit - 0.02, { kind: 'react', clip: 'Knocked Down', mirror: false, loop: false });
@@ -262,10 +251,10 @@ export function createFight(seed) {
       }
       state.bolts = state.bolts.filter((b) => b.tFire <= t);
     },
-    /** Whether he may leave: the round's beat over, nothing coming, both on their feet. */
+    /** Whether he may leave: the round played out (to Iron Man's heavy blast), nothing coming, both on their feet. */
     calm(t) {
       const busy = (f) => f.queue.length > 0 || (f.cur && f.cur.kind !== 'stand' && f.cur.kind !== 'advance' && t < ends(f.cur));
-      return t >= nextAt && !busy(state.hero) && !busy(state.foe) && !state.bolts.some((b) => b.tHit > t);
+      return t >= nextAt && beat === 0 && !busy(state.hero) && !busy(state.foe) && !state.bolts.some((b) => b.tHit > t);
     },
     /**
      * Advance to t: start what is due, carry each along his clip, keep faces turned to each other, run the
