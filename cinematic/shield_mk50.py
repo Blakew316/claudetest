@@ -69,6 +69,8 @@ def build(bm, height):
         pb = bmesh.new()
         pb.from_mesh(me)
         bpy.data.meshes.remove(me)
+        # (the curve gives its caps and rim as separate shells on the same points: one closed piece)
+        bmesh.ops.remove_doubles(pb, verts=pb.verts[:], dist=1e-6)
         bmesh.ops.triangulate(pb, faces=pb.faces[:])
         for _ in range(8):  # (long edges split so the piece follows the bow)
             long = [ed for ed in pb.edges if ed.calc_length() > SPLIT]

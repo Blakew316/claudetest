@@ -1,7 +1,12 @@
 """The final render, on the Mac. From Terminal (Blender's own Python runs it):
 
-  /Applications/Blender.app/Contents/MacOS/Blender -b --python ~/Desktop/cinematic/render_mac.py -- test
-      four frames at reduced quality, to check the full-detail models (prints seconds per frame)
+  /Applications/Blender.app/Contents/MacOS/Blender -b --python ~/Desktop/cinematic/render_mac.py -- preview
+      the whole fight, small and fast (Eevee), straight into ~/Desktop/fight_render/preview.mp4: for checking
+      the action, the cuts and the weapons (not the final look)
+  ... -- preview-cycles
+      the same with Cycles at low quality, if Eevee fails on this Mac (slower)
+  ... -- test
+      four frames at final quality: prints seconds per frame and how long the full render will take
   ... -- full
       all 600 frames at final quality into ~/Desktop/fight_render/frames; run it again after a stop and it
       carries on from the frames already done
@@ -21,6 +26,7 @@ import paths  # noqa: E402
 
 OUT = paths.OUT
 TEST_FRAMES = [56, 238, 362, 450]
+FINAL = (1920, 1080, 128)  # (width, height, samples: adaptive, denoised)
 
 
 def gpu(sc):
@@ -52,9 +58,90 @@ def quality(sc, w, h, samples, blur=True):
     sc.cycles.use_adaptive_sampling = True
     sc.cycles.adaptive_threshold = 0.02
     sc.cycles.use_denoising = True
-    sc.render.use_motion_blur = blur
+    sc.render.use_persistent_data = True  # (the scene kept from frame to frame instead of rebuilt each time)
+    if not (blur and vector_blur(sc)):
+        sc.render.use_motion_blur = False
     sc.render.image_settings.file_format = 'PNG'
     sc.render.image_settings.color_mode = 'RGB'
+
+
+def _put(node, value, *names):
+    """Set a compositor node's setting: an input socket (Blender 5) or a property (4.x), whichever it has."""
+    for n in names:
+        if n in node.inputs:
+            node.inputs[n].default_value = value
+            return True
+        if hasattr(node, n):
+            setattr(node, n, value)
+            return True
+    return False
+
+
+def vector_blur(sc):
+    """Motion blur put on in the compositor from the speed pass, with the film's shutter: far cheaper than
+    rendering it. Returns False (and leaves the render's own blur) where the compositor has no render layer."""
+    nt = getattr(sc, 'compositing_node_group', None) or (getattr(sc, 'node_tree', None) if getattr(sc, 'use_nodes', False) else None)
+    rl = next((n for n in nt.nodes if n.bl_idname == 'CompositorNodeRLayers'), None) if nt else None
+    if rl is None:
+        return False
+    shutter = sc.render.motion_blur_shutter
+    sc.render.use_motion_blur = False  # (Cycles writes the speed pass only without its own blur)
+    for vl in sc.view_layers:
+        vl.use_pass_vector = True
+        vl.use_pass_z = True
+    img = rl.outputs['Image']
+    to = [ln.to_socket for ln in nt.links if ln.from_socket == img]
+    vb = nt.nodes.new('CompositorNodeVecBlur')
+    vb.location = (rl.location.x + 250, rl.location.y - 300)
+    nt.links.new(img, vb.inputs['Image'])
+    nt.links.new(rl.outputs['Vector'], vb.inputs['Speed'])
+    depth = rl.outputs.get('Depth') or rl.outputs.get('Z')
+    nt.links.new(depth, vb.inputs.get('Depth') or vb.inputs.get('Z'))
+    _put(vb, 64, 'Samples', 'samples')
+    _put(vb, shutter, 'Shutter', 'factor')
+    for t in to:
+        nt.links.new(vb.outputs[0], t)
+    return True
+
+
+def mp4(sc, path, crf='HIGH'):
+    """Render output straight to an H.264 movie."""
+    if hasattr(sc.render.image_settings, 'media_type'):  # (Blender 5: video is a media type of its own)
+        sc.render.image_settings.media_type = 'VIDEO'
+    sc.render.image_settings.file_format = 'FFMPEG'
+    sc.render.ffmpeg.format = 'MPEG4'
+    sc.render.ffmpeg.codec = 'H264'
+    sc.render.ffmpeg.constant_rate_factor = crf
+    sc.render.filepath = path
+
+
+def preview(sc, eevee=True):
+    """All 600 frames at 960x540 into preview.mp4 (kept small enough to upload): Eevee, or Cycles at 16
+    samples. No motion blur."""
+    sc.render.resolution_x, sc.render.resolution_y = 960, 540
+    sc.render.resolution_percentage = 100
+    sc.render.use_motion_blur = False
+    engine = None
+    for e in (('BLENDER_EEVEE_NEXT', 'BLENDER_EEVEE') if eevee else ()):  # (4.2-4.4: _NEXT; 5.x: plain)
+        try:
+            sc.render.engine = e
+            engine = e
+            break
+        except TypeError:
+            continue
+    if engine:
+        sc.eevee.taa_render_samples = 16
+        if hasattr(sc.eevee, 'use_raytracing'):
+            sc.eevee.use_raytracing = True  # (the armour's reflections)
+    else:
+        quality(sc, 960, 540, 16, blur=False)
+        engine = 'CYCLES'
+    sc.frame_start, sc.frame_end = 1, 600
+    mp4(sc, os.path.join(OUT, 'preview.mp4'), 'LOW')
+    print('preview with', engine)
+    t = time.time()
+    bpy.ops.render.render(animation=True)
+    print(f'preview done in {(time.time() - t) / 60:.0f} min:', os.path.join(OUT, 'preview.mp4'))
 
 
 def build():
@@ -80,13 +167,7 @@ def movie():
         st.elements.append(f)
     sc.frame_start, sc.frame_end = 1, len(frames)
     sc.render.use_sequencer = True
-    if hasattr(sc.render.image_settings, 'media_type'):  # (Blender 5: video is a media type of its own)
-        sc.render.image_settings.media_type = 'VIDEO'
-    sc.render.image_settings.file_format = 'FFMPEG'
-    sc.render.ffmpeg.format = 'MPEG4'
-    sc.render.ffmpeg.codec = 'H264'
-    sc.render.ffmpeg.constant_rate_factor = 'HIGH'
-    sc.render.filepath = os.path.join(OUT, 'fight.mp4')
+    mp4(sc, os.path.join(OUT, 'fight.mp4'))
     bpy.ops.render.render(animation=True)
     print('movie:', sc.render.filepath)
 
@@ -100,17 +181,23 @@ def main():
     if mode == 'blend':
         bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, 'fight.blend'))
         print('saved', os.path.join(OUT, 'fight.blend'))
+    elif mode in ('preview', 'preview-cycles'):
+        preview(sc, eevee=mode == 'preview')
     elif mode == 'test':
-        quality(sc, 1280, 720, 64)
+        quality(sc, *FINAL)
+        took = []
         for f in TEST_FRAMES:
             sc.frame_set(f)
             sc.render.filepath = os.path.join(OUT, 'test', f'f{f:03d}.png')
             t = time.time()
             bpy.ops.render.render(write_still=True)
-            print(f'frame {f}: {time.time() - t:.0f} s')
+            took.append(time.time() - t)
+            print(f'frame {f}: {took[-1]:.0f} s')
+        per = sum(took[1:]) / len(took[1:])  # (the first frame also loads the scene)
         print('test frames in', os.path.join(OUT, 'test'))
+        print(f'FULL RENDER ESTIMATE: about {per:.0f} s a frame, {per * 600 / 3600:.1f} hours for all 600 frames')
     elif mode == 'full':
-        quality(sc, 1920, 1080, 256)
+        quality(sc, *FINAL)
         sc.frame_start, sc.frame_end = 1, 600
         sc.render.filepath = os.path.join(OUT, 'frames', 'f')
         sc.render.use_overwrite = False  # (a re-run skips frames already rendered)
@@ -118,7 +205,7 @@ def main():
         bpy.ops.render.render(animation=True)
         print('frames in', os.path.join(OUT, 'frames'), '- now run with "movie"')
     else:
-        sys.exit(f'unknown mode {mode}: use test, full, movie or blend')
+        sys.exit(f'unknown mode {mode}: use preview, preview-cycles, test, full, movie or blend')
 
 
 main()

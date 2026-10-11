@@ -7,11 +7,16 @@ FIGHT RENDER ON THE MAC
    (the Mixamo files and the zips you downloaded them in; zipped is fine).
 3. Open Terminal and paste ONE of these lines, then press Enter.
 
-   TEST (a few minutes, 4 frames at full detail):
-   /Applications/Blender.app/Contents/MacOS/Blender -b --python ~/Desktop/cinematic/render_mac.py -- test
-   Pictures appear in Desktop/fight_render/test. The last lines say how many seconds each frame took.
+   PREVIEW (10-20 minutes: the whole fight, small and fast, to check the action):
+   /Applications/Blender.app/Contents/MacOS/Blender -b --python ~/Desktop/cinematic/render_mac.py -- preview
+   Result: Desktop/fight_render/preview.mp4 (small enough to upload to Claude).
+   If it stops with an error, use the same line ending in   -- preview-cycles   (slower, same result).
 
-   FULL RENDER (all 600 frames, final quality, best overnight):
+   TEST (a few minutes, 4 frames at final quality):
+   /Applications/Blender.app/Contents/MacOS/Blender -b --python ~/Desktop/cinematic/render_mac.py -- test
+   Pictures appear in Desktop/fight_render/test. The last line says how long the full render will take.
+
+   FULL RENDER (all 600 frames, final quality):
    /Applications/Blender.app/Contents/MacOS/Blender -b --python ~/Desktop/cinematic/render_mac.py -- full
    If it stops, run the same line again: it carries on from where it stopped.
 
