@@ -5,6 +5,9 @@
       the action, the cuts and the weapons (not the final look)
   ... -- preview-cycles
       the same with Cycles at low quality, if Eevee fails on this Mac (slower)
+  ... -- stills
+      a bright start and end picture for each shot of AI_SHOTS.txt, at final quality, into
+      ~/Desktop/fight_render/stills (for an AI video tool's start/end-frame mode)
   ... -- test
       four frames at final quality: prints seconds per frame and how long the full render will take
   ... -- full
@@ -27,6 +30,14 @@ import paths  # noqa: E402
 OUT = paths.OUT
 TEST_FRAMES = [56, 238, 362, 450]
 FINAL = (1920, 1080, 128)  # (width, height, samples: adaptive, denoised)
+STILLS_EV = 2.5            # (stills are brightened: the AI tool needs to see the fighters clearly)
+STILLS = [  # (name, first frame, last frame): one AI video shot each (see AI_SHOTS.txt)
+    ('01_flyin', 2, 28), ('02_gauntlet', 32, 46), ('03_leap', 68, 88), ('04_crash', 92, 110),
+    ('05_cannon_forms', 114, 130), ('06_cannon_blast', 133, 149), ('07_head_punch', 178, 196),
+    ('08_shield_block', 200, 233), ('09_sword_snap', 254, 281), ('10_boost', 302, 329),
+    ('11_dive_fist', 356, 377), ('12_smash', 380, 409), ('13_power_stone', 412, 449),
+    ('14_stone_blast', 452, 485), ('15_rise_cannons', 488, 539), ('16_ironman_close', 542, 555),
+    ('17_thanos_close', 558, 571), ('18_charge', 574, 599)]
 
 
 def gpu(sc):
@@ -190,6 +201,18 @@ def main():
     if mode == 'blend':
         bpy.ops.wm.save_as_mainfile(filepath=os.path.join(OUT, 'fight.blend'))
         print('saved', os.path.join(OUT, 'fight.blend'))
+    elif mode == 'stills':
+        quality(sc, *FINAL, blur=False)
+        sc.view_settings.exposure += STILLS_EV
+        n = 0
+        for name, f0, f1 in STILLS:
+            for tag, f in (('start', f0), ('end', f1)):
+                sc.frame_set(f)
+                sc.render.filepath = os.path.join(OUT, 'stills', f'{name}_{tag}.png')
+                bpy.ops.render.render(write_still=True)
+                n += 1
+                print(f'still {n} of {2 * len(STILLS)}: {name}_{tag}.png', flush=True)
+        print('stills in', os.path.join(OUT, 'stills'), '- now follow AI_SHOTS.txt')
     elif mode in ('preview', 'preview-cycles'):
         preview(sc, eevee=mode == 'preview')
     elif mode == 'test':
@@ -215,7 +238,7 @@ def main():
         bpy.ops.render.render(animation=True)
         print('frames in', os.path.join(OUT, 'frames'), '- now run with "movie"')
     else:
-        sys.exit(f'unknown mode {mode}: use preview, preview-cycles, test, full, movie or blend')
+        sys.exit(f'unknown mode {mode}: use stills, preview, preview-cycles, test, full, movie or blend')
 
 
 main()

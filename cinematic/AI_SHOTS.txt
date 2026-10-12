@@ -1,0 +1,112 @@
+IRON MAN vs THANOS: THE AI VIDEO SHOTS
+
+What you have: Desktop/fight_render/stills holds two pictures per shot: NAME_start.png and NAME_end.png
+(made by:  /Applications/Blender.app/Contents/MacOS/Blender -b --python ~/Desktop/cinematic/render_mac.py -- stills).
+
+HOW TO MAKE EACH SHOT (Kling, image to video, "start and end frame"):
+  1. New video > Image to Video. Turn on the end frame (start + end frame).
+  2. Start frame: NAME_start.png.  End frame: NAME_end.png.
+  3. Paste the shot's prompt below. Paste the negative prompt (once; the site usually keeps it).
+  4. Settings: highest quality / professional mode, 16:9, 5 seconds (10 where it says so).
+  5. Generate. If it looks wrong, generate again (each try comes out different) before changing the prompt.
+  6. Download the clip, name it like the shot (01_flyin.mp4 ...).
+If the site refuses a prompt, it is usually the names: replace "Iron Man" with "a red and gold armored hero" and
+"Thanos" with "a huge purple-skinned titan in gold armor with a jeweled gauntlet".
+Then put the clips in order in iMovie or CapCut, trim each to its best 2-4 seconds, add music and sound effects.
+
+NEGATIVE PROMPT (paste in the negative / "avoid" box):
+blurry, low quality, distorted face, extra limbs, extra fingers, melting armor, morphing shapes, text, watermark,
+cartoon, video game graphics, plastic look
+
+STYLE (already at the end of every prompt below): cinematic, Avengers: Infinity War Titan battle, anamorphic
+35mm film look, dramatic rim light, floating rocks and dust in space, shallow depth of field, 24fps motion blur
+
+01_flyin (5 s)
+Iron Man streaks low over a floating rock in deep space, flying horizontally, boot and palm repulsors blazing blue,
+camera tracking fast alongside him, debris whipping past. Cinematic, Avengers: Infinity War Titan battle, anamorphic
+35mm film look, dramatic rim light, floating rocks and dust in space, shallow depth of field, 24fps motion blur
+
+02_gauntlet (5 s)
+Close-up: Thanos raises the golden Infinity Gauntlet and blocks incoming repulsor blasts, sparks and blue energy
+splashing off the metal, the stones glinting. Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm film
+look, dramatic rim light, floating rocks and dust in space, shallow depth of field, 24fps motion blur
+
+03_leap (5 s)
+Low angle looking up: Thanos launches into a huge leap toward the camera, armor plates shifting, dust kicked up below
+him. Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm film look, dramatic rim light, floating rocks and
+dust in space, shallow depth of field, 24fps motion blur
+
+04_crash (5 s)
+Wide: Thanos slams down onto the rock where Iron Man was standing, the ground cracks and a wall of dust bursts out,
+Iron Man rolls clear just in time. Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm film look, dramatic
+rim light, floating rocks and dust in space, shallow depth of field, 24fps motion blur
+
+05_cannon_forms (5 s)
+Close: Iron Man on one knee, nanotech flows over his right forearm like liquid dark metal and builds a large red and
+gold arm cannon plate by plate, cyan light glowing in its open jaws. Cinematic, Avengers: Infinity War Titan battle,
+anamorphic 35mm film look, dramatic rim light, floating rocks and dust in space, shallow depth of field, 24fps motion blur
+
+06_cannon_blast (5 s)
+Over Iron Man's shoulder: the arm cannon fires a massive blue-white energy beam point blank into Thanos, driving him
+back across the rock, shockwave and dust. Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm film look,
+dramatic rim light, floating rocks and dust in space, shallow depth of field, 24fps motion blur
+
+07_head_punch (5 s)
+Close: Thanos's huge fist smashes into Iron Man's helmet, his head snaps around, sparks and fragments fly.
+Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm film look, dramatic rim light, floating rocks and dust
+in space, shallow depth of field, 24fps motion blur
+
+08_shield_block (5 s)
+Thanos brings a huge overhead hammer blow down, Iron Man throws up his left arm and a red and gold nanotech shield
+with pale blue glass panels takes the hit, sparks burst. Cinematic, Avengers: Infinity War Titan battle, anamorphic
+35mm film look, dramatic rim light, floating rocks and dust in space, shallow depth of field, 24fps motion blur
+
+09_sword_snap (5 s)
+Iron Man slashes with a long curved nanotech sword glowing silver-blue along its edge, Thanos catches the blade in the
+gauntlet and snaps it, the broken half spinning away. Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm
+film look, dramatic rim light, floating rocks and dust in space, shallow depth of field, 24fps motion blur
+
+10_boost (5 s)
+Wide: Iron Man is blasted backward off the rock, spinning, then red and gold blade-shaped wings unfold from his back
+and his thrusters catch him in mid-air. Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm film look,
+dramatic rim light, floating rocks and dust in space, shallow depth of field, 24fps motion blur
+
+11_dive_fist (5 s)
+Iron Man dives straight at the camera from above, wings swept back, a giant nanotech fist forming over his right arm.
+Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm film look, dramatic rim light, floating rocks and dust
+in space, shallow depth of field, 24fps motion blur
+
+12_smash (5 s)
+Low and tight: the giant fist hammers down onto Thanos, the impact flattens a ring of dust and cracks the rock.
+Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm film look, dramatic rim light, floating rocks and dust
+in space, shallow depth of field, 24fps motion blur
+
+13_power_stone (10 s)
+Close on the Infinity Gauntlet: Thanos straightens and clenches his fist, the purple Power Stone flares with crackling
+violet energy. Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm film look, dramatic rim light, floating
+rocks and dust in space, shallow depth of field, 24fps motion blur
+
+14_stone_blast (5 s)
+Wide: a violet Power Stone beam slams into a curved blue energy shield projected from Iron Man's palm, the shield
+flickers and breaks and Iron Man is thrown across the rock. Cinematic, Avengers: Infinity War Titan battle, anamorphic
+35mm film look, dramatic rim light, floating rocks and dust in space, shallow depth of field, 24fps motion blur
+
+15_rise_cannons (10 s)
+Behind Iron Man as he gets back up, cannons forming on both arms, Thanos walking toward him through drifting purple
+dust. Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm film look, dramatic rim light, floating rocks and
+dust in space, shallow depth of field, 24fps motion blur
+
+16_ironman_close (5 s)
+Close-up of Iron Man's helmet, eyes glowing, a slow push in, breath of steam, determined. Cinematic, Avengers: Infinity
+War Titan battle, anamorphic 35mm film look, dramatic rim light, floating rocks and dust in space, shallow depth of
+field, 24fps motion blur
+
+17_thanos_close (5 s)
+Close-up of Thanos's face, calm and menacing, a slow push in, purple light on his armor. Cinematic, Avengers: Infinity
+War Titan battle, anamorphic 35mm film look, dramatic rim light, floating rocks and dust in space, shallow depth of
+field, 24fps motion blur
+
+18_charge (5 s)
+Both charge at each other across the rock, Iron Man's cannons blazing blue, Thanos's gauntlet glowing violet, they
+collide in a blinding flash. Cinematic, Avengers: Infinity War Titan battle, anamorphic 35mm film look, dramatic rim
+light, floating rocks and dust in space, shallow depth of field, 24fps motion blur
